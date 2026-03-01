@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <Version>1.0.0-beta</Version>
+    <Authors>Hueifeng</Authors>
+    <Company>KubeJob</Company>
+    <Product>KubeJob</Product>
+    <Description>KubeJob is an enterprise-ready, high-availability job scheduling framework for .NET applications.</Description>
+    <RepositoryUrl>https://github.com/hueifeng/KubeJob</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>job-scheduler;cron;distributed;csharp;dotnet;quartz;hangfire</PackageTags>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+</Project>

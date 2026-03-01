@@ -1,0 +1,6 @@
+@KubeJob.Sample.WorkerNode_HostAddress = http://localhost:5111
+
+GET {{KubeJob.Sample.WorkerNode_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

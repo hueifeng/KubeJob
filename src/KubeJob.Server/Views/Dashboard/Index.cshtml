@@ -1,0 +1,137 @@
+@using KubeJob.Core.Enums
+@{
+    ViewData["Title"] = "Dashboard Overview";
+}
+
+<!-- Auto Refresh Meta Tag to keep dashboard live -->
+<meta http-equiv="refresh" content="30">
+
+<div class="row mb-4 g-4">
+    <!-- Active Nodes Card -->
+    <div class="col-md-3">
+        <a asp-controller="Dashboard" asp-action="Nodes" class="text-decoration-none">
+            <div class="card stats-card bg-primary text-white h-100">
+                <div class="card-body">
+                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Active Nodes</h6>
+                    <h2 class="display-5 fw-bold mb-0">@ViewBag.ActiveNodesCount <span class="fs-5 opacity-75 fw-normal">/ @ViewBag.TotalNodesCount</span></h2>
+                    <i class="fa-solid fa-server stats-icon"></i>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <!-- Total Specs Card -->
+    <div class="col-md-3">
+        <a asp-controller="Dashboard" asp-action="Specs" class="text-decoration-none">
+            <div class="card stats-card bg-info text-white h-100">
+                <div class="card-body">
+                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Job Specs</h6>
+                    <h2 class="display-5 fw-bold mb-0">@ViewBag.TotalSpecsCount</h2>
+                    <i class="fa-solid fa-cubes stats-icon"></i>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <!-- Success Jobs Card -->
+    <div class="col-md-3">
+        <a asp-controller="Dashboard" asp-action="Runs" class="text-decoration-none">
+            <div class="card stats-card bg-success text-white h-100">
+                <div class="card-body">
+                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Success (Recent)</h6>
+                    <h2 class="display-5 fw-bold mb-0">@ViewBag.SuccessCount</h2>
+                    <i class="fa-solid fa-check-circle stats-icon"></i>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <!-- Failed Jobs Card -->
+    <div class="col-md-3">
+        <a asp-controller="Dashboard" asp-action="Runs" class="text-decoration-none">
+            <div class="card stats-card bg-danger text-white h-100">
+                <div class="card-body">
+                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Failed (Recent)</h6>
+                    <h2 class="display-5 fw-bold mb-0">@ViewBag.FailedCount</h2>
+                    <i class="fa-solid fa-triangle-exclamation stats-icon"></i>
+                </div>
+            </div>
+        </a>
+    </div>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mt-5 section-header">
+    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-bolt text-primary me-2"></i>Recent Activity</h4>
+    <a asp-controller="Dashboard" asp-action="Runs" class="btn btn-sm btn-outline-primary rounded-pill px-3">View All</a>
+</div>
+
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table table-hover table-borderless mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Run ID</th>
+                    <th>Spec ID</th>
+                    <th>Target Node</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (ViewBag.RecentRuns == null || ViewBag.RecentRuns.Count == 0)
+                {
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-4">
+                            <i class="fa-regular fa-folder-open fs-2 mb-2"></i><br />
+                            No recent activity found.
+                        </td>
+                    </tr>
+                }
+                else
+                {
+                    @foreach (KubeJob.Core.Domain.JobRun run in ViewBag.RecentRuns)
+                    {
+                        var duration = run.EndTime.HasValue && run.StartTime.HasValue 
+                                        ? (run.EndTime.Value - run.StartTime.Value).TotalSeconds.ToString("0.0") + "s" 
+                                        : "-";
+                        <tr>
+                            <td><span class="font-monospace text-muted">@run.Id.Substring(0, 8)</span></td>
+                            <td class="fw-bold text-dark">@run.SpecId</td>
+                            <td>
+                                @if (string.IsNullOrEmpty(run.TargetNodeId))
+                                {
+                                    <span class="text-muted fst-italic">Pending Assign</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-light border text-dark"><i class="fa-solid fa-server text-primary me-1"></i> @run.TargetNodeId</span>
+                                }
+                            </td>
+                            <td>
+                                @if (run.Status == JobStatus.Succeeded)
+                                {
+                                    <span class="badge bg-success rounded-pill px-3"><i class="fa-solid fa-check me-1"></i> @run.Status</span>
+                                }
+                                else if (run.Status == JobStatus.Failed)
+                                {
+                                    <span class="badge bg-danger rounded-pill px-3"><i class="fa-solid fa-xmark me-1"></i> @run.Status</span>
+                                }
+                                else if (run.Status == JobStatus.Running)
+                                {
+                                    <span class="badge bg-info rounded-pill px-3"><i class="fa-solid fa-spinner fa-spin me-1"></i> @run.Status</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-warning text-dark rounded-pill px-3"><i class="fa-regular fa-clock me-1"></i> @run.Status</span>
+                                }
+                            </td>
+                            <td>@run.CreatedAt.ToString("MM-dd HH:mm:ss")</td>
+                            <td class="text-muted">@duration</td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+</div>

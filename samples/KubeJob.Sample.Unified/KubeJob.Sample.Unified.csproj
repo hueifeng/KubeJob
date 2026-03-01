@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KubeJob.Server\KubeJob.Server.csproj" />
+    <ProjectReference Include="..\..\src\KubeJob.Worker\KubeJob.Worker.csproj" />
+    <ProjectReference Include="..\KubeJob.Sample.WorkerNode\KubeJob.Sample.WorkerNode.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

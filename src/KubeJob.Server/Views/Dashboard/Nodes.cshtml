@@ -1,0 +1,120 @@
+@using KubeJob.Core.Domain
+@using System.Text.Json
+@model IEnumerable<WorkerNode>
+@{
+    ViewData["Title"] = "Worker Nodes";
+}
+
+<!-- Auto Refresh Meta Tag -->
+<meta http-equiv="refresh" content="30">
+
+<div class="d-flex justify-content-between align-items-center section-header">
+    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-server text-primary me-2"></i>Worker Nodes</h4>
+    <div>
+        <button class="btn btn-outline-secondary btn-sm rounded-pill px-3" onclick="location.reload()">
+            <i class="fa-solid fa-rotate-right me-1"></i> Refresh
+        </button>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table table-hover table-borderless align-middle mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Node ID</th>
+                    <th>Status</th>
+                    <th>Load / Capacity</th>
+                    <th>Labels</th>
+                    <th>Last Heartbeat</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (!Model.Any())
+                {
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-5">
+                            <i class="fa-solid fa-network-wired fs-1 mb-3"></i><br />
+                            No worker nodes registered. Start a worker node to see it here.
+                        </td>
+                    </tr>
+                }
+                else
+                {
+                    @foreach (var node in Model)
+                    {
+                        var labels = new Dictionary<string, string>();
+                        try { labels = JsonSerializer.Deserialize<Dictionary<string, string>>(node.Labels) ?? new(); } catch { }
+                        
+                        var loadPercentage = node.MaxCapacity > 0 ? (int)Math.Round((double)node.CurrentLoad / node.MaxCapacity * 100) : 0;
+                        var pgClass = loadPercentage > 80 ? "bg-danger" : loadPercentage > 50 ? "bg-warning" : "bg-success";
+
+                        <tr class="@(node.IsOffline ? "offline-node" : "")">
+                            <td>
+                                <div class="fw-bold text-dark font-monospace"><i class="fa-solid fa-desktop text-muted me-2"></i>@node.Id</div>
+                                @if (!string.IsNullOrEmpty(node.IpAddress))
+                                {
+                                    <div class="small text-muted mt-1"><i class="fa-solid fa-network-wired me-1"></i>@node.IpAddress</div>
+                                }
+                            </td>
+                            <td>
+                                @if (node.IsOffline)
+                                {
+                                    <span class="badge bg-secondary rounded-pill px-3"><i class="fa-solid fa-circle-minus me-1"></i> Offline</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-success rounded-pill px-3"><i class="fa-solid fa-circle-check me-1"></i> Online</span>
+                                }
+                            </td>
+                            <td style="min-width: 200px;">
+                                <div class="d-flex justify-content-between small text-muted mb-1">
+                                    <span>@node.CurrentLoad Jobs</span>
+                                    <span>Max @node.MaxCapacity</span>
+                                </div>
+                                <div class="progress" style="height: 6px;">
+                                    <div class="progress-bar @pgClass" role="progressbar" style="width: @loadPercentage%;" aria-valuenow="@loadPercentage" aria-valuemin="0" aria-valuemax="100"></div>
+                                </div>
+                            </td>
+                            <td>
+                                @if(labels.Any())
+                                {
+                                    <div class="d-flex flex-wrap gap-1">
+                                        @foreach(var lbl in labels)
+                                        {
+                                            <span class="badge bg-light text-dark border"><span class="text-primary opacity-75">@lbl.Key:</span> @lbl.Value</span>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="text-muted small fst-italic">No labels</span>
+                                }
+                            </td>
+                            <td class="text-muted small">
+                                <div><i class="fa-regular fa-clock me-1"></i>@node.LastHeartbeat.ToString("yyyy-MM-dd HH:mm:ss")</div>
+                                @{
+                                    var timeSince = DateTime.UtcNow - node.LastHeartbeat;
+                                    var timeSinceStr = timeSince.TotalMinutes > 60 ? $"{(int)timeSince.TotalHours}h ago" : $"{(int)timeSince.TotalMinutes}m ago";
+                                    if(timeSince.TotalMinutes < 1) timeSinceStr = "just now";
+                                }
+                                <div class="text-secondary" style="font-size: 0.75rem;">@timeSinceStr</div>
+                            </td>
+                            <td class="text-end">
+                                @if(node.IsOffline)
+                                {
+                                    <form asp-action="DeleteNode" asp-route-id="@node.Id" method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to remove this offline node?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill px-3 shadow-sm" title="Remove Offline Node">
+                                            <i class="fa-solid fa-trash-can"></i> Remove
+                                        </button>
+                                    </form>
+                                }
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
