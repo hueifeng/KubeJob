@@ -1,8 +1,12 @@
 name: Publish to NuGet
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["CI"] # 监听名为 CI 的 workflow
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
@@ -12,6 +16,8 @@ on:
 
 jobs:
   publish:
+    # 只有当触发它的 CI 成功运行完毕，或者是手动触发时，才执行发布
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -29,10 +35,7 @@ jobs:
       id: get_version
       run: |
         VERSION=""
-        if [ "${{ github.event_name }}" == "release" ]; then
-          # Extract version from tag name (e.g., v1.0.0 -> 1.0.0)
-          VERSION=${GITHUB_REF#refs/tags/v}
-        elif [ -n "${{ github.event.inputs.version }}" ]; then
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
           VERSION=${{ github.event.inputs.version }}
         fi
         
