@@ -1,0 +1,64 @@
+name: Publish to NuGet
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.0). If empty, uses Directory.Build.props'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Determine Version
+      id: get_version
+      run: |
+        VERSION=""
+        if [ "${{ github.event_name }}" == "release" ]; then
+          # Extract version from tag name (e.g., v1.0.0 -> 1.0.0)
+          VERSION=${GITHUB_REF#refs/tags/v}
+        elif [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION=${{ github.event.inputs.version }}
+        fi
+        
+        if [ -n "$VERSION" ]; then
+          echo "PACKAGE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Version set to: $VERSION"
+        else
+          echo "No explicit version provided. Will use version from Directory.Build.props."
+        fi
+
+    - name: Restore dependencies
+      run: dotnet restore KubeJob.sln
+
+    - name: Build
+      run: dotnet build KubeJob.sln -c Release --no-restore
+
+    - name: Test
+      run: dotnet test KubeJob.sln -c Release --no-build --verbosity normal
+
+    - name: Pack
+      run: |
+        if [ -n "$PACKAGE_VERSION" ]; then
+          dotnet pack KubeJob.sln -c Release --no-build -o ./artifacts /p:Version=$PACKAGE_VERSION /p:PackageVersion=$PACKAGE_VERSION
+        else
+          dotnet pack KubeJob.sln -c Release --no-build -o ./artifacts
+        fi
+
+    - name: Push to NuGet
+      run: dotnet nuget push "./artifacts/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
