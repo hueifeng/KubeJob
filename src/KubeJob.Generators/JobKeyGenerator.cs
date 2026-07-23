@@ -16,14 +16,6 @@ public sealed class JobKeyGenerator : IIncrementalGenerator
     private const string AttributeMetadataName = "KubeJob.Core.Attributes.KubeJobAttribute";
     private const string GenericJobMetadataName = "KubeJob.Core.Interfaces.IKubeJob<TPayload>";
 
-    private static readonly DiagnosticDescriptor MissingPayloadContract = new(
-        id: "KJGEN001",
-        title: "KubeJob handler must implement IKubeJob<TPayload>",
-        messageFormat: "Handler '{0}' has [KubeJob] but does not implement IKubeJob<TPayload>",
-        category: "KubeJob.Generators",
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true);
-
     private static readonly DiagnosticDescriptor DuplicateGeneratedProperty = new(
         id: "KJGEN002",
         title: "Duplicate generated job property",
@@ -63,21 +55,25 @@ public sealed class JobKeyGenerator : IIncrementalGenerator
 
         var payloadInterface = handlerType.AllInterfaces.FirstOrDefault(interfaceType =>
             interfaceType.OriginalDefinition.ToDisplayString() == GenericJobMetadataName);
+        if (payloadInterface is null)
+        {
+            // V2 is additive. Legacy non-generic handlers and classes used only
+            // for attribute metadata remain valid but do not receive Jobs.* keys.
+            return null;
+        }
 
         var className = handlerType.Name;
         var propertyName = CreatePropertyName(className);
         var namespaceName = handlerType.ContainingNamespace.IsGlobalNamespace
             ? string.Empty
             : handlerType.ContainingNamespace.ToDisplayString();
-        var location = handlerType.Locations.FirstOrDefault();
 
         return new Candidate(
             namespaceName,
             propertyName,
             jobKey,
-            payloadInterface?.TypeArguments[0],
-            className,
-            location);
+            payloadInterface.TypeArguments[0],
+            handlerType.Locations.FirstOrDefault());
     }
 
     private static void Generate(
@@ -89,16 +85,7 @@ public sealed class JobKeyGenerator : IIncrementalGenerator
             .Select(static candidate => candidate!)
             .ToArray();
 
-        foreach (var candidate in candidates.Where(static candidate => candidate.PayloadType is null))
-        {
-            context.ReportDiagnostic(Diagnostic.Create(
-                MissingPayloadContract,
-                candidate.Location,
-                candidate.HandlerName));
-        }
-
         foreach (var namespaceGroup in candidates
-                     .Where(static candidate => candidate.PayloadType is not null)
                      .GroupBy(static candidate => candidate.NamespaceName, StringComparer.Ordinal))
         {
             var duplicates = namespaceGroup
@@ -150,7 +137,7 @@ public sealed class JobKeyGenerator : IIncrementalGenerator
         builder.AppendLine("{");
         foreach (var candidate in candidates)
         {
-            var payloadType = candidate.PayloadType!.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            var payloadType = candidate.PayloadType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             var literal = SymbolDisplay.FormatLiteral(candidate.JobKey, quote: true);
             builder.Append("    public static global::KubeJob.Core.Jobs.JobKey<")
                 .Append(payloadType)
@@ -207,23 +194,20 @@ public sealed class JobKeyGenerator : IIncrementalGenerator
             string namespaceName,
             string propertyName,
             string jobKey,
-            ITypeSymbol? payloadType,
-            string handlerName,
+            ITypeSymbol payloadType,
             Location? location)
         {
             NamespaceName = namespaceName;
             PropertyName = propertyName;
             JobKey = jobKey;
             PayloadType = payloadType;
-            HandlerName = handlerName;
             Location = location;
         }
 
         public string NamespaceName { get; }
         public string PropertyName { get; }
         public string JobKey { get; }
-        public ITypeSymbol? PayloadType { get; }
-        public string HandlerName { get; }
+        public ITypeSymbol PayloadType { get; }
         public Location? Location { get; }
     }
 }
