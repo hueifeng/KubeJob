@@ -1,0 +1,99 @@
+name: V2 Core Completion Report
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  complete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      KUBEJOB_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres;Include Error Detail=true
+      PACKAGE_VERSION: 0.0.0-complete.${{ github.run_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - id: validate
+        name: Validate completed V2 core
+        continue-on-error: true
+        run: bash eng/validate-v2-complete.sh
+
+      - name: Report completion result
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          OUTCOME: ${{ steps.validate.outcome }}
+        with:
+          script: |
+            const marker = '<!-- kubejob-v2-core-completion -->';
+            const success = process.env.OUTCOME === 'success';
+            const body = `${marker}\n## KubeJob V2 core completion\n\n` +
+              `${success ? '✅' : '❌'} **${process.env.OUTCOME}**\n\n` +
+              `This single validation covers:\n` +
+              `- Release solution build and unit tests\n` +
+              `- real PostgreSQL claim/session/schedule/outbox races\n` +
+              `- unified typed-job end-to-end execution\n` +
+              `- public Attempt API credential redaction\n` +
+              `- generator positive, legacy compatibility, and duplicate-key negative cases\n` +
+              `- all V2 packages, direct Core consumer, and KubeJob meta-package consumer\n` +
+              `- optional RabbitMQ notification package compilation\n\n` +
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+            const existing = comments.find(comment =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
+
+      - name: Fail when core completion validation failed
+        if: always() && steps.validate.outcome != 'success'
+        run: exit 1
