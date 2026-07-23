@@ -125,8 +125,11 @@ public sealed partial class InMemoryJobRuntimeStore
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
+            var now = DateTimeOffset.UtcNow;
             if (!_schedules.TryGetValue(command.ScheduleId, out var schedule)
                 || schedule.Version != command.ExpectedVersion
+                || schedule.ClaimUntil is null
+                || schedule.ClaimUntil <= now
                 || !string.Equals(schedule.ClaimToken, command.ClaimToken, StringComparison.Ordinal))
             {
                 return ValueTask.FromResult<JobRunRecord?>(null);
@@ -141,35 +144,54 @@ public sealed partial class InMemoryJobRuntimeStore
             }
 
             JobRunRecord? run = null;
-            var now = DateTimeOffset.UtcNow;
             if (createRun)
             {
-                run = new JobRunRecord
+                var scheduledFor = command.ScheduledFor.ToUniversalTime();
+                var existingOccurrence = _runs.Values.SingleOrDefault(candidate =>
+                    string.Equals(candidate.ScheduleId, schedule.Id, StringComparison.Ordinal)
+                    && candidate.ScheduledFor == scheduledFor);
+                if (existingOccurrence is not null)
                 {
-                    Id = command.RunId,
-                    JobKey = schedule.JobKey,
-                    PayloadJson = schedule.PayloadJson,
-                    Queue = schedule.Queue,
-                    Priority = schedule.Priority,
-                    Phase = JobPhase.Pending,
-                    AvailableAt = now,
-                    CreatedAt = now,
-                    MaxAttempts = schedule.MaxAttempts,
-                    TimeoutSeconds = schedule.TimeoutSeconds,
-                    IdempotencyKey = command.IdempotencyKey,
-                    ScheduleId = schedule.Id,
-                    ScheduledFor = command.ScheduledFor.ToUniversalTime()
-                };
+                    run = existingOccurrence;
+                }
+                else
+                {
+                    if (_idempotency.TryGetValue(command.IdempotencyKey, out var existingRunId)
+                        && _runs.TryGetValue(existingRunId, out var conflictingRun))
+                    {
+                        throw new IdempotencyConflictException(
+                            command.IdempotencyKey,
+                            conflictingRun.Id);
+                    }
 
-                if (!_runs.TryAdd(run.Id, run))
-                {
-                    throw new InvalidOperationException(
-                        $"Schedule run id '{run.Id}' already exists for another occurrence.");
+                    run = new JobRunRecord
+                    {
+                        Id = command.RunId,
+                        JobKey = schedule.JobKey,
+                        PayloadJson = schedule.PayloadJson,
+                        Queue = schedule.Queue,
+                        Priority = schedule.Priority,
+                        Phase = JobPhase.Pending,
+                        AvailableAt = now,
+                        CreatedAt = now,
+                        MaxAttempts = schedule.MaxAttempts,
+                        TimeoutSeconds = schedule.TimeoutSeconds,
+                        IdempotencyKey = command.IdempotencyKey,
+                        ScheduleId = schedule.Id,
+                        ScheduledFor = scheduledFor
+                    };
+
+                    if (!_runs.TryAdd(run.Id, run))
+                    {
+                        throw new InvalidOperationException(
+                            $"Schedule run id '{run.Id}' already exists for another occurrence.");
+                    }
+
+                    _idempotency[command.IdempotencyKey] = run.Id;
+                    AddWorkAvailableOutbox(run, now);
                 }
 
-                _idempotency[command.IdempotencyKey] = run.Id;
-                AddWorkAvailableOutbox(run, now);
-                schedule.LastFireAt = command.ScheduledFor.ToUniversalTime();
+                schedule.LastFireAt = scheduledFor;
             }
 
             schedule.NextFireAt = command.NextFireAt.ToUniversalTime();
@@ -193,8 +215,10 @@ public sealed partial class InMemoryJobRuntimeStore
             if (_schedules.TryGetValue(scheduleId, out var schedule)
                 && string.Equals(schedule.ClaimToken, claimToken, StringComparison.Ordinal))
             {
+                schedule.ClaimToken = null;
                 schedule.ClaimUntil = retryAt.ToUniversalTime();
                 schedule.UpdatedAt = DateTimeOffset.UtcNow;
+                schedule.Version++;
             }
         }
 
