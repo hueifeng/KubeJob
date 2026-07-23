@@ -9,7 +9,7 @@ namespace KubeJob;
 public static class UnifiedHostingExtensions
 {
     /// <summary>
-    /// Adds the V2 control plane and worker to one process while preserving the
+    /// Adds the control plane and worker to one process while preserving the
     /// same attempt, lease, fencing, retry, and scheduling semantics used by
     /// distributed deployments. No localhost HTTP is used.
     /// </summary>
@@ -20,13 +20,9 @@ public static class UnifiedHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(configureWorker);
 
-        services.AddKubeJobServer(options =>
-        {
-            options.UseV2Only();
-            configureServer?.Invoke(options);
-        });
+        services.AddKubeJobServer(configureServer);
         services.UseInProcessKubeJobWorkerTransport();
-        services.AddKubeJobWorkerRuntime(configureWorker);
+        services.AddKubeJobWorker(configureWorker);
         return services;
     }
 }
