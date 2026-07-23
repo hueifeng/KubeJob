@@ -27,12 +27,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
             if (existing is not null)
             {
+                JobSubmissionIdentity.EnsureCompatible(existing, command);
                 await transaction.CommitAsync(cancellationToken);
                 return new SubmitJobResult(existing, Existing: true);
             }
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
+            "SELECT clock_timestamp();",
+            transaction: transaction,
+            cancellationToken: cancellationToken));
         var run = new JobRunRecord
         {
             Id = NewId(),
@@ -41,7 +45,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             Queue = command.Queue,
             Priority = command.Priority,
             Phase = JobPhase.Pending,
-            AvailableAt = command.AvailableAt,
+            AvailableAt = command.AvailableAt.ToUniversalTime(),
             CreatedAt = now,
             MaxAttempts = command.MaxAttempts,
             TimeoutSeconds = command.TimeoutSeconds,
@@ -87,6 +91,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 new { command.IdempotencyKey },
                 transaction,
                 cancellationToken: cancellationToken));
+            JobSubmissionIdentity.EnsureCompatible(existing, command);
             await transaction.CommitAsync(cancellationToken);
             return new SubmitJobResult(existing, Existing: true);
         }
@@ -108,14 +113,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-        var now = DateTimeOffset.UtcNow;
         var affected = await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobRuns
             SET CancelRequested = TRUE,
                 FailureCode = 'cancel_requested',
                 FailureMessage = @Reason,
                 Phase = CASE WHEN Phase = @Pending THEN @Canceled ELSE Phase END,
-                CompletedAt = CASE WHEN Phase = @Pending THEN @Now ELSE CompletedAt END,
+                CompletedAt = CASE WHEN Phase = @Pending THEN clock_timestamp() ELSE CompletedAt END,
                 Version = Version + 1
             WHERE Id = @RunId
               AND Phase IN (@Pending, @Running);",
@@ -123,7 +127,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 RunId = runId,
                 Reason = reason,
-                Now = now,
                 Pending = (int)JobPhase.Pending,
                 Running = (int)JobPhase.Running,
                 Canceled = (int)JobPhase.Canceled
