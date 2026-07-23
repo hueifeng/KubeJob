@@ -27,5 +27,5 @@ public readonly record struct JobKey<TPayload>
     public bool IsEmpty => string.IsNullOrEmpty(Value);
 
     /// <inheritdoc />
-    public override string ToString() => Value;
+    public override string ToString() => Value ?? string.Empty;
 }
