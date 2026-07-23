@@ -30,7 +30,7 @@ public sealed partial class InMemoryJobRuntimeStore :
         out WorkerSessionRecord session) =>
         _sessions.TryGetValue(SessionKey(workerId, sessionId), out session!)
         && session.Epoch == sessionEpoch
-        && session.State != WorkerSessionState.Stale;
+        && session.State is WorkerSessionState.Ready or WorkerSessionState.Draining;
 
     private bool HasConcurrencyConflict(JobRunRecord candidate)
     {
