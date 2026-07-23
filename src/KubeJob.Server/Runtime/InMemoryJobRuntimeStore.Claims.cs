@@ -120,15 +120,24 @@ public sealed partial class InMemoryJobRuntimeStore
                 return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(Array.Empty<ClaimedJob>());
             }
 
+            var registeredQueues = session.Queues.ToHashSet(StringComparer.Ordinal);
+            var registeredCapabilities = session.Capabilities.ToHashSet(StringComparer.Ordinal);
+            var allowedQueues = request.Queues
+                .Where(registeredQueues.Contains)
+                .ToHashSet(StringComparer.Ordinal);
+            var allowedCapabilities = request.Capabilities
+                .Where(registeredCapabilities.Contains)
+                .ToHashSet(StringComparer.Ordinal);
+
             var running = CountRunningAttempts(request.WorkerId, request.SessionId, request.SessionEpoch);
             var serverAvailable = Math.Max(0, session.MaxConcurrency - running);
             var reportedAvailable = Math.Max(request.AvailableSlots, 0);
             var claimCount = Math.Min(
                 Math.Min(reportedAvailable, serverAvailable),
                 Math.Max(maxBatchSize, 0));
-            if (claimCount == 0 || request.Queues.Count == 0 || request.Capabilities.Count == 0)
+            if (claimCount == 0 || allowedQueues.Count == 0 || allowedCapabilities.Count == 0)
             {
-                session.AvailableSlots = 0;
+                session.AvailableSlots = serverAvailable;
                 return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(Array.Empty<ClaimedJob>());
             }
 
@@ -137,8 +146,8 @@ public sealed partial class InMemoryJobRuntimeStore
                 .Where(run => run.Phase == JobPhase.Pending)
                 .Where(run => !run.CancelRequested && run.AttemptCount < run.MaxAttempts)
                 .Where(run => run.AvailableAt <= now)
-                .Where(run => request.Queues.Contains(run.Queue, StringComparer.Ordinal))
-                .Where(run => request.Capabilities.Contains(run.JobKey, StringComparer.Ordinal))
+                .Where(run => allowedQueues.Contains(run.Queue))
+                .Where(run => allowedCapabilities.Contains(run.JobKey))
                 .OrderByDescending(run => run.Priority)
                 .ThenBy(run => run.AvailableAt)
                 .ThenBy(run => run.CreatedAt)
