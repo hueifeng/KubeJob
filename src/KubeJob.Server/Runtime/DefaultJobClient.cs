@@ -42,7 +42,7 @@ public sealed class DefaultJobClient : IJobClient
         }
 
         var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
-        var availableAt = options.NotBefore ?? DateTimeOffset.UtcNow;
+        var availableAt = (options.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime();
         var timeoutSeconds = checked((int)Math.Ceiling(options.Timeout.TotalSeconds));
 
         var result = await _submissionStore.SubmitAsync(
