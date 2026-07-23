@@ -36,6 +36,6 @@ public sealed class AttemptSnapshotSecurityTests
 
         var json = JsonSerializer.Serialize(snapshot);
 
-        json.Should().NotContain("token", StringComparison.OrdinalIgnoreCase);
+        json.Contains("token", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
     }
 }
