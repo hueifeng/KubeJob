@@ -1,5 +1,0 @@
-<Project>
-  <ItemGroup Condition="'$(MSBuildProjectName)' == 'KubeJob.ApiTests'">
-    <ProjectReference Include="$(MSBuildThisFileDirectory)src\KubeJob.Client\KubeJob.Client.csproj" />
-  </ItemGroup>
-</Project>
