@@ -1,7 +1,7 @@
 @model DashboardRunsViewModel
 @{
     ViewData["Title"] = "Runs & Attempts";
-    var page = Model.Runs;
+    var results = Model.Runs;
     var query = Model.Query;
 }
 <meta http-equiv="refresh" content="30">
@@ -49,13 +49,13 @@
         <table class="table table-hover mb-0">
             <thead><tr><th>Run</th><th>Job / Queue</th><th>Phase</th><th>Worker</th><th>Attempts</th><th>Timing</th><th>Failure</th></tr></thead>
             <tbody>
-            @if (page.Items.Count == 0)
+            @if (results.Items.Count == 0)
             {
                 <tr><td colspan="7" class="text-center text-muted py-5">No runs match the current filters.</td></tr>
             }
             else
             {
-                @foreach (var run in page.Items)
+                @foreach (var run in results.Items)
                 {
                     var badge = run.Phase switch
                     {
@@ -66,9 +66,9 @@
                         JobPhase.Dead => "bg-dark-subtle text-dark",
                         _ => "bg-danger-subtle text-danger"
                     };
-                    var duration = run.StartedAt is null
+                    TimeSpan? duration = run.StartedAt is null
                         ? null
-                        : ((run.CompletedAt ?? DateTimeOffset.UtcNow) - run.StartedAt.Value);
+                        : (run.CompletedAt ?? DateTimeOffset.UtcNow) - run.StartedAt.Value;
                     <tr>
                         <td>
                             <a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none">@run.Id[..Math.Min(12, run.Id.Length)]</a>
@@ -115,13 +115,13 @@
         </table>
     </div>
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
-        <div class="small text-muted">@page.TotalCount runs · page @page.Page of @(Math.Max(1, page.TotalPages))</div>
+        <div class="small text-muted">@results.TotalCount runs · page @results.Page of @(Math.Max(1, results.TotalPages))</div>
         <div class="d-flex gap-2">
-            <a class="btn btn-sm btn-outline-secondary @(page.Page <= 1 ? "disabled" : "")"
-               asp-action="Runs" asp-route-page="@(page.Page - 1)" asp-route-pageSize="@page.PageSize"
+            <a class="btn btn-sm btn-outline-secondary @(results.Page <= 1 ? "disabled" : "")"
+               asp-action="Runs" asp-route-page="@(results.Page - 1)" asp-route-pageSize="@results.PageSize"
                asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Previous</a>
-            <a class="btn btn-sm btn-outline-secondary @(page.TotalPages == 0 || page.Page >= page.TotalPages ? "disabled" : "")"
-               asp-action="Runs" asp-route-page="@(page.Page + 1)" asp-route-pageSize="@page.PageSize"
+            <a class="btn btn-sm btn-outline-secondary @(results.TotalPages == 0 || results.Page >= results.TotalPages ? "disabled" : "")"
+               asp-action="Runs" asp-route-page="@(results.Page + 1)" asp-route-pageSize="@results.PageSize"
                asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Next</a>
         </div>
     </div>
