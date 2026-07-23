@@ -1,0 +1,67 @@
+@model DashboardSchedulesViewModel
+@{
+    ViewData["Title"] = "Schedules";
+}
+<meta http-equiv="refresh" content="30">
+
+<div class="section-header">
+    <h5 class="mb-1 fw-bold">Independent schedules</h5>
+    <div class="small text-muted">Schedules own cron, time zone, misfire, and concurrency policies. Handlers only own execution logic.</div>
+</div>
+
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead><tr><th>Schedule</th><th>Job / queue</th><th>Cron</th><th>Policies</th><th>Next / last fire</th><th>State</th><th class="text-end">Action</th></tr></thead>
+            <tbody>
+            @if (Model.Schedules.Count == 0)
+            {
+                <tr><td colspan="7" class="text-center text-muted py-5">No schedules have been created.</td></tr>
+            }
+            else
+            {
+                @foreach (var schedule in Model.Schedules)
+                {
+                    var claimActive = schedule.ClaimUntil is not null && schedule.ClaimUntil > DateTimeOffset.UtcNow;
+                    <tr>
+                        <td><div class="fw-bold">@schedule.Id</div><div class="small text-muted">version @schedule.Version</div></td>
+                        <td><div class="fw-semibold">@schedule.JobKey</div><span class="badge bg-light text-dark border">@schedule.Queue</span> <span class="small text-muted">priority @schedule.Priority</span></td>
+                        <td><div class="mono">@schedule.CronExpression</div><div class="small text-muted">@schedule.TimeZoneId</div></td>
+                        <td>
+                            <div><span class="badge bg-info-subtle text-info-emphasis">@schedule.MisfirePolicy</span></div>
+                            <div class="mt-1"><span class="badge bg-primary-subtle text-primary">@schedule.ConcurrencyPolicy</span></div>
+                            <div class="small text-muted mt-1">@schedule.MaxAttempts attempts · @schedule.TimeoutSeconds s timeout</div>
+                        </td>
+                        <td class="small">
+                            <div><i class="fa-solid fa-forward-step text-primary me-1"></i>@schedule.NextFireAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                            <div class="text-muted mt-1"><i class="fa-solid fa-clock-rotate-left me-1"></i>@(schedule.LastFireAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</div>
+                        </td>
+                        <td>
+                            @if (schedule.Enabled)
+                            {
+                                <span class="badge bg-success-subtle text-success">Enabled</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary-subtle text-secondary">Disabled</span>
+                            }
+                            @if (claimActive)
+                            {
+                                <div class="small text-primary mt-1"><i class="fa-solid fa-lock me-1"></i>reconciling until @schedule.ClaimUntil!.Value.ToLocalTime().ToString("HH:mm:ss")</div>
+                            }
+                        </td>
+                        <td class="text-end">
+                            <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post">
+                                <input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
+                                <button class="btn btn-sm @(schedule.Enabled ? "btn-outline-warning" : "btn-outline-success")">
+                                    <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1"></i>@(schedule.Enabled ? "Disable" : "Enable")
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+</div>
