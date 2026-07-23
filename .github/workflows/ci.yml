@@ -2,28 +2,30 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+      - "agent/**"
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '9.0.x'
-        
+
     - name: Restore dependencies
       run: dotnet restore KubeJob.sln
-      
+
     - name: Build
       run: dotnet build KubeJob.sln --no-restore --configuration Release
-      
+
     - name: Test
       run: dotnet test KubeJob.sln --no-build --verbosity normal --configuration Release
