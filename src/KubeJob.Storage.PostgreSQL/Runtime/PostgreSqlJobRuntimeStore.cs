@@ -15,7 +15,8 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     IJobCompletionStore,
     IJobQueryStore,
     IJobScheduleStore,
-    IOutboxStore
+    IOutboxStore,
+    IJobRuntimeDashboardStore
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly NpgsqlDataSource _dataSource;
