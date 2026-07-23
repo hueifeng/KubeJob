@@ -133,12 +133,12 @@ public sealed class InMemoryJobRuntimeStoreTests
         var workerB = await RegisterAsync(store, "worker-b", "session-b");
         var first = (await store.ClaimAsync(
             NewClaim(workerA),
-            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(-1),
             1,
             CancellationToken.None)).Single();
 
         await store.RequeueExpiredLeasesAsync(
-            first.LeaseExpiresAt.AddSeconds(1),
+            DateTimeOffset.UtcNow,
             TimeSpan.Zero,
             10,
             CancellationToken.None);
