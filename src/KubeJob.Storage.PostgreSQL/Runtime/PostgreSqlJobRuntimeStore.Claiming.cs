@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
@@ -25,8 +26,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        var session = await connection.QuerySingleOrDefaultAsync<SessionCapacityRow>(new CommandDefinition(@"
-            SELECT MaxConcurrency, State
+        var session = await connection.QuerySingleOrDefaultAsync<ClaimSessionRow>(new CommandDefinition(@"
+            SELECT MaxConcurrency,
+                   State,
+                   Queues::text AS QueuesJson,
+                   Capabilities::text AS CapabilitiesJson
             FROM Kj2_WorkerSessions
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
@@ -41,6 +45,21 @@ public sealed partial class PostgreSqlJobRuntimeStore
             await transaction.RollbackAsync(cancellationToken);
             return Array.Empty<ClaimedJob>();
         }
+
+        var registeredQueues = (JsonSerializer.Deserialize<string[]>(session.QueuesJson, SerializerOptions)
+                                ?? Array.Empty<string>())
+            .ToHashSet(StringComparer.Ordinal);
+        var registeredCapabilities = (JsonSerializer.Deserialize<string[]>(session.CapabilitiesJson, SerializerOptions)
+                                      ?? Array.Empty<string>())
+            .ToHashSet(StringComparer.Ordinal);
+        var allowedQueues = request.Queues
+            .Where(registeredQueues.Contains)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var allowedCapabilities = request.Capabilities
+            .Where(registeredCapabilities.Contains)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
         var activeAttempts = await connection.ExecuteScalarAsync<int>(new CommandDefinition(@"
             SELECT COUNT(*)
@@ -62,16 +81,22 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var serverAvailable = Math.Max(0, session.MaxConcurrency - activeAttempts);
         var reportedAvailable = Math.Max(0, request.AvailableSlots);
         var limit = Math.Min(Math.Min(serverAvailable, reportedAvailable), maxBatchSize);
-        if (limit == 0)
+        if (limit == 0 || allowedQueues.Length == 0 || allowedCapabilities.Length == 0)
         {
             await connection.ExecuteAsync(new CommandDefinition(@"
                 UPDATE Kj2_WorkerSessions
-                SET AvailableSlots = 0,
+                SET AvailableSlots = @AvailableSlots,
                     LastHeartbeatAt = clock_timestamp()
                 WHERE WorkerId = @WorkerId
                   AND SessionId = @SessionId
                   AND Epoch = @SessionEpoch;",
-                new { request.WorkerId, request.SessionId, request.SessionEpoch },
+                new
+                {
+                    AvailableSlots = limit == 0 ? 0 : serverAvailable,
+                    request.WorkerId,
+                    request.SessionId,
+                    request.SessionEpoch
+                },
                 transaction,
                 cancellationToken: cancellationToken));
             await transaction.CommitAsync(cancellationToken);
@@ -99,8 +124,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 Pending = (int)JobPhase.Pending,
                 Now = now,
-                Queues = request.Queues.Distinct(StringComparer.Ordinal).ToArray(),
-                Capabilities = request.Capabilities.Distinct(StringComparer.Ordinal).ToArray(),
+                Queues = allowedQueues,
+                Capabilities = allowedCapabilities,
                 CandidateLimit = Math.Min(checked(limit * 4), 4096)
             },
             transaction,
@@ -257,5 +282,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
             },
             transaction,
             cancellationToken: cancellationToken));
+    }
+
+    private sealed class ClaimSessionRow
+    {
+        public int MaxConcurrency { get; set; }
+        public WorkerSessionState State { get; set; }
+        public string QueuesJson { get; set; } = "[]";
+        public string CapabilitiesJson { get; set; } = "[]";
     }
 }
