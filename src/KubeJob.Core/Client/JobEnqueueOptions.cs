@@ -14,4 +14,26 @@ public sealed class JobEnqueueOptions
     public string? IdempotencyKey { get; init; }
 
     public string? ConcurrencyKey { get; init; }
+
+    /// <summary>
+    /// Maximum number of physical attempts for this logical job, including the first attempt.
+    /// </summary>
+    public int MaxAttempts { get; init; } = 1;
+
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
+
+    internal void Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(Queue);
+
+        if (MaxAttempts < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxAttempts), "MaxAttempts must be at least one.");
+        }
+
+        if (Timeout <= TimeSpan.Zero || Timeout > TimeSpan.FromDays(1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(Timeout), "Timeout must be between zero and one day.");
+        }
+    }
 }
