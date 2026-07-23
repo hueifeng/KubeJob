@@ -15,9 +15,15 @@ public sealed partial class InMemoryJobRuntimeStore
         {
             _runs.TryGetValue(request.RunId, out var run);
             _attempts.TryGetValue(request.AttemptId, out var attempt);
+            var sessionValid = TryGetSession(
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                out _);
             var now = DateTimeOffset.UtcNow;
 
-            if (run is null
+            if (!sessionValid
+                || run is null
                 || attempt is null
                 || attempt.Phase != JobAttemptPhase.Running
                 || attempt.LeaseExpiresAt <= now
@@ -33,7 +39,7 @@ public sealed partial class InMemoryJobRuntimeStore
                     false,
                     run?.Phase ?? JobPhase.Failed,
                     false,
-                    "attempt_or_fencing_token_mismatch"));
+                    "stale_session_attempt_expired_or_fencing_token_mismatch"));
             }
 
             attempt.CompletedAt = now;
