@@ -73,7 +73,8 @@ namespace KubeJob.Storage.PostgreSQL.Data
                 );
             ");
 
-            // V2 logical run / physical attempt schema.
+            // V2 logical run / physical attempt schema. CREATE + ALTER makes the
+            // initializer safe for both fresh databases and earlier V2 previews.
             conn.Execute(@"
                 CREATE TABLE IF NOT EXISTS Kj2_JobRuns (
                     Id VARCHAR(64) PRIMARY KEY,
@@ -91,6 +92,8 @@ namespace KubeJob.Storage.PostgreSQL.Data
                     TimeoutSeconds INTEGER NOT NULL,
                     IdempotencyKey VARCHAR(500),
                     ConcurrencyKey VARCHAR(500),
+                    ScheduleId VARCHAR(200),
+                    ScheduledFor TIMESTAMPTZ,
                     CurrentAttemptId VARCHAR(64),
                     CurrentWorkerId VARCHAR(200),
                     CurrentSessionId VARCHAR(64),
@@ -103,6 +106,11 @@ namespace KubeJob.Storage.PostgreSQL.Data
                     CONSTRAINT UQ_Kj2_JobRuns_Idempotency UNIQUE (IdempotencyKey)
                 );
 
+                ALTER TABLE Kj2_JobRuns
+                    ADD COLUMN IF NOT EXISTS ScheduleId VARCHAR(200);
+                ALTER TABLE Kj2_JobRuns
+                    ADD COLUMN IF NOT EXISTS ScheduledFor TIMESTAMPTZ;
+
                 CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_Claim
                     ON Kj2_JobRuns (Queue, Priority DESC, AvailableAt, CreatedAt)
                     WHERE Phase = 0 AND CancelRequested = FALSE;
@@ -110,6 +118,14 @@ namespace KubeJob.Storage.PostgreSQL.Data
                 CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_RunningConcurrency
                     ON Kj2_JobRuns (ConcurrencyKey)
                     WHERE Phase = 1 AND ConcurrencyKey IS NOT NULL;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS UQ_Kj2_JobRuns_ScheduleOccurrence
+                    ON Kj2_JobRuns (ScheduleId, ScheduledFor)
+                    WHERE ScheduleId IS NOT NULL AND ScheduledFor IS NOT NULL;
+
+                CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_ScheduleActive
+                    ON Kj2_JobRuns (ScheduleId, Phase)
+                    WHERE ScheduleId IS NOT NULL AND Phase IN (0, 1);
 
                 CREATE TABLE IF NOT EXISTS Kj2_JobAttempts (
                     Id VARCHAR(64) PRIMARY KEY,
@@ -163,6 +179,38 @@ namespace KubeJob.Storage.PostgreSQL.Data
                 CREATE INDEX IF NOT EXISTS IX_Kj2_WorkerSessions_Heartbeat
                     ON Kj2_WorkerSessions (LastHeartbeatAt)
                     WHERE State IN (0, 1);
+
+                CREATE TABLE IF NOT EXISTS Kj2_JobSchedules (
+                    Id VARCHAR(200) PRIMARY KEY,
+                    JobKey VARCHAR(300) NOT NULL,
+                    PayloadJson JSONB NOT NULL,
+                    CronExpression VARCHAR(200) NOT NULL,
+                    TimeZoneId VARCHAR(200) NOT NULL,
+                    Queue VARCHAR(100) NOT NULL,
+                    Priority INTEGER NOT NULL DEFAULT 0,
+                    MisfirePolicy INTEGER NOT NULL,
+                    ConcurrencyPolicy INTEGER NOT NULL,
+                    MaxAttempts INTEGER NOT NULL,
+                    TimeoutSeconds INTEGER NOT NULL,
+                    Enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    NextFireAt TIMESTAMPTZ NOT NULL,
+                    LastFireAt TIMESTAMPTZ,
+                    ClaimToken VARCHAR(64),
+                    ClaimUntil TIMESTAMPTZ,
+                    CreatedAt TIMESTAMPTZ NOT NULL,
+                    UpdatedAt TIMESTAMPTZ NOT NULL,
+                    Version BIGINT NOT NULL DEFAULT 0,
+                    CONSTRAINT CK_Kj2_JobSchedules_MaxAttempts CHECK (MaxAttempts >= 1),
+                    CONSTRAINT CK_Kj2_JobSchedules_Timeout CHECK (TimeoutSeconds >= 1)
+                );
+
+                CREATE INDEX IF NOT EXISTS IX_Kj2_JobSchedules_Due
+                    ON Kj2_JobSchedules (NextFireAt, Id)
+                    WHERE Enabled = TRUE;
+
+                CREATE INDEX IF NOT EXISTS IX_Kj2_JobSchedules_Claim
+                    ON Kj2_JobSchedules (ClaimUntil)
+                    WHERE ClaimToken IS NOT NULL;
 
                 CREATE TABLE IF NOT EXISTS Kj2_Outbox (
                     Id VARCHAR(64) PRIMARY KEY,
