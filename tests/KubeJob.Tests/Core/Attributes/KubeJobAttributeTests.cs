@@ -1,71 +1,39 @@
-using System;
-using System.Linq;
 using FluentAssertions;
 using KubeJob.Core.Attributes;
-using KubeJob.Core.Enums;
-using Xunit;
 
-namespace KubeJob.Tests.Core.Attributes
+namespace KubeJob.Tests.Core.Attributes;
+
+public sealed class KubeJobAttributeTests
 {
-    public class KubeJobAttributeTests
+    [Fact]
+    public void Constructor_sets_trimmed_stable_key()
     {
-        [Fact]
-        public void KubeJobAttribute_Constructor_ShouldSetNameAndDefaultValues()
-        {
-            // Arrange & Act
-            var attribute = new KubeJobAttribute("TestJob");
+        var attribute = new KubeJobAttribute("  mail.send  ");
 
-            // Assert
-            attribute.Name.Should().Be("TestJob");
-            attribute.Cron.Should().BeEmpty();
-            attribute.ExecuteModel.Should().Be(ExecuteModel.Standalone);
-            attribute.TotalShards.Should().Be(1);
-            attribute.TimeoutSeconds.Should().Be(300);
-            attribute.MaxRetries.Should().Be(0);
-        }
+        attribute.Key.Should().Be("mail.send");
+    }
 
-        [Fact]
-        public void NodeSelectorAttribute_Constructor_ShouldSetKeyAndValue()
-        {
-            // Arrange & Act
-            var attribute = new NodeSelectorAttribute("env", "prod");
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Constructor_rejects_empty_key(string key)
+    {
+        var act = () => new KubeJobAttribute(key);
 
-            // Assert
-            attribute.Key.Should().Be("env");
-            attribute.Value.Should().Be("prod");
-        }
+        act.Should().Throw<ArgumentException>();
+    }
 
-        [KubeJob("MyAnnotatedJob", Cron = "0 0 * * *", ExecuteModel = ExecuteModel.Broadcast, TotalShards = 5, TimeoutSeconds = 60, MaxRetries = 3)]
-        [NodeSelector("region", "us-east")]
-        [NodeSelector("tier", "backend")]
-        private class DummyJob
-        {
-        }
+    [KubeJob("report.generate")]
+    private sealed class DummyJob;
 
-        [Fact]
-        public void Reflection_ShouldReadAttributesCorrectly()
-        {
-            // Arrange
-            var type = typeof(DummyJob);
+    [Fact]
+    public void Reflection_reads_the_same_stable_key_used_by_the_generator()
+    {
+        var attribute = typeof(DummyJob)
+            .GetCustomAttributes(typeof(KubeJobAttribute), inherit: false)
+            .Cast<KubeJobAttribute>()
+            .Single();
 
-            // Act
-            var jobAttr = (KubeJobAttribute)Attribute.GetCustomAttribute(type, typeof(KubeJobAttribute))!;
-            var selectors = Attribute.GetCustomAttributes(type, typeof(NodeSelectorAttribute))
-                                     .Cast<NodeSelectorAttribute>()
-                                     .ToList();
-
-            // Assert
-            jobAttr.Should().NotBeNull();
-            jobAttr.Name.Should().Be("MyAnnotatedJob");
-            jobAttr.Cron.Should().Be("0 0 * * *");
-            jobAttr.ExecuteModel.Should().Be(ExecuteModel.Broadcast);
-            jobAttr.TotalShards.Should().Be(5);
-            jobAttr.TimeoutSeconds.Should().Be(60);
-            jobAttr.MaxRetries.Should().Be(3);
-
-            selectors.Should().HaveCount(2);
-            selectors.Should().Contain(s => s.Key == "region" && s.Value == "us-east");
-            selectors.Should().Contain(s => s.Key == "tier" && s.Value == "backend");
-        }
+        attribute.Key.Should().Be("report.generate");
     }
 }
