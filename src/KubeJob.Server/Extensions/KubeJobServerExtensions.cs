@@ -1,5 +1,6 @@
 using System;
 using KubeJob.Core.Client;
+using KubeJob.Core.Scheduling;
 using KubeJob.Server.Data;
 using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
@@ -37,9 +38,11 @@ namespace KubeJob.Server.Extensions
             services.TryAddSingleton<IJobClaimStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
             services.TryAddSingleton<IJobCompletionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
             services.TryAddSingleton<IJobQueryStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IJobScheduleStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
             services.TryAddSingleton<IOutboxStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
             services.TryAddSingleton<IWorkAvailableNotifier, PollingWorkAvailableNotifier>();
             services.TryAddSingleton<IJobClient, DefaultJobClient>();
+            services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
             services.AddOptions<JobRuntimeOptions>();
 
             if (options.LockConfigurator != null)
@@ -59,7 +62,8 @@ namespace KubeJob.Server.Extensions
             services.AddHostedService<NodeHealthService>();
             services.AddHostedService<HistoryCleanupService>();
 
-            // V2 reconcilers are bounded and do not require a leader process.
+            // V2 reconcilers are bounded and coordinate through store transactions.
+            services.AddHostedService<ScheduleReconcilerService>();
             services.AddHostedService<LeaseReaperService>();
             services.AddHostedService<OutboxPublisherService>();
 
