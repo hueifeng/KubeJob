@@ -13,6 +13,15 @@ public sealed partial class InMemoryJobRuntimeStore
 
         lock (_gate)
         {
+            var key = SessionKey(request.WorkerId, request.SessionId);
+            if (_sessions.TryGetValue(key, out var sameSession))
+            {
+                sameSession.State = WorkerSessionState.Ready;
+                sameSession.AvailableSlots = sameSession.MaxConcurrency;
+                sameSession.LastHeartbeatAt = DateTimeOffset.UtcNow;
+                return ValueTask.FromResult(sameSession);
+            }
+
             foreach (var existing in _sessions.Values.Where(x =>
                          string.Equals(x.WorkerId, request.WorkerId, StringComparison.Ordinal)
                          && x.State is WorkerSessionState.Ready or WorkerSessionState.Draining))
@@ -43,7 +52,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 State = WorkerSessionState.Ready
             };
 
-            _sessions[SessionKey(request.WorkerId, request.SessionId)] = session;
+            _sessions[key] = session;
             return ValueTask.FromResult(session);
         }
     }
@@ -224,7 +233,7 @@ public sealed partial class InMemoryJobRuntimeStore
                         false,
                         false,
                         null,
-                        "attempt_or_fencing_token_mismatch"));
+                        "attempt_expired_or_fencing_token_mismatch"));
                     continue;
                 }
 
