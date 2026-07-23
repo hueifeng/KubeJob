@@ -1,5 +1,0 @@
-<Project>
-  <ItemGroup Condition="'$(MSBuildProjectName)' == 'KubeJob.Tests'">
-    <ProjectReference Include="$(MSBuildThisFileDirectory)src\KubeJob.Transport.RabbitMQ\KubeJob.Transport.RabbitMQ.csproj" />
-  </ItemGroup>
-</Project>
