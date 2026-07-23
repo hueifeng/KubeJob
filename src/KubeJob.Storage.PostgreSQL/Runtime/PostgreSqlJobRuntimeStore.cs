@@ -13,6 +13,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     IJobClaimStore,
     IJobCompletionStore,
     IJobQueryStore,
+    IJobScheduleStore,
     IOutboxStore
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
