@@ -13,6 +13,12 @@ namespace KubeJob.Storage.PostgreSQL.Extensions
     {
         public static KubeJobServerOptions UsePostgreSql(this KubeJobServerOptions options, string connectionString = "")
         {
+            ArgumentNullException.ThrowIfNull(options);
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new ArgumentException("A PostgreSQL connection string is required.", nameof(connectionString));
+            }
+
             options.StorageConfigurator = services =>
             {
                 services.AddSingleton<IKubeJobRepository>(_ => new KubeJobRepository(connectionString));
@@ -25,6 +31,7 @@ namespace KubeJob.Storage.PostgreSQL.Extensions
                 services.AddSingleton<IJobClaimStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
                 services.AddSingleton<IJobCompletionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
                 services.AddSingleton<IJobQueryStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+                services.AddSingleton<IJobScheduleStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
                 services.AddSingleton<IOutboxStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
             };
 
