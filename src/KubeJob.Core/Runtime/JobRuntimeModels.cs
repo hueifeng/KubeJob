@@ -60,6 +60,8 @@ public sealed class JobRunRecord
     public int TimeoutSeconds { get; init; } = 300;
     public string? IdempotencyKey { get; init; }
     public string? ConcurrencyKey { get; init; }
+    public string? ScheduleId { get; init; }
+    public DateTimeOffset? ScheduledFor { get; init; }
     public string? CurrentAttemptId { get; set; }
     public string? CurrentWorkerId { get; set; }
     public string? CurrentSessionId { get; set; }
