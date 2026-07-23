@@ -1,10 +1,13 @@
 using System;
+using KubeJob.Core.Client;
 using KubeJob.Server.Data;
 using KubeJob.Server.Options;
+using KubeJob.Server.Runtime;
 using KubeJob.Server.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace KubeJob.Server.Extensions
 {
@@ -23,9 +26,21 @@ namespace KubeJob.Server.Extensions
             }
             else
             {
-                // Default fallback if not configured
                 services.AddSingleton<IKubeJobRepository, InMemoryKubeJobRepository>();
             }
+
+            // Runtime V2 is additive. Durable providers register these interfaces in
+            // StorageConfigurator; otherwise the reference in-memory state machine is used.
+            services.TryAddSingleton<InMemoryJobRuntimeStore>();
+            services.TryAddSingleton<IJobSubmissionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IJobClaimStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IJobCompletionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IJobQueryStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IOutboxStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+            services.TryAddSingleton<IWorkAvailableNotifier, PollingWorkAvailableNotifier>();
+            services.TryAddSingleton<IJobClient, DefaultJobClient>();
+            services.AddOptions<JobRuntimeOptions>();
 
             if (options.LockConfigurator != null)
             {
@@ -33,14 +48,20 @@ namespace KubeJob.Server.Extensions
             }
             else
             {
-                // Default fallback if not configured
                 services.AddSingleton<IKubeJobLockProvider, InMemoryLockProvider>();
             }
 
+            services.AddControllers();
+
+            // Legacy runtime remains enabled during the migration window.
             services.AddHostedService<CronSchedulerService>();
             services.AddHostedService<JobDispatcherService>();
             services.AddHostedService<NodeHealthService>();
             services.AddHostedService<HistoryCleanupService>();
+
+            // V2 reconcilers are bounded and do not require a leader process.
+            services.AddHostedService<LeaseReaperService>();
+            services.AddHostedService<OutboxPublisherService>();
 
             return services;
         }
@@ -57,8 +78,6 @@ namespace KubeJob.Server.Extensions
         public static void InitializeKubeJobDatabase(this IApplicationBuilder app)
         {
             using var scope = app.ApplicationServices.CreateScope();
-            // Use reflection or specific interface if you want an Initialize method for all storages
-            // Here we just look for DbInitializer if it's Postgres
             var init = scope.ServiceProvider.GetService<KubeJob.Server.Data.IStorageInitializer>();
             init?.Initialize();
         }
