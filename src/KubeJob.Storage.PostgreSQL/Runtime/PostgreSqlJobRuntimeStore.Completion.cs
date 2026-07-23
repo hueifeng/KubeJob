@@ -14,6 +14,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
+            "SELECT clock_timestamp();",
+            transaction: transaction,
+            cancellationToken: cancellationToken));
 
         var state = await connection.QuerySingleOrDefaultAsync<CompletionStateRow>(new CommandDefinition(@"
             SELECT
@@ -24,6 +28,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 attempt.SessionId,
                 attempt.SessionEpoch,
                 attempt.LeaseToken,
+                attempt.LeaseExpiresAt,
                 attempt.Phase AS AttemptPhase,
                 run.Phase AS RunPhase,
                 run.CurrentAttemptId,
@@ -40,20 +45,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken));
 
-        if (state is null || !MatchesFence(state, request))
+        if (state is null || !MatchesFence(state, request, now))
         {
             await transaction.RollbackAsync(cancellationToken);
             return new CompleteAttemptResponse(
                 false,
                 state?.RunPhase ?? JobPhase.Failed,
                 false,
-                "attempt_or_fencing_token_mismatch");
+                "attempt_expired_or_fencing_token_mismatch");
         }
-
-        var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
-            "SELECT clock_timestamp();",
-            transaction: transaction,
-            cancellationToken: cancellationToken));
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobAttempts
@@ -174,6 +174,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         int batchSize,
         CancellationToken cancellationToken)
     {
+        _ = now;
         if (batchSize <= 0)
         {
             return 0;
@@ -195,6 +196,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 attempt.SessionId,
                 attempt.SessionEpoch,
                 attempt.LeaseToken,
+                attempt.LeaseExpiresAt,
                 attempt.Phase AS AttemptPhase,
                 run.Phase AS RunPhase,
                 run.CurrentAttemptId,
@@ -297,9 +299,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     private static bool MatchesFence(
         CompletionStateRow state,
-        CompleteAttemptRequest request) =>
+        CompleteAttemptRequest request,
+        DateTimeOffset now) =>
         state.AttemptPhase == JobAttemptPhase.Running
         && state.RunPhase == JobPhase.Running
+        && state.LeaseExpiresAt > now
         && string.Equals(state.AttemptRunId, request.RunId, StringComparison.Ordinal)
         && state.AttemptNumber == request.AttemptNumber
         && string.Equals(state.WorkerId, request.WorkerId, StringComparison.Ordinal)
@@ -382,6 +386,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public string SessionId { get; set; } = string.Empty;
         public long SessionEpoch { get; set; }
         public string LeaseToken { get; set; } = string.Empty;
+        public DateTimeOffset LeaseExpiresAt { get; set; }
         public JobAttemptPhase AttemptPhase { get; set; }
         public JobPhase RunPhase { get; set; }
         public string? CurrentAttemptId { get; set; }
