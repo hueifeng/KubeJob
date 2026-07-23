@@ -25,8 +25,8 @@ public static class RabbitMqNotificationExtensions
 
     /// <summary>
     /// Adds queue-specific wake notifications to a remote HTTP worker. Call
-    /// AddKubeJobWorkerRuntime as usual; this decorator only accelerates empty
-    /// polling and does not change claim or acknowledgement semantics.
+    /// AddKubeJobWorker first; this decorator only accelerates empty polling
+    /// and does not change claim, lease, or acknowledgement semantics.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobWorkerNotifications(
         this IServiceCollection services,
