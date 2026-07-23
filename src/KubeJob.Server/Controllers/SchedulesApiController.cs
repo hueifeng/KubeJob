@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KubeJob.Core.Runtime;
+using KubeJob.Core.Scheduling;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Mvc;
 
