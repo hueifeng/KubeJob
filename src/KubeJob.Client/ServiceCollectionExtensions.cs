@@ -26,8 +26,8 @@ public static class ServiceCollectionExtensions
     private static Uri EnsureTrailingSlash(Uri endpoint)
     {
         var value = endpoint.AbsoluteUri;
-        return value.EndsWith('/', StringComparison.Ordinal)
+        return value.EndsWith("/", StringComparison.Ordinal)
             ? endpoint
-            : new Uri(value + '/', UriKind.Absolute);
+            : new Uri(value + "/", UriKind.Absolute);
     }
 }
