@@ -8,7 +8,6 @@ using KubeJob.Server.Extensions;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Xunit;
 
 namespace KubeJob.EndToEndTests;
 
@@ -62,7 +61,7 @@ public sealed class UnifiedRuntimeEndToEndTests
         builder.Services.AddLogging();
         builder.Services.AddKubeJobServer();
         builder.Services.UseInProcessKubeJobWorkerTransport();
-        builder.Services.AddKubeJobWorkerRuntime(options =>
+        builder.Services.AddKubeJobWorker(options =>
         {
             options.ServerEndpoint = "http://unused.local/";
             options.WorkerId = "unified-e2e-worker";
