@@ -5,6 +5,8 @@ using KubeJob.Server.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Authentication;
 
 namespace KubeJob.Server.Extensions
 {
@@ -14,6 +16,9 @@ namespace KubeJob.Server.Extensions
         {
             var options = new KubeJobServerOptions();
             configure?.Invoke(options);
+
+            services.AddSingleton(options);
+            services.AddSingleton<IOptions<KubeJobServerOptions>>(_ => Options.Create(options));
 
             services.AddSingleton<IServerIdentity, DefaultServerIdentity>();
 
@@ -37,10 +42,36 @@ namespace KubeJob.Server.Extensions
                 services.AddSingleton<IKubeJobLockProvider, InMemoryLockProvider>();
             }
 
-            services.AddHostedService<CronSchedulerService>();
-            services.AddHostedService<JobDispatcherService>();
-            services.AddHostedService<NodeHealthService>();
+            if (options.RuntimeMode == KubeJobRuntimeMode.LeaseV2)
+            {
+                if (options.RuntimeConfigurator is null)
+                    throw new InvalidOperationException("LeaseV2 requires a runtime storage configurator.");
+
+                options.RuntimeConfigurator(services);
+                services.AddOptions<KubeJobClientOptions>().Configure(value =>
+                {
+                    value.MaxPayloadBytes = options.ClientOptions.MaxPayloadBytes;
+                    value.PayloadJsonOptions = options.ClientOptions.PayloadJsonOptions;
+                });
+                services.AddSingleton<KubeJob.Core.Interfaces.IKubeJobClient, KubeJobClient>();
+                services.AddHostedService<LeaseReaperService>();
+                services.AddHostedService<RuntimeMaintenanceService>();
+                services.AddHostedService<TransactionalCronMaterializerService>();
+            }
+            else
+            {
+                services.AddHostedService<CronSchedulerService>();
+                services.AddHostedService<JobDispatcherService>();
+                services.AddHostedService<NodeHealthService>();
+            }
             services.AddHostedService<HistoryCleanupService>();
+
+            if (options.AuthenticationConfigurator is not null)
+            {
+                var authentication = services.AddAuthentication();
+                options.AuthenticationConfigurator(authentication);
+                services.AddAuthorization();
+            }
 
             return services;
         }

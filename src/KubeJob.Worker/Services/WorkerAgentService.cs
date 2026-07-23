@@ -175,7 +175,7 @@ namespace KubeJob.Worker.Services
                         Labels = _options.Labels,
                         CurrentLoad = _runningJobs.Count,
                         MaxCapacity = _options.MaxConcurrentJobs,
-                        RunningJobIds = _runningJobs.Keys.ToList()
+                        RunningJobIds = _runningJobs.Keys.Take(Math.Max(1, _options.MaxConcurrentJobs)).ToList()
                     };
 
                     var response = await _httpClient.PostAsJsonAsync("/api/kubejob/worker/heartbeat", req, stoppingToken);
@@ -208,8 +208,9 @@ namespace KubeJob.Worker.Services
                         var pollResult = await response.Content.ReadFromJsonAsync<PollJobsResponse>(cancellationToken: stoppingToken);
                         if (pollResult != null && pollResult.Jobs.Any())
                         {
-                            foreach (var run in pollResult.Jobs)
+                            foreach (var run in pollResult.Jobs.Take(Math.Max(0, _options.MaxConcurrentJobs - _runningJobs.Count)))
                             {
+                                if (_runningJobs.Count >= _options.MaxConcurrentJobs) break;
                                 if (!_runningJobs.ContainsKey(run.Id))
                                 {
                                     // Start job execution in background

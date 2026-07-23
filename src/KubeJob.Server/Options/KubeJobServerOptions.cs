@@ -9,6 +9,18 @@ namespace KubeJob.Server.Options
     /// </summary>
     public class KubeJobServerOptions
     {
+        /// <summary>Execution runtime. LegacyDispatcher remains the compatibility default.</summary>
+        public KubeJobRuntimeMode RuntimeMode { get; set; } = KubeJobRuntimeMode.LegacyDispatcher;
+
+        /// <summary>Registers the V2 runtime storage and signalling services.</summary>
+        public Action<IServiceCollection>? RuntimeConfigurator { get; set; }
+
+        /// <summary>V2 client limits. All payloads and control-plane responses remain bounded.</summary>
+        public KubeJobClientOptions ClientOptions { get; } = new();
+
+        /// <summary>Opt-in authentication hook. V2 is not production-ready until configured.</summary>
+        public Action<Microsoft.AspNetCore.Authentication.AuthenticationBuilder>? AuthenticationConfigurator { get; set; }
+
         /// <summary>
         /// Indicates if the server is using purely in-memory storage.
         /// </summary>
@@ -45,6 +57,14 @@ namespace KubeJob.Server.Options
                 };
             }
             
+            return this;
+        }
+
+        public KubeJobServerOptions UseLeaseV2(Action<IServiceCollection> runtimeConfigurator)
+        {
+            ArgumentNullException.ThrowIfNull(runtimeConfigurator);
+            RuntimeMode = KubeJobRuntimeMode.LeaseV2;
+            RuntimeConfigurator = runtimeConfigurator;
             return this;
         }
     }

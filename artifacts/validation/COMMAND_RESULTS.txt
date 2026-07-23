@@ -1,0 +1,30 @@
+KubeJob distributed-runtime-v2 validation attempt
+Date: 2026-07-23
+
+COMMAND: dotnet format KubeJob.sln --verify-no-changes
+bash: dotnet: command not found
+EXIT: 127
+
+COMMAND: dotnet build KubeJob.sln -c Release
+bash: dotnet: command not found
+EXIT: 127
+
+COMMAND: dotnet test KubeJob.sln -c Release
+bash: dotnet: command not found
+EXIT: 127
+
+COMMAND: KUBEJOB_RUN_POSTGRES_TESTS=1 dotnet test tests/KubeJob.Tests/KubeJob.Tests.csproj -c Release
+bash: dotnet: command not found
+EXIT: 127
+
+COMMAND: dotnet run -c Release --project benchmarks/KubeJob.Benchmarks/KubeJob.Benchmarks.csproj
+bash: dotnet: command not found
+EXIT: 127
+
+Environment checks:
+- dotnet SDK: missing
+- Docker: missing
+- psql/pg_isready: missing
+- gh CLI: missing
+
+No numeric benchmark, PostgreSQL, chaos, build, or test result is claimed.
