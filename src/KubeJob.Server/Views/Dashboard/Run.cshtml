@@ -1,0 +1,117 @@
+@using System.Text.Json
+@model DashboardRunDetailsViewModel
+@{
+    ViewData["Title"] = "Run Detail";
+    var run = Model.Run;
+    string payload;
+    try
+    {
+        using var document = JsonDocument.Parse(run.PayloadJson);
+        payload = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    }
+    catch
+    {
+        payload = run.PayloadJson;
+    }
+    var runBadge = run.Phase switch
+    {
+        JobPhase.Succeeded => "bg-success-subtle text-success",
+        JobPhase.Running => "bg-primary-subtle text-primary",
+        JobPhase.Pending => "bg-warning-subtle text-warning-emphasis",
+        JobPhase.Canceled => "bg-secondary-subtle text-secondary",
+        JobPhase.Dead => "bg-dark-subtle text-dark",
+        _ => "bg-danger-subtle text-danger"
+    };
+}
+
+<div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
+    <div>
+        <a asp-action="Runs" class="small text-decoration-none"><i class="fa-solid fa-arrow-left me-1"></i>Back to runs</a>
+        <h5 class="mb-1 mt-2 fw-bold mono">@run.Id</h5>
+        <div class="text-muted small">@run.JobKey on queue @run.Queue</div>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @runBadge fs-6">@run.Phase</span>
+        @if (run.Phase is JobPhase.Pending or JobPhase.Running)
+        {
+            <form asp-action="CancelRun" asp-route-id="@run.Id" method="post" onsubmit="return confirm('Request cancellation for this logical run?');">
+                <button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-ban me-1"></i>Cancel</button>
+            </form>
+        }
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-lg-8">
+        <div class="detail-card p-4 h-100">
+            <h6 class="fw-bold mb-3">Logical Run</h6>
+            <div class="row key-value">
+                <div class="col-md-4"><dt>Job key</dt><dd>@run.JobKey</dd></div>
+                <div class="col-md-4"><dt>Queue / priority</dt><dd>@run.Queue / @run.Priority</dd></div>
+                <div class="col-md-4"><dt>Attempts</dt><dd>@run.AttemptCount / @run.MaxAttempts</dd></div>
+                <div class="col-md-4"><dt>Created</dt><dd>@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")</dd></div>
+                <div class="col-md-4"><dt>Available</dt><dd>@run.AvailableAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")</dd></div>
+                <div class="col-md-4"><dt>Timeout</dt><dd>@run.TimeoutSeconds seconds</dd></div>
+                <div class="col-md-4"><dt>Started</dt><dd>@(run.StartedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "—")</dd></div>
+                <div class="col-md-4"><dt>Completed</dt><dd>@(run.CompletedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "—")</dd></div>
+                <div class="col-md-4"><dt>Current worker</dt><dd>@(run.CurrentWorkerId ?? "—")</dd></div>
+                <div class="col-md-6"><dt>Idempotency key</dt><dd class="mono">@(run.IdempotencyKey ?? "—")</dd></div>
+                <div class="col-md-6"><dt>Concurrency key</dt><dd class="mono">@(run.ConcurrencyKey ?? "—")</dd></div>
+                <div class="col-md-6"><dt>Schedule</dt><dd>@(run.ScheduleId ?? "—")</dd></div>
+                <div class="col-md-6"><dt>Scheduled for</dt><dd>@(run.ScheduledFor?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "—")</dd></div>
+            </div>
+            @if (run.FailureCode is not null)
+            {
+                <div class="alert alert-danger mb-0"><strong>@run.FailureCode</strong><div class="mt-1" style="white-space: pre-wrap">@run.FailureMessage</div></div>
+            }
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="detail-card p-4 h-100">
+            <h6 class="fw-bold mb-3">Payload</h6>
+            <div class="small text-muted mb-2">Payloads may contain sensitive application data. Access to the dashboard should be authenticated.</div>
+            <pre class="payload mb-0">@payload</pre>
+        </div>
+    </div>
+</div>
+
+<div class="section-header">
+    <h5 class="mb-1 fw-bold">Physical Attempts</h5>
+    <div class="small text-muted">Each retry or reassignment is a distinct Attempt. Lease credentials are never exposed.</div>
+</div>
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead><tr><th>#</th><th>Attempt</th><th>Worker session</th><th>Phase</th><th>Claimed / completed</th><th>Lease expiry</th><th>Failure</th></tr></thead>
+            <tbody>
+            @if (Model.Attempts.Count == 0)
+            {
+                <tr><td colspan="7" class="text-center text-muted py-5">No Attempt has claimed this Run yet.</td></tr>
+            }
+            else
+            {
+                @foreach (var attempt in Model.Attempts.OrderByDescending(item => item.AttemptNumber))
+                {
+                    var attemptBadge = attempt.Phase switch
+                    {
+                        JobAttemptPhase.Succeeded => "bg-success-subtle text-success",
+                        JobAttemptPhase.Running => "bg-primary-subtle text-primary",
+                        JobAttemptPhase.Canceled => "bg-secondary-subtle text-secondary",
+                        JobAttemptPhase.LeaseLost => "bg-warning-subtle text-warning-emphasis",
+                        _ => "bg-danger-subtle text-danger"
+                    };
+                    <tr>
+                        <td class="fw-bold">@attempt.AttemptNumber</td>
+                        <td class="mono small">@attempt.Id</td>
+                        <td><div class="fw-semibold">@attempt.WorkerId</div><div class="mono small text-muted">@attempt.SessionId / epoch @attempt.SessionEpoch</div></td>
+                        <td><span class="badge @attemptBadge">@attempt.Phase</span></td>
+                        <td class="small text-muted"><div>@attempt.ClaimedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div><div>@(attempt.CompletedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "—")</div></td>
+                        <td class="small @(attempt.Phase == JobAttemptPhase.Running && attempt.LeaseExpiresAt <= DateTimeOffset.UtcNow ? "text-danger" : "text-muted")">@attempt.LeaseExpiresAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                        <td>@if (attempt.FailureCode is null){<span class="text-muted">—</span>}else{<div class="text-danger fw-semibold small">@attempt.FailureCode</div><div class="small text-muted" style="white-space: pre-wrap">@attempt.FailureMessage</div>}</td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+</div>
