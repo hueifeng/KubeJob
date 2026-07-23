@@ -1,5 +1,7 @@
 using FluentAssertions;
 using KubeJob.Core.Attributes;
+using KubeJob.Core.Execution;
+using KubeJob.Core.Interfaces;
 
 namespace KubeJob.Tests.Core.Attributes;
 
@@ -23,8 +25,16 @@ public sealed class KubeJobAttributeTests
         act.Should().Throw<ArgumentException>();
     }
 
+    private sealed record DummyPayload(string Value);
+
     [KubeJob("report.generate")]
-    private sealed class DummyJob;
+    private sealed class DummyJob : IKubeJob<DummyPayload>
+    {
+        public ValueTask ExecuteAsync(
+            DummyPayload payload,
+            JobExecutionContext context,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
 
     [Fact]
     public void Reflection_reads_the_same_stable_key_used_by_the_generator()
