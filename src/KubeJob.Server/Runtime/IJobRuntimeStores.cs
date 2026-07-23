@@ -12,7 +12,9 @@ public sealed record SubmitJobCommand(
     string? IdempotencyKey,
     string? ConcurrencyKey,
     int MaxAttempts,
-    int TimeoutSeconds);
+    int TimeoutSeconds,
+    string? ScheduleId = null,
+    DateTimeOffset? ScheduledFor = null);
 
 public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
 
@@ -81,6 +83,47 @@ public interface IJobQueryStore
 
     ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(
         string runId,
+        CancellationToken cancellationToken);
+}
+
+public interface IJobScheduleStore
+{
+    ValueTask<JobScheduleRecord> UpsertAsync(
+        JobScheduleRecord schedule,
+        CancellationToken cancellationToken);
+
+    ValueTask<JobScheduleRecord?> GetAsync(
+        string scheduleId,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> SetEnabledAsync(
+        string scheduleId,
+        bool enabled,
+        DateTimeOffset? nextFireAt,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> DeleteAsync(
+        string scheduleId,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<ClaimedSchedule>> ClaimDueAsync(
+        DateTimeOffset now,
+        TimeSpan claimDuration,
+        int batchSize,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Atomically advances the schedule and optionally creates its logical run and outbox event.
+    /// Returns null when no run was created because the occurrence was skipped.
+    /// </summary>
+    ValueTask<JobRunRecord?> CommitFireAsync(
+        CommitScheduleFireCommand command,
+        CancellationToken cancellationToken);
+
+    ValueTask ReleaseClaimAsync(
+        string scheduleId,
+        string claimToken,
+        DateTimeOffset retryAt,
         CancellationToken cancellationToken);
 }
 
