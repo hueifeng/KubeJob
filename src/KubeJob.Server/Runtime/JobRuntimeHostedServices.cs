@@ -50,6 +50,7 @@ public sealed class OutboxPublisherService : BackgroundService
                 var now = DateTimeOffset.UtcNow;
                 var messages = await _store.ClaimPendingAsync(
                     now,
+                    _options.OutboxClaimDuration,
                     _options.OutboxBatchSize,
                     stoppingToken);
 
@@ -125,29 +126,35 @@ public sealed class LeaseReaperService : BackgroundService
         _options.Validate();
 
         using var timer = new PeriodicTimer(_options.LeaseReaperInterval);
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        try
         {
-            try
+            while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                var count = await _store.RequeueExpiredLeasesAsync(
-                    DateTimeOffset.UtcNow,
-                    _options.RetryDelay,
-                    _options.LeaseReaperBatchSize,
-                    stoppingToken);
-
-                if (count > 0)
+                try
                 {
-                    _logger.LogWarning("Reconciled {Count} expired KubeJob attempt leases", count);
+                    var count = await _store.RequeueExpiredLeasesAsync(
+                        DateTimeOffset.UtcNow,
+                        _options.RetryDelay,
+                        _options.LeaseReaperBatchSize,
+                        stoppingToken);
+
+                    if (count > 0)
+                    {
+                        _logger.LogWarning("Reconciled {Count} expired KubeJob attempt leases", count);
+                    }
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "KubeJob lease reconciliation iteration failed");
                 }
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "KubeJob lease reconciliation iteration failed");
-            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 }
