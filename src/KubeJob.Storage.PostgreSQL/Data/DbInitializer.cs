@@ -136,6 +136,10 @@ namespace KubeJob.Storage.PostgreSQL.Data
                 CREATE INDEX IF NOT EXISTS IX_Kj2_JobAttempts_Run
                     ON Kj2_JobAttempts (RunId, AttemptNumber);
 
+                CREATE INDEX IF NOT EXISTS IX_Kj2_JobAttempts_WorkerActive
+                    ON Kj2_JobAttempts (WorkerId, SessionId, SessionEpoch)
+                    WHERE Phase = 0;
+
                 CREATE TABLE IF NOT EXISTS Kj2_WorkerSessions (
                     WorkerId VARCHAR(200) NOT NULL,
                     SessionId VARCHAR(64) NOT NULL,
@@ -151,7 +155,9 @@ namespace KubeJob.Storage.PostgreSQL.Data
                     StartedAt TIMESTAMPTZ NOT NULL,
                     LastHeartbeatAt TIMESTAMPTZ NOT NULL,
                     PRIMARY KEY (WorkerId, SessionId),
-                    CONSTRAINT UQ_Kj2_WorkerSessions_Epoch UNIQUE (WorkerId, Epoch)
+                    CONSTRAINT UQ_Kj2_WorkerSessions_Epoch UNIQUE (WorkerId, Epoch),
+                    CONSTRAINT CK_Kj2_WorkerSessions_Capacity CHECK (MaxConcurrency >= 1),
+                    CONSTRAINT CK_Kj2_WorkerSessions_Slots CHECK (AvailableSlots >= 0)
                 );
 
                 CREATE INDEX IF NOT EXISTS IX_Kj2_WorkerSessions_Heartbeat
@@ -173,7 +179,7 @@ namespace KubeJob.Storage.PostgreSQL.Data
 
                 CREATE INDEX IF NOT EXISTS IX_Kj2_Outbox_Pending
                     ON Kj2_Outbox (AvailableAt, CreatedAt)
-                    WHERE State IN (0, 3);
+                    WHERE State IN (0, 1, 3);
             ");
         }
     }
