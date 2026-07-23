@@ -78,6 +78,6 @@ public sealed class PostgreSqlRuntimeV2Tests : IAsyncLifetime
     private static void SkipUnlessEnabled()
     {
         if (Environment.GetEnvironmentVariable("KUBEJOB_RUN_POSTGRES_TESTS") != "1")
-            throw new SkipException("Set KUBEJOB_RUN_POSTGRES_TESTS=1 to run real PostgreSQL integration tests.");
+            throw new SkipException();
     }
 }
