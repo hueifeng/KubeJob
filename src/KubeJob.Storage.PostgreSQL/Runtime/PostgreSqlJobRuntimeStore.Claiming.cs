@@ -13,8 +13,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
         int maxBatchSize,
         CancellationToken cancellationToken)
     {
-        var limit = Math.Min(Math.Max(request.AvailableSlots, 0), Math.Max(maxBatchSize, 0));
-        if (limit == 0 || request.Queues.Count == 0 || request.Capabilities.Count == 0)
+        if (leaseDuration <= TimeSpan.Zero
+            || maxBatchSize <= 0
+            || request.AvailableSlots <= 0
+            || request.Queues.Count == 0
+            || request.Capabilities.Count == 0)
         {
             return Array.Empty<ClaimedJob>();
         }
@@ -22,28 +25,56 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        var accepted = await connection.ExecuteAsync(new CommandDefinition(@"
-            UPDATE Kj2_WorkerSessions
-            SET AvailableSlots = LEAST(GREATEST(@AvailableSlots, 0), MaxConcurrency),
-                LastHeartbeatAt = clock_timestamp()
+        var session = await connection.QuerySingleOrDefaultAsync<SessionCapacityRow>(new CommandDefinition(@"
+            SELECT MaxConcurrency, State
+            FROM Kj2_WorkerSessions
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
               AND Epoch = @SessionEpoch
-              AND State = @Ready;",
+            FOR UPDATE;",
+            new { request.WorkerId, request.SessionId, request.SessionEpoch },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (session is null || session.State != WorkerSessionState.Ready)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return Array.Empty<ClaimedJob>();
+        }
+
+        var activeAttempts = await connection.ExecuteScalarAsync<int>(new CommandDefinition(@"
+            SELECT COUNT(*)
+            FROM Kj2_JobAttempts
+            WHERE WorkerId = @WorkerId
+              AND SessionId = @SessionId
+              AND SessionEpoch = @SessionEpoch
+              AND Phase = @Running;",
             new
             {
-                request.AvailableSlots,
                 request.WorkerId,
                 request.SessionId,
                 request.SessionEpoch,
-                Ready = (int)WorkerSessionState.Ready
+                Running = (int)JobAttemptPhase.Running
             },
             transaction,
             cancellationToken: cancellationToken));
 
-        if (accepted == 0)
+        var serverAvailable = Math.Max(0, session.MaxConcurrency - activeAttempts);
+        var reportedAvailable = Math.Max(0, request.AvailableSlots);
+        var limit = Math.Min(Math.Min(serverAvailable, reportedAvailable), maxBatchSize);
+        if (limit == 0)
         {
-            await transaction.RollbackAsync(cancellationToken);
+            await connection.ExecuteAsync(new CommandDefinition(@"
+                UPDATE Kj2_WorkerSessions
+                SET AvailableSlots = 0,
+                    LastHeartbeatAt = clock_timestamp()
+                WHERE WorkerId = @WorkerId
+                  AND SessionId = @SessionId
+                  AND Epoch = @SessionEpoch;",
+                new { request.WorkerId, request.SessionId, request.SessionEpoch },
+                transaction,
+                cancellationToken: cancellationToken));
+            await transaction.CommitAsync(cancellationToken);
             return Array.Empty<ClaimedJob>();
         }
 
@@ -68,9 +99,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 Pending = (int)JobPhase.Pending,
                 Now = now,
-                Queues = request.Queues.ToArray(),
-                Capabilities = request.Capabilities.ToArray(),
-                CandidateLimit = Math.Min(limit * 4, 4096)
+                Queues = request.Queues.Distinct(StringComparer.Ordinal).ToArray(),
+                Capabilities = request.Capabilities.Distinct(StringComparer.Ordinal).ToArray(),
+                CandidateLimit = Math.Min(checked(limit * 4), 4096)
             },
             transaction,
             cancellationToken: cancellationToken))).ToArray();
@@ -168,14 +199,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_WorkerSessions
-            SET AvailableSlots = GREATEST(0, @ReportedSlots - @ClaimedCount),
+            SET AvailableSlots = GREATEST(0, @ServerAvailable - @ClaimedCount),
                 LastHeartbeatAt = @Now
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
               AND Epoch = @SessionEpoch;",
             new
             {
-                ReportedSlots = request.AvailableSlots,
+                ServerAvailable = serverAvailable,
                 ClaimedCount = claimed.Count,
                 Now = now,
                 request.WorkerId,
