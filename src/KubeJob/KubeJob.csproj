@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\KubeJob.Client\KubeJob.Client.csproj" />
     <ProjectReference Include="..\KubeJob.Server\KubeJob.Server.csproj" />
     <ProjectReference Include="..\KubeJob.Worker\KubeJob.Worker.csproj" />
   </ItemGroup>
@@ -9,7 +10,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>KubeJob Meta-Package. Includes both KubeJob.Server and KubeJob.Worker for running a unified application.</Description>
+    <Description>KubeJob Meta-Package. Includes client, control plane, and worker hosting for unified applications.</Description>
   </PropertyGroup>
 
 </Project>
