@@ -16,6 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\KubeJob.Client\KubeJob.Client.csproj" />
     <ProjectReference Include="..\..\src\KubeJob.Core\KubeJob.Core.csproj" />
     <ProjectReference Include="..\..\src\KubeJob.Server\KubeJob.Server.csproj" />
   </ItemGroup>
