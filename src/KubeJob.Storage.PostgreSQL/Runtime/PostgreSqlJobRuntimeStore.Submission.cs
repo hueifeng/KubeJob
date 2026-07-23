@@ -33,10 +33,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
-            "SELECT clock_timestamp();",
-            transaction: transaction,
-            cancellationToken: cancellationToken));
+        var now = await GetDatabaseNowAsync(connection, transaction, cancellationToken);
         var run = new JobRunRecord
         {
             Id = NewId(),
