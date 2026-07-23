@@ -2,7 +2,6 @@ using Dapper;
 using FluentAssertions;
 using Npgsql;
 using Testcontainers.PostgreSql;
-using Xunit.Sdk;
 
 namespace KubeJob.Tests.DistributedRuntime;
 
@@ -33,10 +32,10 @@ public sealed class PostgreSqlRuntimeV2Tests : IAsyncLifetime
             await _postgres.DisposeAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Concurrent_claimers_only_transition_a_run_once()
     {
-        SkipUnlessEnabled();
+        Skip.IfNot(IsEnabled);
         await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
         var table = "runs_" + Guid.NewGuid().ToString("N");
@@ -60,10 +59,10 @@ public sealed class PostgreSqlRuntimeV2Tests : IAsyncLifetime
         (await connection.ExecuteScalarAsync<long>($"SELECT token FROM {table} WHERE id=1")).Should().BeOneOf(101, 202);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Stale_attempt_cannot_complete_after_fencing()
     {
-        SkipUnlessEnabled();
+        Skip.IfNot(IsEnabled);
         await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
         var table = "attempts_" + Guid.NewGuid().ToString("N");
@@ -75,9 +74,5 @@ public sealed class PostgreSqlRuntimeV2Tests : IAsyncLifetime
         (await connection.ExecuteScalarAsync<int>($"SELECT status FROM {table} WHERE run_id=1")).Should().Be(2);
     }
 
-    private static void SkipUnlessEnabled()
-    {
-        if (Environment.GetEnvironmentVariable("KUBEJOB_RUN_POSTGRES_TESTS") != "1")
-            throw new SkipException();
-    }
+    private static bool IsEnabled => Environment.GetEnvironmentVariable("KUBEJOB_RUN_POSTGRES_TESTS") == "1";
 }
