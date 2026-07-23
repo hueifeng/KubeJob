@@ -17,6 +17,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 && _idempotency.TryGetValue(command.IdempotencyKey, out var existingId)
                 && _runs.TryGetValue(existingId, out var existing))
             {
+                JobSubmissionIdentity.EnsureCompatible(existing, command);
                 return ValueTask.FromResult(new SubmitJobResult(existing, Existing: true));
             }
 
@@ -28,7 +29,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 PayloadJson = command.PayloadJson,
                 Queue = command.Queue,
                 Priority = command.Priority,
-                AvailableAt = command.AvailableAt,
+                AvailableAt = command.AvailableAt.ToUniversalTime(),
                 CreatedAt = now,
                 IdempotencyKey = command.IdempotencyKey,
                 ConcurrencyKey = command.ConcurrencyKey,
