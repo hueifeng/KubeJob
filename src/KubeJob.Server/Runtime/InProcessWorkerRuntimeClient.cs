@@ -33,9 +33,10 @@ public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
     {
         var session = await _sessions.RegisterAsync(request, cancellationToken);
         return new RegisterWorkerSessionResponse(
+            session.WorkerId,
+            session.SessionId,
             session.Epoch,
-            DateTimeOffset.UtcNow,
-            _options.LeaseDuration);
+            session.StartedAt);
     }
 
     public ValueTask<bool> HeartbeatAsync(
