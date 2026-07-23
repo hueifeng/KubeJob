@@ -20,7 +20,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken: cancellationToken));
 
         var existing = await connection.QuerySingleOrDefaultAsync<ExistingSessionRow>(new CommandDefinition(@"
-            SELECT Epoch, StartedAt
+            SELECT Epoch, State, StartedAt
             FROM Kj2_WorkerSessions
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
@@ -36,13 +36,18 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         if (existing is not null)
         {
+            if (existing.State is WorkerSessionState.Closed or WorkerSessionState.Stale)
+            {
+                throw new InvalidOperationException("A closed or stale worker session cannot be reopened.");
+            }
+
             await connection.ExecuteAsync(new CommandDefinition(@"
                 UPDATE Kj2_WorkerSessions
                 SET BuildId = @BuildId,
                     HostName = @HostName,
                     State = @Ready,
                     MaxConcurrency = @MaxConcurrency,
-                    AvailableSlots = @MaxConcurrency,
+                    AvailableSlots = LEAST(AvailableSlots, @MaxConcurrency),
                     Queues = CAST(@Queues AS jsonb),
                     Capabilities = CAST(@Capabilities AS jsonb),
                     Labels = CAST(@Labels AS jsonb),
@@ -131,27 +136,65 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-        var affected = await connection.ExecuteAsync(new CommandDefinition(@"
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var session = await connection.QuerySingleOrDefaultAsync<SessionCapacityRow>(new CommandDefinition(@"
+            SELECT MaxConcurrency, State
+            FROM Kj2_WorkerSessions
+            WHERE WorkerId = @WorkerId
+              AND SessionId = @SessionId
+              AND Epoch = @SessionEpoch
+            FOR UPDATE;",
+            new { request.WorkerId, request.SessionId, request.SessionEpoch },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (session is null || session.State is WorkerSessionState.Closed or WorkerSessionState.Stale)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        var activeAttempts = await connection.ExecuteScalarAsync<int>(new CommandDefinition(@"
+            SELECT COUNT(*)
+            FROM Kj2_JobAttempts
+            WHERE WorkerId = @WorkerId
+              AND SessionId = @SessionId
+              AND SessionEpoch = @SessionEpoch
+              AND Phase = @Running;",
+            new
+            {
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                Running = (int)JobAttemptPhase.Running
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        var serverAvailable = Math.Max(0, session.MaxConcurrency - activeAttempts);
+        var availableSlots = Math.Min(Math.Max(request.AvailableSlots, 0), serverAvailable);
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_WorkerSessions
-            SET AvailableSlots = LEAST(GREATEST(@AvailableSlots, 0), MaxConcurrency),
+            SET AvailableSlots = @AvailableSlots,
                 State = @State,
                 LastHeartbeatAt = clock_timestamp()
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
-              AND Epoch = @SessionEpoch
-              AND State NOT IN (@Closed, @Stale);",
+              AND Epoch = @SessionEpoch;",
             new
             {
-                request.AvailableSlots,
+                AvailableSlots = availableSlots,
                 State = (int)request.State,
                 request.WorkerId,
                 request.SessionId,
-                request.SessionEpoch,
-                Closed = (int)WorkerSessionState.Closed,
-                Stale = (int)WorkerSessionState.Stale
+                request.SessionEpoch
             },
+            transaction,
             cancellationToken: cancellationToken));
-        return affected > 0;
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async ValueTask<bool> CloseAsync(
@@ -169,14 +212,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
               AND Epoch = @SessionEpoch
-              AND State <> @Stale;",
+              AND State IN (@Ready, @Draining);",
             new
             {
                 WorkerId = workerId,
                 SessionId = sessionId,
                 SessionEpoch = sessionEpoch,
                 Closed = (int)WorkerSessionState.Closed,
-                Stale = (int)WorkerSessionState.Stale
+                Ready = (int)WorkerSessionState.Ready,
+                Draining = (int)WorkerSessionState.Draining
             },
             cancellationToken: cancellationToken));
         return affected > 0;
@@ -206,6 +250,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
     private sealed class ExistingSessionRow
     {
         public long Epoch { get; set; }
+        public WorkerSessionState State { get; set; }
         public DateTimeOffset StartedAt { get; set; }
+    }
+
+    private sealed class SessionCapacityRow
+    {
+        public int MaxConcurrency { get; set; }
+        public WorkerSessionState State { get; set; }
     }
 }
