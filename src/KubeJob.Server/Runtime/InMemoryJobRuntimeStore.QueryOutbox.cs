@@ -35,14 +35,23 @@ public sealed partial class InMemoryJobRuntimeStore
 
     public ValueTask<IReadOnlyList<OutboxMessageRecord>> ClaimPendingAsync(
         DateTimeOffset now,
+        TimeSpan claimDuration,
         int batchSize,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (claimDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(claimDuration));
+        }
+
         lock (_gate)
         {
             var messages = _outbox.Values
-                .Where(message => message.State is OutboxDeliveryState.Pending or OutboxDeliveryState.Failed)
+                .Where(message => message.State is
+                    OutboxDeliveryState.Pending or
+                    OutboxDeliveryState.Failed or
+                    OutboxDeliveryState.Publishing)
                 .Where(message => message.AvailableAt <= now)
                 .OrderBy(message => message.AvailableAt)
                 .ThenBy(message => message.CreatedAt)
@@ -52,6 +61,7 @@ public sealed partial class InMemoryJobRuntimeStore
             foreach (var message in messages)
             {
                 message.State = OutboxDeliveryState.Publishing;
+                message.AvailableAt = now.Add(claimDuration);
                 message.PublishAttempts++;
             }
 
