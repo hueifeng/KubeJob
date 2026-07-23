@@ -15,7 +15,7 @@ public sealed class JobAttemptSnapshotsController : ControllerBase
         _queries = queries;
     }
 
-    [HttpGet(Order = -100)]
+    [HttpGet]
     public async Task<ActionResult<IReadOnlyList<JobAttemptSnapshot>>> Get(
         string runId,
         CancellationToken cancellationToken)
