@@ -116,17 +116,18 @@ namespace KubeJob.Storage.PostgreSQL.Data
             }
         }
 
-        public async Task<List<JobRun>> GetPendingRunsAsync()
+        public async Task<List<JobRun>> GetPendingRunsAsync(int limit = 100)
         {
             using var conn = CreateConnection();
-            return (await conn.QueryAsync<JobRun>("SELECT * FROM Kj_JobRuns WHERE Status = 0")).ToList();
+            const string sql = @"SELECT * FROM Kj_JobRuns
+                WHERE Status = @Status ORDER BY CreatedAt, Id LIMIT @Limit";
+            return (await conn.QueryAsync<JobRun>(sql, new { Status = (int)JobStatus.Pending, Limit = Math.Clamp(limit, 1, 1000) })).ToList();
         }
 
         public async Task<bool> HasActiveRunsForSpecAsync(string specId)
         {
             using var conn = CreateConnection();
-            // Status 0=Pending, 1=Running
-            var count = await conn.ExecuteScalarAsync<int>("SELECT COUNT(1) FROM Kj_JobRuns WHERE SpecId = @SpecId AND Status IN (0, 1) LIMIT 1", new { SpecId = specId });
+            var count = await conn.ExecuteScalarAsync<int>("SELECT 1 FROM Kj_JobRuns WHERE SpecId = @SpecId AND Status IN @Statuses LIMIT 1", new { SpecId = specId, Statuses = new[] { (int)JobStatus.Pending, (int)JobStatus.Assigned, (int)JobStatus.Running } });
             return count > 0;
         }
 
@@ -135,10 +136,10 @@ namespace KubeJob.Storage.PostgreSQL.Data
             using var conn = CreateConnection();
             var sql = @"
                 UPDATE Kj_JobRuns 
-                SET Status = 3, ResultMsg = @Reason, EndTime = @Now
-                WHERE SpecId = @SpecId AND Status IN (0, 1)
+                SET Status = @Canceled, ResultMsg = @Reason, EndTime = @Now, RowVersion = @NewRowVersion
+                WHERE SpecId = @SpecId AND Status IN @ActiveStatuses
             ";
-            await conn.ExecuteAsync(sql, new { SpecId = specId, Reason = reason, Now = DateTime.UtcNow });
+            await conn.ExecuteAsync(sql, new { SpecId = specId, Reason = reason, Now = DateTime.UtcNow, Canceled = (int)JobStatus.Canceled, ActiveStatuses = new[] { (int)JobStatus.Pending, (int)JobStatus.Assigned, (int)JobStatus.Running }, NewRowVersion = Guid.NewGuid().ToString() });
         }
 
         public async Task<bool> AssignRunAsync(string runId, string targetNodeId, string oldRowVersion)
@@ -147,34 +148,38 @@ namespace KubeJob.Storage.PostgreSQL.Data
             var newRowVersion = Guid.NewGuid().ToString();
             var sql = @"
                 UPDATE Kj_JobRuns 
-                SET TargetNodeId = @TargetNodeId, Status = 1, RowVersion = @NewRowVersion 
-                WHERE Id = @Id AND Status = 0 AND RowVersion = @OldRowVersion
+                SET TargetNodeId = @TargetNodeId, Status = @Assigned, RowVersion = @NewRowVersion 
+                WHERE Id = @Id AND Status = @Pending AND RowVersion = @OldRowVersion
             ";
-            var affected = await conn.ExecuteAsync(sql, new { TargetNodeId = targetNodeId, NewRowVersion = newRowVersion, Id = runId, OldRowVersion = oldRowVersion });
+            var affected = await conn.ExecuteAsync(sql, new { TargetNodeId = targetNodeId, NewRowVersion = newRowVersion, Id = runId, OldRowVersion = oldRowVersion, Assigned = (int)JobStatus.Assigned, Pending = (int)JobStatus.Pending });
             return affected > 0;
         }
 
-        public async Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId)
+        public async Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId, int limit = 10)
         {
             using var conn = CreateConnection();
             var sql = @"
                 SELECT r.*, s.JobType, s.TimeoutSeconds
                 FROM Kj_JobRuns r
                 JOIN Kj_JobSpecs s ON r.SpecId = s.Id
-                WHERE r.Status = 1 AND r.TargetNodeId = @NodeId
+                WHERE r.Status = @Assigned AND r.TargetNodeId = @NodeId
+                ORDER BY r.CreatedAt, r.Id
+                LIMIT @Limit
             ";
-            return (await conn.QueryAsync<JobRun>(sql, new { NodeId = nodeId })).ToList();
+            return (await conn.QueryAsync<JobRun>(sql, new { NodeId = nodeId, Assigned = (int)JobStatus.Assigned, Limit = Math.Clamp(limit, 1, 1000) })).ToList();
         }
 
-        public async Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null)
+        public async Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null, string? workerId = null, string? rowVersion = null)
         {
             using var conn = CreateConnection();
             var sql = "UPDATE Kj_JobRuns SET Status = @Status, ResultMsg = @ResultMsg";
             if (startTime.HasValue) sql += ", StartTime = @StartTime";
             if (endTime.HasValue) sql += ", EndTime = @EndTime";
             sql += " WHERE Id = @Id";
+            if (!string.IsNullOrWhiteSpace(workerId) && !string.IsNullOrWhiteSpace(rowVersion))
+                sql += " AND TargetNodeId = @WorkerId AND RowVersion = @RowVersion AND Status IN @ClaimedStatuses";
             
-            await conn.ExecuteAsync(sql, new { Id = runId, Status = (int)status, ResultMsg = resultMsg, StartTime = startTime, EndTime = endTime });
+            await conn.ExecuteAsync(sql, new { Id = runId, Status = (int)status, ResultMsg = resultMsg, StartTime = startTime, EndTime = endTime, WorkerId = workerId, RowVersion = rowVersion, ClaimedStatuses = new[] { (int)JobStatus.Assigned, (int)JobStatus.Running } });
         }
         
         public async Task<List<JobRun>> GetRecentRunsAsync(int limit = 50)
@@ -229,16 +234,16 @@ namespace KubeJob.Storage.PostgreSQL.Data
                         ROW_NUMBER() OVER(PARTITION BY r.SpecId, r.Status ORDER BY r.CreatedAt DESC) as rn
                     FROM Kj_JobRuns r
                     JOIN Kj_JobSpecs s ON r.SpecId = s.Id
-                    WHERE r.Status IN (2, 3) -- 2 = Succeeded, 3 = Failed
+                    WHERE r.Status IN @TerminalStatuses
                 )
                 DELETE FROM Kj_JobRuns
                 WHERE Id IN (
                     SELECT Id FROM RankedRuns 
-                    WHERE (Status = 2 AND rn > SuccessfulJobsHistoryLimit)
-                       OR (Status = 3 AND rn > FailedJobsHistoryLimit)
+                    WHERE (Status = @Succeeded AND rn > SuccessfulJobsHistoryLimit)
+                       OR (Status = @Failed AND rn > FailedJobsHistoryLimit)
                 );
             ";
-            return await conn.ExecuteAsync(sql);
+            return await conn.ExecuteAsync(sql, new { TerminalStatuses = new[] { (int)JobStatus.Succeeded, (int)JobStatus.Failed }, Succeeded = (int)JobStatus.Succeeded, Failed = (int)JobStatus.Failed });
         }
 
         // WorkerNode Operations
@@ -284,10 +289,10 @@ namespace KubeJob.Storage.PostgreSQL.Data
             using var conn = CreateConnection();
             var sql = @"
                 UPDATE Kj_JobRuns 
-                SET Status = 0, TargetNodeId = NULL, RowVersion = @NewRowVersion
-                WHERE Status IN (1, 2) AND TargetNodeId IN (SELECT Id FROM Kj_WorkerNodes WHERE IsOffline = true)
+                SET Status = @Pending, TargetNodeId = NULL, RowVersion = @NewRowVersion
+                WHERE Status IN @AssignedStatuses AND TargetNodeId IN (SELECT Id FROM Kj_WorkerNodes WHERE IsOffline = true)
             ";
-            await conn.ExecuteAsync(sql, new { NewRowVersion = Guid.NewGuid().ToString() });
+            await conn.ExecuteAsync(sql, new { NewRowVersion = Guid.NewGuid().ToString(), Pending = (int)JobStatus.Pending, AssignedStatuses = new[] { (int)JobStatus.Assigned, (int)JobStatus.Running } });
         }
 
         public async Task DeleteNodeAsync(string nodeId)

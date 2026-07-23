@@ -84,12 +84,13 @@ namespace KubeJob.Server.Controllers
         }
 
         [HttpGet("poll")]
-        public async Task<IActionResult> Poll([FromQuery] string workerId)
+        public async Task<IActionResult> Poll([FromQuery] string workerId, [FromQuery] int maxJobs = 10)
         {
+            maxJobs = Math.Clamp(maxJobs, 1, 1000);
             // Simple long-polling simulation (wait up to 5 seconds if no jobs)
             for (int i = 0; i < 5; i++)
             {
-                var runs = await _repository.GetAssignedRunsForNodeAsync(workerId);
+                var runs = await _repository.GetAssignedRunsForNodeAsync(workerId, maxJobs);
                 if (runs.Count > 0)
                 {
                     return Ok(new PollJobsResponse { Jobs = runs });
@@ -106,13 +107,13 @@ namespace KubeJob.Server.Controllers
             DateTime? startTime = request.Status == KubeJob.Core.Enums.JobStatus.Running ? DateTime.UtcNow : null;
             DateTime? endTime = (request.Status == KubeJob.Core.Enums.JobStatus.Succeeded || request.Status == KubeJob.Core.Enums.JobStatus.Failed) ? DateTime.UtcNow : null;
 
-            await _repository.MarkRunStatusAsync(request.RunId, request.Status, request.ResultMsg, startTime, endTime);
+            await _repository.MarkRunStatusAsync(request.RunId, request.Status, request.ResultMsg, startTime, endTime, request.WorkerId, request.RowVersion);
 
             // Handle Retry Logic if failed
             if (request.Status == KubeJob.Core.Enums.JobStatus.Failed)
             {
                 var failedRun = await _repository.GetJobRunAsync(request.RunId);
-                if (failedRun != null)
+                if (failedRun != null && failedRun.Status == KubeJob.Core.Enums.JobStatus.Failed)
                 {
                     var spec = await _repository.GetSpecAsync(failedRun.SpecId);
                     if (spec != null && spec.MaxRetries > 0)

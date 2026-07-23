@@ -26,6 +26,8 @@ namespace KubeJob.Core.Dtos
         public string RunId { get; set; } = string.Empty;
         public JobStatus Status { get; set; }
         public string ResultMsg { get; set; } = string.Empty;
+        /// <summary>Assignment fencing token returned by the poll operation.</summary>
+        public string? RowVersion { get; set; }
     }
 
     public class RegisterJobsRequest

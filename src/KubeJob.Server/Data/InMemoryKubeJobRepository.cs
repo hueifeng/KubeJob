@@ -76,26 +76,27 @@ namespace KubeJob.Server.Data
             return Task.FromResult(_runs.TryAdd(run.Id, run));
         }
 
-        public Task<List<JobRun>> GetPendingRunsAsync()
+        public Task<List<JobRun>> GetPendingRunsAsync(int limit = 100)
         {
-            var pending = _runs.Values.Where(r => r.Status == JobStatus.Pending).ToList();
+            var pending = _runs.Values.Where(r => r.Status == JobStatus.Pending).OrderBy(r => r.CreatedAt).ThenBy(r => r.Id).Take(Math.Clamp(limit, 1, 1000)).ToList();
             return Task.FromResult(pending);
         }
 
         public Task<bool> HasActiveRunsForSpecAsync(string specId)
         {
-            var hasActive = _runs.Values.Any(r => r.SpecId == specId && (r.Status == JobStatus.Pending || r.Status == JobStatus.Running));
+            var hasActive = _runs.Values.Any(r => r.SpecId == specId && (r.Status == JobStatus.Pending || r.Status == JobStatus.Assigned || r.Status == JobStatus.Running));
             return Task.FromResult(hasActive);
         }
 
         public Task CancelActiveRunsForSpecAsync(string specId, string reason)
         {
-            var activeRuns = _runs.Values.Where(r => r.SpecId == specId && (r.Status == JobStatus.Pending || r.Status == JobStatus.Running));
+            var activeRuns = _runs.Values.Where(r => r.SpecId == specId && (r.Status == JobStatus.Pending || r.Status == JobStatus.Assigned || r.Status == JobStatus.Running));
             foreach (var run in activeRuns)
             {
-                run.Status = JobStatus.Failed;
+                run.Status = JobStatus.Canceled;
                 run.ResultMsg = reason;
                 run.EndTime = DateTime.UtcNow;
+                run.RowVersion = Guid.NewGuid().ToString();
             }
             return Task.CompletedTask;
         }
@@ -112,10 +113,10 @@ namespace KubeJob.Server.Data
             return Task.FromResult(false);
         }
 
-        public Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId)
+        public Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId, int limit = 10)
         {
             var assigned = _runs.Values
-                .Where(r => r.Status == JobStatus.Running && r.TargetNodeId == nodeId)
+                .Where(r => r.Status == JobStatus.Assigned && r.TargetNodeId == nodeId)
                 .Select(r => 
                 {
                     // Copy and inject missing props that the UI expects via JOIN in Postgres
@@ -126,13 +127,14 @@ namespace KubeJob.Server.Data
                     }
                     return r;
                 })
-                .ToList();
+                .Take(Math.Clamp(limit, 1, 1000)).ToList();
             return Task.FromResult(assigned);
         }
 
-        public Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null)
+        public Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null, string? workerId = null, string? rowVersion = null)
         {
-            if (_runs.TryGetValue(runId, out var run))
+            if (_runs.TryGetValue(runId, out var run) &&
+                (string.IsNullOrWhiteSpace(workerId) || (run.TargetNodeId == workerId && run.RowVersion == rowVersion && (run.Status == JobStatus.Assigned || run.Status == JobStatus.Running))))
             {
                 run.Status = status;
                 run.ResultMsg = resultMsg;
@@ -243,7 +245,7 @@ namespace KubeJob.Server.Data
         public Task ResetOfflineNodeRunsAsync()
         {
             var offlineNodeIds = _nodes.Values.Where(n => n.IsOffline).Select(n => n.Id).ToHashSet();
-            var runsToReset = _runs.Values.Where(r => (r.Status == JobStatus.Running || (int)r.Status == 2) && r.TargetNodeId != null && offlineNodeIds.Contains(r.TargetNodeId)).ToList();
+            var runsToReset = _runs.Values.Where(r => (r.Status == JobStatus.Assigned || r.Status == JobStatus.Running) && r.TargetNodeId != null && offlineNodeIds.Contains(r.TargetNodeId)).ToList();
             foreach (var run in runsToReset)
             {
                 run.Status = JobStatus.Pending;

@@ -17,12 +17,12 @@ namespace KubeJob.Server.Data
         Task UpdateNextRunTimeAsync(string specId, DateTime? nextRunTime);
         Task UpdateSpecStatusAsync(string specId, bool isDisabled);
         Task<bool> InsertJobRunAsync(JobRun run);
-        Task<List<JobRun>> GetPendingRunsAsync();
+        Task<List<JobRun>> GetPendingRunsAsync(int limit = 100);
         Task<bool> HasActiveRunsForSpecAsync(string specId);
         Task CancelActiveRunsForSpecAsync(string specId, string reason);
         Task<bool> AssignRunAsync(string runId, string targetNodeId, string oldRowVersion);
-        Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId);
-        Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null);
+        Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId, int limit = 10);
+        Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null, string? workerId = null, string? rowVersion = null);
         Task<List<JobRun>> GetRecentRunsAsync(int limit = 50);
         Task<int> GetRunsCountAsync();
         Task<JobRun?> GetJobRunAsync(string runId);

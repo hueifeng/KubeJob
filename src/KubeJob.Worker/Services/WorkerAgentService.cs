@@ -202,13 +202,14 @@ namespace KubeJob.Worker.Services
                         continue;
                     }
 
-                    var response = await _httpClient.GetAsync($"/api/kubejob/worker/poll?workerId={_workerId}", stoppingToken);
+                    var available = Math.Max(1, _options.MaxConcurrentJobs - _runningJobs.Count);
+                    var response = await _httpClient.GetAsync($"/api/kubejob/worker/poll?workerId={Uri.EscapeDataString(_workerId)}&maxJobs={available}", stoppingToken);
                     if (response.IsSuccessStatusCode)
                     {
                         var pollResult = await response.Content.ReadFromJsonAsync<PollJobsResponse>(cancellationToken: stoppingToken);
                         if (pollResult != null && pollResult.Jobs.Any())
                         {
-                            foreach (var run in pollResult.Jobs)
+                            foreach (var run in pollResult.Jobs.Take(available))
                             {
                                 if (!_runningJobs.ContainsKey(run.Id))
                                 {
@@ -236,7 +237,7 @@ namespace KubeJob.Worker.Services
             _logger.LogInformation("Starting execution of JobRun {RunId}", run.Id);
             
             // Report Running
-            await ReportStatusAsync(run.Id, Core.Enums.JobStatus.Running);
+            await ReportStatusAsync(run.Id, run.RowVersion, Core.Enums.JobStatus.Running);
 
             try
             {
@@ -272,29 +273,30 @@ namespace KubeJob.Worker.Services
                 await jobInstance.ExecuteAsync(context, linkedCts.Token);
 
                 // Report Success
-                await ReportStatusAsync(run.Id, Core.Enums.JobStatus.Succeeded, "Execution completed successfully");
+                await ReportStatusAsync(run.Id, run.RowVersion, Core.Enums.JobStatus.Succeeded, "Execution completed successfully");
                 _logger.LogInformation("Completed execution of JobRun {RunId}", run.Id);
             }
             catch (OperationCanceledException)
             {
-                await ReportStatusAsync(run.Id, Core.Enums.JobStatus.Failed, "Job timed out or canceled (ActiveDeadlineSeconds reached)");
+                await ReportStatusAsync(run.Id, run.RowVersion, Core.Enums.JobStatus.Failed, "Job timed out or canceled (ActiveDeadlineSeconds reached)");
                 _logger.LogError("JobRun {RunId} timed out", run.Id);
             }
             catch (Exception ex)
             {
-                await ReportStatusAsync(run.Id, Core.Enums.JobStatus.Failed, ex.ToString());
+                await ReportStatusAsync(run.Id, run.RowVersion, Core.Enums.JobStatus.Failed, ex.ToString());
                 _logger.LogError(ex, "Failed execution of JobRun {RunId}", run.Id);
             }
         }
 
-        private async Task ReportStatusAsync(string runId, Core.Enums.JobStatus status, string msg = "")
+        private async Task ReportStatusAsync(string runId, string? rowVersion, Core.Enums.JobStatus status, string msg = "")
         {
             var req = new JobReportRequest
             {
                 WorkerId = _workerId,
                 RunId = runId,
                 Status = status,
-                ResultMsg = msg
+                ResultMsg = msg,
+                RowVersion = rowVersion
             };
             try
             {
