@@ -193,7 +193,9 @@ namespace KubeJob.Server.Data
 
         public Task<int> DeleteOldRunsAsync(DateTime cutoffTime)
         {
-            var toDelete = _runs.Values.Where(r => r.CreatedAt < cutoffTime).ToList();
+            var toDelete = _runs.Values.Where(r =>
+                r.CreatedAt < cutoffTime &&
+                r.Status is JobStatus.Succeeded or JobStatus.Failed or JobStatus.Canceled).ToList();
             int count = 0;
             foreach (var run in toDelete)
             {
@@ -234,7 +236,9 @@ namespace KubeJob.Server.Data
         {
             if (_nodes.TryGetValue(node.Id, out var existing))
             {
-                node.IsOffline = existing.IsOffline;
+                // A newer heartbeat is proof that the worker is reachable again;
+                // an older update must not resurrect a node that was already fenced.
+                node.IsOffline = node.LastHeartbeat <= existing.LastHeartbeat && existing.IsOffline;
             }
             _nodes[node.Id] = node;
             return Task.CompletedTask;
