@@ -88,20 +88,6 @@ public sealed class JobsApiController : ControllerBase
         return Ok(ToSnapshot(run));
     }
 
-    [HttpGet("{runId}/attempts")]
-    public async Task<ActionResult<IReadOnlyList<JobAttemptRecord>>> GetAttempts(
-        string runId,
-        CancellationToken cancellationToken)
-    {
-        var run = await _queries.GetRunAsync(runId, cancellationToken);
-        if (run is null)
-        {
-            return NotFound();
-        }
-
-        return Ok(await _queries.GetAttemptsAsync(runId, cancellationToken));
-    }
-
     [HttpPost("{runId}/cancel")]
     public async Task<IActionResult> Cancel(
         string runId,
