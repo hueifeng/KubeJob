@@ -14,6 +14,35 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        // Registration uses the same lock. Whichever transaction commits first defines
+        // whether this session is still current when the completion is evaluated.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
+            new { request.WorkerId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var sessionActive = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT EXISTS (
+                SELECT 1
+                FROM Kj2_WorkerSessions
+                WHERE WorkerId = @WorkerId
+                  AND SessionId = @SessionId
+                  AND Epoch = @SessionEpoch
+                  AND State IN (@Ready, @Draining)
+            );",
+            new
+            {
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                Ready = (int)WorkerSessionState.Ready,
+                Draining = (int)WorkerSessionState.Draining
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
         var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
             "SELECT clock_timestamp();",
             transaction: transaction,
@@ -45,14 +74,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken));
 
-        if (state is null || !MatchesFence(state, request, now))
+        if (!sessionActive || state is null || !MatchesFence(state, request, now))
         {
             await transaction.RollbackAsync(cancellationToken);
             return new CompleteAttemptResponse(
                 false,
                 state?.RunPhase ?? JobPhase.Failed,
                 false,
-                "attempt_expired_or_fencing_token_mismatch");
+                "stale_session_attempt_expired_or_fencing_token_mismatch");
         }
 
         await connection.ExecuteAsync(new CommandDefinition(@"
