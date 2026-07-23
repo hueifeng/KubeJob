@@ -197,7 +197,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction: transaction,
             cancellationToken: cancellationToken));
 
-        var runs = (await connection.QueryAsync<JobRunRecord>(new CommandDefinition(@"
+        var candidates = (await connection.QueryAsync<JobRunRecord>(new CommandDefinition(@"
             SELECT r.*
             FROM Kj2_JobRuns r
             WHERE r.Phase = @Pending
@@ -206,34 +206,37 @@ public sealed partial class PostgreSqlJobRuntimeStore
               AND r.AvailableAt <= @Now
               AND r.Queue = ANY(@Queues)
               AND r.JobKey = ANY(@Capabilities)
-              AND (
-                    r.ConcurrencyKey IS NULL
-                    OR NOT EXISTS (
-                        SELECT 1
-                        FROM Kj2_JobRuns active
-                        WHERE active.Id <> r.Id
-                          AND active.Phase = @Running
-                          AND active.ConcurrencyKey = r.ConcurrencyKey
-                    )
-                  )
             ORDER BY r.Priority DESC, r.AvailableAt, r.CreatedAt, r.Id
             FOR UPDATE SKIP LOCKED
-            LIMIT @Limit;",
+            LIMIT @CandidateLimit;",
             new
             {
                 Pending = (int)JobPhase.Pending,
-                Running = (int)JobPhase.Running,
                 Now = now,
                 Queues = request.Queues.ToArray(),
                 Capabilities = request.Capabilities.ToArray(),
-                Limit = limit
+                CandidateLimit = Math.Min(limit * 4, 4096)
             },
             transaction,
             cancellationToken: cancellationToken))).ToArray();
 
-        var claimed = new List<ClaimedJob>(runs.Length);
-        foreach (var run in runs)
+        var claimed = new List<ClaimedJob>(Math.Min(limit, candidates.Length));
+        foreach (var run in candidates)
         {
+            if (claimed.Count >= limit)
+            {
+                break;
+            }
+
+            if (!await TryReserveConcurrencyKeyAsync(
+                    connection,
+                    transaction,
+                    run,
+                    cancellationToken))
+            {
+                continue;
+            }
+
             var attemptNumber = run.AttemptCount + 1;
             var attemptId = NewId();
             var leaseToken = NewId();
@@ -264,7 +267,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 transaction,
                 cancellationToken: cancellationToken));
 
-            await connection.ExecuteAsync(new CommandDefinition(@"
+            var updated = await connection.ExecuteAsync(new CommandDefinition(@"
                 UPDATE Kj2_JobRuns
                 SET Phase = @Running,
                     AttemptCount = @AttemptNumber,
@@ -274,7 +277,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     StartedAt = COALESCE(StartedAt, @StartedAt),
                     Version = Version + 1
                 WHERE Id = @RunId
-                  AND Phase = @Pending;",
+                  AND Phase = @Pending
+                  AND CancelRequested = FALSE;",
                 new
                 {
                     RunId = run.Id,
@@ -288,6 +292,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 },
                 transaction,
                 cancellationToken: cancellationToken));
+
+            if (updated == 0)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM Kj2_JobAttempts WHERE Id = @AttemptId;",
+                    new { AttemptId = attemptId },
+                    transaction,
+                    cancellationToken: cancellationToken));
+                continue;
+            }
 
             claimed.Add(new ClaimedJob(
                 run.Id,
@@ -381,6 +395,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 WHERE attempt.Id = @AttemptId
                   AND attempt.RunId = run.Id
                   AND attempt.Phase = @AttemptRunning
+                  AND attempt.LeaseExpiresAt > @Now
                   AND attempt.WorkerId = @WorkerId
                   AND attempt.SessionId = @SessionId
                   AND attempt.SessionEpoch = @SessionEpoch
@@ -392,6 +407,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 {
                     renewal.AttemptId,
                     renewal.LeaseToken,
+                    Now = now,
                     LeaseExpiresAt = leaseExpiresAt,
                     request.WorkerId,
                     request.SessionId,
@@ -408,7 +424,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     false,
                     false,
                     null,
-                    "attempt_or_fencing_token_mismatch")
+                    "attempt_expired_or_fencing_token_mismatch")
                 : new LeaseRenewalResult(
                     renewal.AttemptId,
                     true,
@@ -428,6 +444,45 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await transaction.CommitAsync(cancellationToken);
         return results;
+    }
+
+    private static async ValueTask<bool> TryReserveConcurrencyKeyAsync(
+        Npgsql.NpgsqlConnection connection,
+        Npgsql.NpgsqlTransaction transaction,
+        JobRunRecord run,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(run.ConcurrencyKey))
+        {
+            return true;
+        }
+
+        var locked = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT pg_try_advisory_xact_lock(hashtext(@ConcurrencyKey));",
+            new { run.ConcurrencyKey },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (!locked)
+        {
+            return false;
+        }
+
+        return !await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT EXISTS (
+                SELECT 1
+                FROM Kj2_JobRuns
+                WHERE Id <> @RunId
+                  AND Phase = @Running
+                  AND ConcurrencyKey = @ConcurrencyKey
+            );",
+            new
+            {
+                RunId = run.Id,
+                Running = (int)JobPhase.Running,
+                run.ConcurrencyKey
+            },
+            transaction,
+            cancellationToken: cancellationToken));
     }
 
     private sealed class RenewalRow
