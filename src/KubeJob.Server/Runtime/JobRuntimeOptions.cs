@@ -10,6 +10,8 @@ public sealed class JobRuntimeOptions
 
     public TimeSpan OutboxPollInterval { get; set; } = TimeSpan.FromSeconds(1);
 
+    public TimeSpan OutboxClaimDuration { get; set; } = TimeSpan.FromSeconds(30);
+
     public TimeSpan OutboxFailureDelay { get; set; } = TimeSpan.FromSeconds(5);
 
     public int MaxClaimBatchSize { get; set; } = 32;
@@ -28,6 +30,26 @@ public sealed class JobRuntimeOptions
         if (RetryDelay < TimeSpan.Zero)
         {
             throw new InvalidOperationException("RetryDelay cannot be negative.");
+        }
+
+        if (LeaseReaperInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("LeaseReaperInterval must be positive.");
+        }
+
+        if (OutboxPollInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("OutboxPollInterval must be positive.");
+        }
+
+        if (OutboxClaimDuration <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("OutboxClaimDuration must be positive.");
+        }
+
+        if (OutboxFailureDelay < TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("OutboxFailureDelay cannot be negative.");
         }
 
         if (MaxClaimBatchSize is < 1 or > 1024)
