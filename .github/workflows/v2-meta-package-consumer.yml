@@ -1,0 +1,60 @@
+name: V2 Meta Package Consumer
+
+on:
+  push:
+    branches:
+      - main
+      - 'agent/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  meta-package-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore repository
+        run: dotnet restore KubeJob.sln
+
+      - name: Build repository
+        run: dotnet build KubeJob.sln --configuration Release --no-restore
+
+      - name: Pack V2 packages
+        env:
+          PACKAGE_VERSION: 0.0.0-meta.${{ github.run_number }}
+        run: bash eng/pack-v2.sh
+
+      - name: Restore meta-package consumer
+        run: >-
+          dotnet restore tests/KubeJob.MetaPackageSmoke/KubeJob.MetaPackageSmoke.csproj
+          -p:KubeJobSmokeVersion=0.0.0-meta.${{ github.run_number }}
+          --source artifacts/packages
+          --source https://api.nuget.org/v3/index.json
+
+      - name: Build meta-package consumer
+        run: >-
+          dotnet build tests/KubeJob.MetaPackageSmoke/KubeJob.MetaPackageSmoke.csproj
+          --configuration Release
+          --no-restore
+          -p:KubeJobSmokeVersion=0.0.0-meta.${{ github.run_number }}
+
+      - name: Run meta-package consumer
+        run: >-
+          dotnet run --project tests/KubeJob.MetaPackageSmoke/KubeJob.MetaPackageSmoke.csproj
+          --configuration Release
+          --no-build
+          -p:KubeJobSmokeVersion=0.0.0-meta.${{ github.run_number }}
