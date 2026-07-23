@@ -52,8 +52,18 @@ public sealed class HttpJobClient : IJobClient
             request,
             SerializerOptions,
             cancellationToken);
-        response.EnsureSuccessStatusCode();
 
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            var conflict = await response.Content.ReadFromJsonAsync<IdempotencyConflictPayload>(
+                SerializerOptions,
+                cancellationToken);
+            throw new IdempotencyConflictException(
+                conflict?.IdempotencyKey ?? options.IdempotencyKey ?? string.Empty,
+                conflict?.ExistingJobId ?? string.Empty);
+        }
+
+        response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JobHandle>(
                    SerializerOptions,
                    cancellationToken)
@@ -100,4 +110,9 @@ public sealed class HttpJobClient : IJobClient
         response.EnsureSuccessStatusCode();
         return true;
     }
+
+    private sealed record IdempotencyConflictPayload(
+        string Code,
+        string IdempotencyKey,
+        string ExistingJobId);
 }
