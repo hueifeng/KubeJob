@@ -36,6 +36,8 @@ public sealed class KubeJobWorkerOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(5);
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
+    public void ValidateV2() => Validate();
+
     public void Validate()
     {
         if (!Uri.TryCreate(ServerEndpoint, UriKind.Absolute, out var endpoint)
