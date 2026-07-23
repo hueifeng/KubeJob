@@ -1,153 +1,199 @@
 # KubeJob
 
-[中文文档](./README_zh.md)
+[中文说明](./README_zh.md) · [V2 Getting Started](./docs/v2/getting-started.md) · [V2 Architecture](./docs/v2/architecture.md)
 
-KubeJob is a robust, distributed, and embeddable .NET task scheduling framework inspired by Kubernetes concepts. It offers a modern, cloud-native approach to task scheduling, featuring a high-quality web dashboard and supporting both single-process (Unified) deployments and distributed master/worker architectures.
+KubeJob is an embeddable and distributed .NET background-job runtime. The V2
+architecture adds strongly typed payloads, logical Run/physical Attempt
+separation, pull scheduling, worker-session fencing, expiring leases,
+transactional Outbox delivery, and independent cron schedules.
 
-## 📂 Architecture
+The existing legacy runtime remains available during migration.
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                 KubeJob.Server (Control Plane)              │
-│                                                             │
-│  ┌───────────────┐     ┌─────────────────────────────────┐  │
-│  │               │     │ Background Services             │  │
-│  │ Dashboard UI  │     │ ├─ Cron Scheduler               │  │
-│  │               │     │ ├─ Job Dispatcher               │  │
-│  └───────┬───────┘     │ └─ Node Health/History Cleanup  │  │
-│          │             └─────────────────┬───────────────┘  │
-│          v                               │                  │
-│  ┌───────────────────────────────────────v───────────────┐  │
-│  │                     REST API Endpoint                 │  │
-│  └──────────────────┬────────────────────^───────────────┘  │
-└─────────────────────┼────────────────────┼─────────▲────────┘
-         (Reads/Writes)                    │         │
-┌─────────────────────v────────────────────┼─┐       │ (1) Heartbeat &
-│           Pluggable Storage              │ │       │     Register
-│        (In-Memory / PostgreSQL)          │ │       │ (4) Poll &
-│                                          │ │       │     Report
-│ ├─ Kj_JobSpecs (Job Definitions)         │ │       │
-│ ├─ Kj_JobRuns (Execution Queue & Logs)   │ │       │
-│ └─ Kj_WorkerNodes (Cluster State)        │ │       │
-└──────────────────────────────────────────┘ │       │
-                                             │       │
-┌────────────────────────────────────────────v───────┴────────┐
-│                 KubeJob.Worker (Data Plane)                 │
-│                                                             │
-│  ┌──────────────────┐  ┌──────────────────┐                 │
-│  │ Worker Node A    │  │ Worker Node B    │  ...            │
-│  │ ├─ Executor      │  │ ├─ Executor      │                 │
-│  │ └─ [IKubeJob]    │  │ └─ [IKubeJob]    │                 │
-│  └──────────────────┘  └──────────────────┘                 │
-└─────────────────────────────────────────────────────────────┘
+## Typed job API
+
+```csharp
+public sealed record SendEmail(string To, string Subject, string Body);
+
+[KubeJob("mail.send")]
+public sealed class SendEmailJob : IKubeJob<SendEmail>
+{
+    private readonly IEmailSender _sender;
+
+    public SendEmailJob(IEmailSender sender)
+    {
+        _sender = sender;
+    }
+
+    public ValueTask ExecuteAsync(
+        SendEmail payload,
+        JobExecutionContext context,
+        CancellationToken cancellationToken) =>
+        _sender.SendAsync(payload, cancellationToken);
+}
 ```
 
-KubeJob separates scheduling logic from execution logic, allowing it to scale seamlessly:
+The included incremental source generator creates a stable typed key:
 
-- **`KubeJob.Core`**: Shared Domain models, DTOs, Enums, and Interfaces (such as `IKubeJob`).
-- **`KubeJob.Server` (Control Plane)**: 
-  - **CronScheduler**: Polls the database to compute Cron expressions and identify jobs due for execution.
-  - **JobDispatcher**: Handles assigning jobs to available nodes based on capacity and Node Selectors.
-  - **HistoryCleanup**: Automatically prunes old execution data based on history limits to prevent database bloat.
-  - **Dashboard (RCL)**: The embedded UI layer.
-- **`KubeJob.Worker` (Data Plane)**: 
-  - Uses long-polling to fetch assigned tasks from the Server, dynamically instantiates your C# class via Dependency Injection (DI), and executes the code while handling cancellation tokens.
-
----
-
-## ✨ Core Features & Design Philosophy
-
-- **Cloud-Native Scheduling Model**: KubeJob adopts Kubernetes-style scheduling. It utilizes `CronJob` specifications, `Node Selectors`, and `Execution Models` (Standalone/Broadcast/Sharded), making it highly suitable for modern microservices and containerized environments.
-- **High Availability (Leader Election)**: Deploy multiple `KubeJob.Server` nodes without the fear of duplicate scheduling. The built-in, storage-agnostic Distributed Lock Provider ensures only one Control Plane node orchestrates tasks at any given time, preventing race conditions and ensuring cluster consistency.
-- **Out-of-the-Box Dashboard**: KubeJob includes a high-quality, responsive dashboard built with Bootswatch. You can monitor cluster health, manually trigger jobs, and edit specifications on the fly without having to develop your own UI.
-- **Smart Concurrency & Resilience**: Native support for `Concurrency Policies` (Allow/Forbid/Replace) combined with `CancellationToken`-based timeouts, automatic retries, and Graceful Shutdowns.
-- **Intuitive Log Visualization**: The dashboard features a clean, dark-themed terminal modal to view complete exception stack traces and execution logs directly in the UI, accelerating the debugging process.
-
----
-
-## 🚀 Getting Started
-
-### 1. Unified Setup (Easiest)
-
-You can run both the Server (Control Plane + Dashboard) and the Worker in the same application. This is ideal for most standard web applications.
-Simply install our all-in-one meta-package:
-
-```bash
-dotnet add package KubeJob
+```csharp
+await jobs.EnqueueAsync(
+    Jobs.SendEmail,
+    new SendEmail("user@example.com", "Welcome", "Hello"),
+    new JobEnqueueOptions
+    {
+        Queue = "mail",
+        IdempotencyKey = "welcome:user-42",
+        MaxAttempts = 5
+    });
 ```
+
+Handlers use constructor injection. `JobExecutionContext` does not expose a
+service locator, storage repository, HTTP client, lease token, or fencing token.
+
+## Unified deployment
+
+Control plane and worker can run in one process without localhost HTTP:
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Add KubeJob Server (Control Plane + Dashboard)
-builder.Services.AddKubeJobServer(opts => opts.UseInMemory()); 
+builder.Services.AddKubeJob(
+    server => server.UsePostgreSql(
+        builder.Configuration.GetConnectionString("KubeJob")!),
+    worker =>
+    {
+        worker.WorkerId = Environment.MachineName;
+        worker.MaxConcurrentJobs = 16;
+        worker.Queues.Add("mail");
+    });
 
-// Mount the dashboard to a custom route
-builder.Services.AddKubeJobDashboard(routePrefix: "/admin/jobs");
-
-// 2. Add KubeJob Worker (Data Plane)
-builder.Services.AddKubeJobWorker(options => 
-{
-    options.ServerEndpoint = "http://localhost:5041"; 
-    options.MaxConcurrentJobs = 10;
-    options.Labels.Add("env", "dev");
-});
-
-// Register your jobs
-builder.Services.AddTransient<SampleDataJob>();
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>("mail.send");
 
 var app = builder.Build();
-
-// 3. Initialize Storage Schema (No-op for In-Memory)
 app.InitializeKubeJobDatabase();
-
-app.UseRouting();
 app.MapControllers();
-
-// Optional: Redirect root to Dashboard
-app.MapGet("/", context => {
-    context.Response.Redirect("/admin/jobs");
-    return Task.CompletedTask;
-});
-
 app.Run();
 ```
 
-### 2. Writing a Job
+The in-process transport preserves the same Attempt, lease, retry, cancellation,
+and fencing semantics as a remote worker.
 
-Create a class that implements `IKubeJob`. You can decorate it with the `[KubeJob]` attribute to define its default scheduling behavior.
+## Distributed deployment
+
+Control plane:
 
 ```csharp
-using KubeJob.Core.Attributes;
-using KubeJob.Core.Context;
-using KubeJob.Core.Enums;
-using KubeJob.Core.Interfaces;
-
-[KubeJob("sample-job-1", Cron = "*/5 * * * *", ExecuteModel = ExecuteModel.Standalone)]
-public class SampleDataJob : IKubeJob
-{
-    private readonly ILogger<SampleDataJob> _logger;
-
-    public SampleDataJob(ILogger<SampleDataJob> logger)
-    {
-        _logger = logger;
-    }
-
-    public async Task ExecuteAsync(KubeJobContext context, CancellationToken token)
-    {
-        _logger.LogInformation("Job {JobId} starting on Node {NodeId}", context.RunId, context.WorkerId);
-        
-        // Context contains rich info: context.JobData, context.ShardIndex...
-        
-        // Simulate work...
-        await Task.Delay(2000, token);
-        
-        // If an exception is thrown, it is automatically logged and sent to the Dashboard's modal view.
-        _logger.LogInformation("Job {JobId} completed.", context.RunId);
-    }
-}
+builder.Services.AddKubeJobServer(options =>
+    options.UsePostgreSql(connectionString));
 ```
 
-## 📄 License
+Worker:
 
-This project is licensed under the MIT License.
+```csharp
+builder.Services.AddKubeJobWorkerRuntime(options =>
+{
+    options.ServerEndpoint = "https://jobs.internal";
+    options.WorkerId = Environment.MachineName;
+    options.MaxConcurrentJobs = 32;
+    options.Queues.Add("mail");
+    options.BuildId = "mailer-2026.07";
+});
+
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>("mail.send");
+```
+
+Workers pull only when they have free slots. PostgreSQL atomically creates a
+physical Attempt and lease using `FOR UPDATE SKIP LOCKED`. The server recalculates
+capacity from active Attempts and does not rely on worker-reported capacity
+alone.
+
+## Cron schedules
+
+Schedules are independent from handler attributes:
+
+```csharp
+await schedules.UpsertCronAsync(
+    "daily-report",
+    Jobs.GenerateReport,
+    new GenerateReport("daily"),
+    "0 2 * * *",
+    new CronScheduleOptions
+    {
+        TimeZoneId = "Asia/Tokyo",
+        Queue = "reports",
+        MisfirePolicy = MisfirePolicy.FireOnce,
+        ConcurrencyPolicy = ScheduleConcurrencyPolicy.SkipIfRunning
+    });
+```
+
+Multiple control-plane replicas reconcile schedules through recoverable claims
+and transactional version checks. Advancing the schedule, creating the Run, and
+writing the Outbox notification happen atomically.
+
+## Runtime model
+
+```text
+JobSchedule ──creates──> JobRun ──contains──> JobAttempt
+
+Worker ──starts──> WorkerSession ──temporarily owns──> JobAttempt
+```
+
+A retry creates a new Attempt for the same logical Run. Attempt history records
+the WorkerId, SessionId, SessionEpoch, lease outcome, and completion result.
+
+Completion is accepted only from the current unexpired Attempt and active Worker
+Session. A stale worker cannot overwrite a newer Session even when it later
+recovers network connectivity.
+
+## Delivery guarantee
+
+KubeJob provides **at-least-once execution**. It does not claim exactly-once
+external side effects. Handlers that call external systems should use domain
+idempotency or an application Outbox where required.
+
+PostgreSQL is the state source. MQ integration uses `IWorkAvailableNotifier` as
+an asynchronous wake-up hint; duplicate or missing notifications cannot create a
+second valid Attempt. Workers always claim against durable state.
+
+## Status and diagnostics
+
+```text
+GET  /api/kubejob/jobs/{runId}
+GET  /api/kubejob/jobs/{runId}/attempts
+POST /api/kubejob/jobs/{runId}/cancel
+
+PUT    /api/kubejob/schedules/{scheduleId}
+GET    /api/kubejob/schedules/{scheduleId}
+POST   /api/kubejob/schedules/{scheduleId}/enabled
+DELETE /api/kubejob/schedules/{scheduleId}
+```
+
+The Attempt list is the authoritative answer to which node executed a job; a
+retry may move to another Worker Session.
+
+## Storage
+
+The PostgreSQL V2 schema uses separate tables for:
+
+```text
+Kj2_JobRuns
+Kj2_JobAttempts
+Kj2_WorkerSessions
+Kj2_JobSchedules
+Kj2_Outbox
+```
+
+Legacy `Kj_*` tables are retained during migration.
+
+## Migration
+
+Legacy non-generic `IKubeJob` handlers continue to compile. Convert handlers one
+at a time to `IKubeJob<TPayload>`, register them with
+`AddKubeJobHandler<TJob, TPayload>`, and move cron configuration into
+`IJobScheduleClient`.
+
+See [V2 Getting Started](./docs/v2/getting-started.md) for the complete migration
+sequence and operational semantics.
+
+## License
+
+MIT
