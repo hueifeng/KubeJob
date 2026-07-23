@@ -16,6 +16,11 @@ public sealed partial class InMemoryJobRuntimeStore
             var key = SessionKey(request.WorkerId, request.SessionId);
             if (_sessions.TryGetValue(key, out var sameSession))
             {
+                if (sameSession.State is WorkerSessionState.Closed or WorkerSessionState.Stale)
+                {
+                    throw new InvalidOperationException("A closed or stale worker session cannot be reopened.");
+                }
+
                 sameSession.State = WorkerSessionState.Ready;
                 sameSession.AvailableSlots = sameSession.MaxConcurrency;
                 sameSession.LastHeartbeatAt = DateTimeOffset.UtcNow;
@@ -27,6 +32,7 @@ public sealed partial class InMemoryJobRuntimeStore
                          && x.State is WorkerSessionState.Ready or WorkerSessionState.Draining))
             {
                 existing.State = WorkerSessionState.Stale;
+                existing.AvailableSlots = 0;
             }
 
             var epoch = _sessions.Values
@@ -64,13 +70,14 @@ public sealed partial class InMemoryJobRuntimeStore
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (!TryGetSession(request.WorkerId, request.SessionId, request.SessionEpoch, out var session)
-                || session.State == WorkerSessionState.Closed)
+            if (!TryGetSession(request.WorkerId, request.SessionId, request.SessionEpoch, out var session))
             {
                 return ValueTask.FromResult(false);
             }
 
-            session.AvailableSlots = Math.Clamp(request.AvailableSlots, 0, session.MaxConcurrency);
+            var running = CountRunningAttempts(request.WorkerId, request.SessionId, request.SessionEpoch);
+            var serverAvailable = Math.Max(0, session.MaxConcurrency - running);
+            session.AvailableSlots = Math.Min(Math.Max(request.AvailableSlots, 0), serverAvailable);
             session.State = request.State;
             session.LastHeartbeatAt = DateTimeOffset.UtcNow;
             return ValueTask.FromResult(true);
@@ -113,9 +120,15 @@ public sealed partial class InMemoryJobRuntimeStore
                 return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(Array.Empty<ClaimedJob>());
             }
 
-            var claimCount = Math.Min(Math.Max(request.AvailableSlots, 0), Math.Max(maxBatchSize, 0));
+            var running = CountRunningAttempts(request.WorkerId, request.SessionId, request.SessionEpoch);
+            var serverAvailable = Math.Max(0, session.MaxConcurrency - running);
+            var reportedAvailable = Math.Max(request.AvailableSlots, 0);
+            var claimCount = Math.Min(
+                Math.Min(reportedAvailable, serverAvailable),
+                Math.Max(maxBatchSize, 0));
             if (claimCount == 0 || request.Queues.Count == 0 || request.Capabilities.Count == 0)
             {
+                session.AvailableSlots = 0;
                 return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(Array.Empty<ClaimedJob>());
             }
 
@@ -188,7 +201,7 @@ public sealed partial class InMemoryJobRuntimeStore
                     run.TimeoutSeconds));
             }
 
-            session.AvailableSlots = Math.Max(0, request.AvailableSlots - claimed.Count);
+            session.AvailableSlots = Math.Max(0, serverAvailable - claimed.Count);
             session.LastHeartbeatAt = now;
             return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(claimed);
         }
@@ -202,8 +215,7 @@ public sealed partial class InMemoryJobRuntimeStore
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (!TryGetSession(request.WorkerId, request.SessionId, request.SessionEpoch, out var session)
-                || session.State is WorkerSessionState.Closed or WorkerSessionState.Stale)
+            if (!TryGetSession(request.WorkerId, request.SessionId, request.SessionEpoch, out var session))
             {
                 return ValueTask.FromResult<IReadOnlyList<LeaseRenewalResult>>(
                     request.Attempts.Select(x => new LeaseRenewalResult(
@@ -249,4 +261,11 @@ public sealed partial class InMemoryJobRuntimeStore
             return ValueTask.FromResult<IReadOnlyList<LeaseRenewalResult>>(results);
         }
     }
+
+    private int CountRunningAttempts(string workerId, string sessionId, long sessionEpoch) =>
+        _attempts.Values.Count(attempt =>
+            attempt.Phase == JobAttemptPhase.Running
+            && string.Equals(attempt.WorkerId, workerId, StringComparison.Ordinal)
+            && string.Equals(attempt.SessionId, sessionId, StringComparison.Ordinal)
+            && attempt.SessionEpoch == sessionEpoch);
 }
