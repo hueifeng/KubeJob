@@ -70,37 +70,17 @@ public sealed class ScheduleReconcilerService : BackgroundService
         var schedule = claim.Schedule;
         try
         {
-            var scheduledFor = schedule.NextFireAt.ToUniversalTime();
-            var nextAfterScheduled = CronScheduleCalculator.GetRequiredNextOccurrence(
-                schedule.CronExpression,
-                schedule.TimeZoneId,
-                scheduledFor);
-
-            var createRun = true;
-            DateTimeOffset nextFireAt;
-            if (nextAfterScheduled <= observedNow)
-            {
-                createRun = schedule.MisfirePolicy == MisfirePolicy.FireOnce;
-                nextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
-                    schedule.CronExpression,
-                    schedule.TimeZoneId,
-                    observedNow);
-            }
-            else
-            {
-                nextFireAt = nextAfterScheduled;
-            }
-
-            var runId = CreateOccurrenceId(schedule.Id, scheduledFor);
-            var idempotencyKey = $"schedule:{schedule.Id}:{scheduledFor.UtcTicks}";
+            var plan = ScheduleReconciliationPlanner.Plan(schedule, observedNow);
+            var runId = CreateOccurrenceId(schedule.Id, plan.ScheduledFor);
+            var idempotencyKey = $"schedule:{schedule.Id}:{plan.ScheduledFor.UtcTicks}";
             await _store.CommitFireAsync(
                 new CommitScheduleFireCommand(
                     schedule.Id,
                     claim.ClaimToken,
                     claim.ExpectedVersion,
-                    scheduledFor,
-                    nextFireAt,
-                    createRun,
+                    plan.ScheduledFor,
+                    plan.NextFireAt,
+                    plan.CreateRun,
                     runId,
                     idempotencyKey),
                 cancellationToken);
@@ -124,10 +104,11 @@ public sealed class ScheduleReconcilerService : BackgroundService
         }
     }
 
-    internal static string CreateOccurrenceId(
+    public static string CreateOccurrenceId(
         string scheduleId,
         DateTimeOffset scheduledFor)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scheduleId);
         var bytes = Encoding.UTF8.GetBytes($"{scheduleId}\n{scheduledFor.ToUniversalTime():O}");
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
