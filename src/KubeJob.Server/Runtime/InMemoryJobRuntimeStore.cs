@@ -14,7 +14,8 @@ public sealed partial class InMemoryJobRuntimeStore :
     IJobCompletionStore,
     IJobQueryStore,
     IJobScheduleStore,
-    IOutboxStore
+    IOutboxStore,
+    IJobRuntimeDashboardStore
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, JobRunRecord> _runs = new(StringComparer.Ordinal);
