@@ -22,7 +22,7 @@ public sealed class JobEnqueueOptions
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
-    internal void Validate()
+    public void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Queue);
 
