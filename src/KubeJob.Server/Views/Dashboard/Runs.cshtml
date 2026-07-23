@@ -1,200 +1,128 @@
-@using KubeJob.Core.Domain
-@using KubeJob.Core.Enums
-@model IEnumerable<JobRun>
+@model DashboardRunsViewModel
 @{
-    ViewData["Title"] = "Execution History";
+    ViewData["Title"] = "Runs & Attempts";
+    var page = Model.Runs;
+    var query = Model.Query;
 }
-
-<!-- Auto Refresh Meta Tag -->
 <meta http-equiv="refresh" content="30">
 
-<div class="d-flex justify-content-between align-items-center section-header">
-    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-list-check text-primary me-2"></i>Job Runs</h4>
-    <div>
-        <button class="btn btn-outline-secondary btn-sm rounded-pill px-3" onclick="location.reload()">
-            <i class="fa-solid fa-rotate-right me-1"></i> Refresh
-        </button>
+<div class="section-header">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h5 class="mb-1 fw-bold">Logical job runs</h5>
+            <div class="small text-muted">Filter by phase, queue, or stable job key. Open a Run to inspect its Attempts.</div>
+        </div>
+        <form method="get" class="row g-2 align-items-end">
+            <div class="col-auto">
+                <label class="form-label small mb-1">Phase</label>
+                <select name="phase" class="form-select form-select-sm">
+                    <option value="">All</option>
+                    @foreach (var phase in Enum.GetValues<JobPhase>())
+                    {
+                        if (query.Phase == phase)
+                        {
+                            <option value="@phase" selected>@phase</option>
+                        }
+                        else
+                        {
+                            <option value="@phase">@phase</option>
+                        }
+                    }
+                </select>
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-1">Queue</label>
+                <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="default" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-1">Job key</label>
+                <input name="jobKey" value="@query.JobKey" class="form-control form-control-sm" placeholder="mail.send" />
+            </div>
+            <input type="hidden" name="pageSize" value="@query.PageSize" />
+            <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1"></i>Apply</button></div>
+        </form>
     </div>
 </div>
 
 <div class="table-card">
     <div class="table-responsive">
-        <table class="table table-hover table-borderless align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Execution ID</th>
-                    <th>Spec / Shard</th>
-                    <th>Target Node</th>
-                    <th>Status</th>
-                    <th>Timing</th>
-                    <th>Duration</th>
-                    <th>Details</th>
-                </tr>
-            </thead>
+        <table class="table table-hover mb-0">
+            <thead><tr><th>Run</th><th>Job / Queue</th><th>Phase</th><th>Worker</th><th>Attempts</th><th>Timing</th><th>Failure</th></tr></thead>
             <tbody>
-                @if (!Model.Any())
+            @if (page.Items.Count == 0)
+            {
+                <tr><td colspan="7" class="text-center text-muted py-5">No runs match the current filters.</td></tr>
+            }
+            else
+            {
+                @foreach (var run in page.Items)
                 {
+                    var badge = run.Phase switch
+                    {
+                        JobPhase.Succeeded => "bg-success-subtle text-success",
+                        JobPhase.Running => "bg-primary-subtle text-primary",
+                        JobPhase.Pending => "bg-warning-subtle text-warning-emphasis",
+                        JobPhase.Canceled => "bg-secondary-subtle text-secondary",
+                        JobPhase.Dead => "bg-dark-subtle text-dark",
+                        _ => "bg-danger-subtle text-danger"
+                    };
+                    var duration = run.StartedAt is null
+                        ? null
+                        : ((run.CompletedAt ?? DateTimeOffset.UtcNow) - run.StartedAt.Value);
                     <tr>
-                        <td colspan="7" class="text-center text-muted py-5">
-                            <i class="fa-solid fa-folder-open fs-1 mb-3"></i><br />
-                            No execution history available.
+                        <td>
+                            <a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none">@run.Id[..Math.Min(12, run.Id.Length)]</a>
+                            @if (run.ScheduleId is not null)
+                            {
+                                <div class="small text-muted">schedule: @run.ScheduleId</div>
+                            }
+                        </td>
+                        <td><div class="fw-semibold">@run.JobKey</div><span class="badge bg-light text-dark border">@run.Queue</span> <span class="small text-muted">priority @run.Priority</span></td>
+                        <td><span class="badge @badge">@run.Phase</span>@if (run.CancelRequested){<div class="small text-danger mt-1">cancel requested</div>}</td>
+                        <td>
+                            @if (run.CurrentWorkerId is null)
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                            else
+                            {
+                                <div class="mono small">@run.CurrentWorkerId</div><div class="small text-muted">@run.CurrentSessionId</div>
+                            }
+                        </td>
+                        <td>@run.AttemptCount / @run.MaxAttempts</td>
+                        <td class="small text-muted">
+                            <div>@run.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
+                            @if (duration is not null)
+                            {
+                                <div>@duration.Value.TotalSeconds.ToString("0.0")s</div>
+                            }
+                        </td>
+                        <td>
+                            @if (run.FailureCode is null)
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                            else
+                            {
+                                <div class="text-danger small fw-semibold">@run.FailureCode</div>
+                                <div class="small text-muted text-truncate" style="max-width: 220px" title="@run.FailureMessage">@run.FailureMessage</div>
+                            }
                         </td>
                     </tr>
                 }
-                else
-                {
-                    @foreach (var run in Model)
-                    {
-                        <tr>
-                            <td>
-                                <div class="font-monospace text-dark fw-bold" title="@run.Id">@run.Id.Substring(0, 8)...</div>
-                                <div class="font-monospace text-muted small" title="Batch: @run.BatchId"><i class="fa-solid fa-layer-group me-1"></i>@run.BatchId.Substring(0, 8)</div>
-                            </td>
-                            <td>
-                                <div class="fw-bold text-primary">@run.SpecId</div>
-                                <div><span class="badge bg-secondary rounded-pill mt-1"><i class="fa-solid fa-puzzle-piece me-1"></i>Shard @run.ShardIndex</span></div>
-                            </td>
-                            <td>
-                                @if (string.IsNullOrEmpty(run.TargetNodeId))
-                                {
-                                    <span class="text-muted fst-italic"><i class="fa-solid fa-hourglass-empty me-1"></i> Unassigned</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-light text-dark border px-2 py-1"><i class="fa-solid fa-server text-primary me-1"></i>@run.TargetNodeId</span>
-                                }
-                            </td>
-                            <td>
-                                @{
-                                    var badgeClass = run.Status switch {
-                                        JobStatus.Succeeded => "bg-success",
-                                        JobStatus.Failed => "bg-danger",
-                                        JobStatus.Running => "bg-info",
-                                        JobStatus.Pending => "bg-warning text-dark",
-                                        _ => "bg-secondary"
-                                    };
-                                    var iconClass = run.Status switch {
-                                        JobStatus.Succeeded => "fa-check",
-                                        JobStatus.Failed => "fa-xmark",
-                                        JobStatus.Running => "fa-spinner fa-spin",
-                                        JobStatus.Pending => "fa-clock",
-                                        _ => "fa-circle-question"
-                                    };
-                                }
-                                <span class="badge @badgeClass rounded-pill px-3 py-2 shadow-sm"><i class="fa-solid @iconClass me-1"></i> @run.Status</span>
-                            </td>
-                            <td class="text-muted small">
-                                <div><i class="fa-solid fa-calendar-plus me-1 text-secondary" title="Created At"></i> @run.CreatedAt.ToString("MM-dd HH:mm:ss")</div>
-                                @if(run.StartTime.HasValue)
-                                {
-                                    <div class="mt-1"><i class="fa-solid fa-play me-1 text-success" title="Started At"></i> @run.StartTime.Value.ToString("MM-dd HH:mm:ss")</div>
-                                }
-                            </td>
-                            <td class="fw-bold text-dark">
-                                @if(run.StartTime.HasValue && run.EndTime.HasValue)
-                                {
-                                    <span><i class="fa-solid fa-stopwatch text-muted me-1"></i>@((run.EndTime.Value - run.StartTime.Value).TotalSeconds.ToString("0.0"))s</span>
-                                }
-                                else if (run.StartTime.HasValue)
-                                {
-                                    <span class="text-info"><i class="fa-solid fa-spinner fa-spin me-1"></i> Running</span>
-                                }
-                                else
-                                {
-                                    <span class="text-muted">-</span>
-                                }
-                            </td>
-                            <td>
-                                @if(!string.IsNullOrEmpty(run.ResultMsg))
-                                {
-                                    <span title="View Logs" class="d-inline-block">
-                                        <button class="btn btn-sm btn-light border text-muted rounded-circle" type="button" data-bs-toggle="modal" data-bs-target="#logModal-@run.Id">
-                                            <i class="fa-solid fa-comment-dots"></i>
-                                        </button>
-                                    </span>
-                                    <!-- Modal is placed outside the table below -->
-                                }
-                                else
-                                {
-                                    <span class="text-muted">-</span>
-                                }
-                            </td>
-                        </tr>
-                    }
-                }
+            }
             </tbody>
         </table>
     </div>
-@if (ViewBag.TotalPages > 0)
-{
-    <div class="d-flex justify-content-between align-items-center mt-4 px-3 pb-3">
-        <div class="text-muted small fw-bold d-flex align-items-center gap-3">
-            <div>
-                Showing page <span class="text-primary">@ViewBag.CurrentPage</span> of @ViewBag.TotalPages 
-                <span class="ms-2 badge bg-light text-dark border">Total: @ViewBag.TotalCount records</span>
-            </div>
-            <form id="pageSizeForm" method="get" class="d-flex align-items-center gap-2 m-0">
-                <label for="pageSize" class="mb-0 text-nowrap">Per page:</label>
-                <select name="pageSize" id="pageSize" class="form-select form-select-sm" style="width: auto;" onchange="document.getElementById('pageSizeForm').submit()">
-                    @foreach(var sz in new[] { 10, 20, 50, 100 })
-                    {
-                        if (ViewBag.PageSize == sz) {
-                            <option value="@sz" selected>@sz</option>
-                        } else {
-                            <option value="@sz">@sz</option>
-                        }
-                    }
-                </select>
-                <input type="hidden" name="page" value="1" />
-            </form>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
+        <div class="small text-muted">@page.TotalCount runs · page @page.Page of @(Math.Max(1, page.TotalPages))</div>
+        <div class="d-flex gap-2">
+            <a class="btn btn-sm btn-outline-secondary @(page.Page <= 1 ? "disabled" : "")"
+               asp-action="Runs" asp-route-page="@(page.Page - 1)" asp-route-pageSize="@page.PageSize"
+               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Previous</a>
+            <a class="btn btn-sm btn-outline-secondary @(page.TotalPages == 0 || page.Page >= page.TotalPages ? "disabled" : "")"
+               asp-action="Runs" asp-route-page="@(page.Page + 1)" asp-route-pageSize="@page.PageSize"
+               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Next</a>
         </div>
-        <ul class="pagination pagination-sm mb-0 shadow-sm">
-            <li class="page-item @(ViewBag.CurrentPage == 1 ? "disabled" : "")">
-                <a class="page-link" href="?page=@(ViewBag.CurrentPage - 1)&pageSize=@ViewBag.PageSize"><i class="fa-solid fa-chevron-left"></i> Prev</a>
-            </li>
-            
-            @{
-                int startPage = Math.Max(1, ViewBag.CurrentPage - 2);
-                int endPage = Math.Min(ViewBag.TotalPages, startPage + 4);
-                if (endPage - startPage < 4) {
-                    startPage = Math.Max(1, endPage - 4);
-                }
-            }
-
-            @for (int i = startPage; i <= endPage; i++)
-            {
-                <li class="page-item @(ViewBag.CurrentPage == i ? "active" : "")">
-                    <a class="page-link" href="?page=@i&pageSize=@ViewBag.PageSize">@i</a>
-                </li>
-            }
-
-            <li class="page-item @(ViewBag.CurrentPage == ViewBag.TotalPages ? "disabled" : "")">
-                <a class="page-link" href="?page=@(ViewBag.CurrentPage + 1)&pageSize=@ViewBag.PageSize">Next <i class="fa-solid fa-chevron-right"></i></a>
-            </li>
-        </ul>
     </div>
-}
 </div>
-
-@if (Model != null && Model.Any())
-{
-    @foreach(var run in Model)
-    {
-        if(!string.IsNullOrEmpty(run.ResultMsg))
-        {
-            <div class="modal fade" id="logModal-@run.Id" tabindex="-1" aria-hidden="true">
-                <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
-                    <div class="modal-content shadow">
-                        <div class="modal-header bg-light">
-                            <h5 class="modal-title fw-bold text-dark"><i class="fa-solid fa-terminal text-primary me-2"></i>Logs for @run.Id.Substring(0, Math.Min(8, run.Id.Length))</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                        </div>
-                        <div class="modal-body bg-dark text-light p-0 text-start">
-                            <pre class="p-3 m-0 font-monospace small" style="white-space: pre-wrap; word-break: break-all;">@run.ResultMsg</pre>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        }
-    }
-}
