@@ -49,10 +49,15 @@ namespace KubeJob.Worker.Options
 
         public void ValidateV2()
         {
-            if (string.IsNullOrWhiteSpace(ServerEndpoint))
+            if (!Uri.TryCreate(ServerEndpoint, UriKind.Absolute, out var endpoint)
+                || endpoint.Scheme is not ("http" or "https"))
             {
-                throw new InvalidOperationException("ServerEndpoint is required.");
+                throw new InvalidOperationException("ServerEndpoint must be an absolute HTTP or HTTPS URI.");
             }
+
+            ServerEndpoint = endpoint.AbsoluteUri.EndsWith("/", StringComparison.Ordinal)
+                ? endpoint.AbsoluteUri
+                : endpoint.AbsoluteUri + "/";
 
             if (string.IsNullOrWhiteSpace(WorkerId))
             {
@@ -69,9 +74,29 @@ namespace KubeJob.Worker.Options
                 throw new InvalidOperationException("ClaimBatchSize must be between 1 and 1024.");
             }
 
-            if (Queues.Count == 0)
+            if (Queues.Count == 0 || Queues.Any(string.IsNullOrWhiteSpace))
             {
-                throw new InvalidOperationException("At least one queue is required.");
+                throw new InvalidOperationException("At least one non-empty queue is required.");
+            }
+
+            if (EmptyPollDelay <= TimeSpan.Zero)
+            {
+                throw new InvalidOperationException("EmptyPollDelay must be positive.");
+            }
+
+            if (LeaseRenewalInterval <= TimeSpan.Zero)
+            {
+                throw new InvalidOperationException("LeaseRenewalInterval must be positive.");
+            }
+
+            if (HeartbeatInterval <= TimeSpan.Zero)
+            {
+                throw new InvalidOperationException("HeartbeatInterval must be positive.");
+            }
+
+            if (DrainTimeout < TimeSpan.Zero)
+            {
+                throw new InvalidOperationException("DrainTimeout cannot be negative.");
             }
         }
     }
