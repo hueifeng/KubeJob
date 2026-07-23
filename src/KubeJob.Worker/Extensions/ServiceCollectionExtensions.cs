@@ -37,22 +37,13 @@ namespace KubeJob.Worker.Extensions
         }
 
         /// <summary>
-        /// Registers the bounded pull/attempt/lease worker runtime.
+        /// Compatibility alias for the transport-independent V2 worker runtime.
         /// </summary>
+        [Obsolete("Use AddKubeJobWorkerRuntime. The V2 worker now shares one execution engine for HTTP and in-process transports.")]
         public static IServiceCollection AddKubeJobWorkerV2(
             this IServiceCollection services,
             Action<KubeJobWorkerOptions> configure)
-        {
-            services.Configure<KubeJobWorkerOptions>(options =>
-            {
-                configure(options);
-                options.EnableRuntimeV2 = true;
-            });
-
-            services.TryAddSingleton<JobHandlerRegistry>();
-            services.AddHostedService<WorkerRuntimeV2Service>();
-            return services;
-        }
+            => services.AddKubeJobWorkerRuntime(configure);
 
         /// <summary>
         /// Registers a typed handler under a stable job key.
