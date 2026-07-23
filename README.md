@@ -1,15 +1,16 @@
 # KubeJob
 
-[中文说明](./README_zh.md) · [V2 Getting Started](./docs/v2/getting-started.md) · [V2 Architecture](./docs/v2/architecture.md)
+[中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [Architecture](./docs/v2/architecture.md)
 
-KubeJob is an embeddable and distributed .NET background-job runtime. The V2
-architecture adds strongly typed payloads, logical Run/physical Attempt
-separation, pull scheduling, worker-session fencing, expiring leases,
-transactional Outbox delivery, and independent cron schedules.
+KubeJob is a typed, embeddable, distributed background-job runtime for .NET.
+It uses logical Runs, physical Attempts, pull-based workers, expiring leases,
+worker-session fencing, PostgreSQL transactions, an Outbox, and independent
+cron Schedule resources.
 
-The existing legacy runtime remains available during migration.
+KubeJob provides **at-least-once execution**. It does not claim exactly-once
+external side effects.
 
-## Typed job API
+## Define a typed job
 
 ```csharp
 public sealed record SendEmail(string To, string Subject, string Body);
@@ -19,10 +20,7 @@ public sealed class SendEmailJob : IKubeJob<SendEmail>
 {
     private readonly IEmailSender _sender;
 
-    public SendEmailJob(IEmailSender sender)
-    {
-        _sender = sender;
-    }
+    public SendEmailJob(IEmailSender sender) => _sender = sender;
 
     public ValueTask ExecuteAsync(
         SendEmail payload,
@@ -32,9 +30,15 @@ public sealed class SendEmailJob : IKubeJob<SendEmail>
 }
 ```
 
-The included incremental source generator creates a stable typed key:
+The source generator creates a strongly typed key such as `Jobs.SendEmail`.
+`JobExecutionContext` is read-only and does not expose a service locator,
+repository, lease token, or fencing token.
+
+## Register and enqueue
 
 ```csharp
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+
 await jobs.EnqueueAsync(
     Jobs.SendEmail,
     new SendEmail("user@example.com", "Welcome", "Hello"),
@@ -42,31 +46,32 @@ await jobs.EnqueueAsync(
     {
         Queue = "mail",
         IdempotencyKey = "welcome:user-42",
-        MaxAttempts = 5
+        MaxAttempts = 5,
+        Timeout = TimeSpan.FromMinutes(2)
     });
 ```
 
-Handlers use constructor injection. `JobExecutionContext` does not expose a
-service locator, storage repository, HTTP client, lease token, or fencing token.
+`[KubeJob]` declares only the stable handler key. Queue, priority, retry,
+timeout, idempotency, concurrency, scheduling, placement, batching, sharding,
+and broadcast behavior belong to submissions or dedicated resources.
 
 ## Unified deployment
 
-Control plane and worker can run in one process without localhost HTTP:
+The control plane and worker can share one process without localhost HTTP:
 
 ```csharp
-var builder = WebApplication.CreateBuilder(args);
-
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
 builder.Services.AddKubeJob(
-    server => server.UsePostgreSql(
-        builder.Configuration.GetConnectionString("KubeJob")!),
-    worker =>
+    configureServer: server => server.UsePostgreSql(connectionString),
+    configureWorker: worker =>
     {
         worker.WorkerId = Environment.MachineName;
         worker.MaxConcurrentJobs = 16;
-        worker.Queues.Add("mail");
+        worker.Queues = new List<string> { "mail" };
+        worker.BuildId = "mailer-2026.07";
     });
 
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>("mail.send");
+builder.Services.AddKubeJobDashboard("admin/jobs");
 
 var app = builder.Build();
 app.InitializeKubeJobDatabase();
@@ -74,8 +79,8 @@ app.MapControllers();
 app.Run();
 ```
 
-The in-process transport preserves the same Attempt, lease, retry, cancellation,
-and fencing semantics as a remote worker.
+The in-process transport preserves the same Attempt, lease, retry,
+cancellation, and fencing semantics as distributed deployment.
 
 ## Distributed deployment
 
@@ -84,31 +89,29 @@ Control plane:
 ```csharp
 builder.Services.AddKubeJobServer(options =>
     options.UsePostgreSql(connectionString));
+builder.Services.AddKubeJobDashboard();
 ```
 
 Worker:
 
 ```csharp
-builder.Services.AddKubeJobWorkerRuntime(options =>
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+builder.Services.AddKubeJobWorker(options =>
 {
     options.ServerEndpoint = "https://jobs.internal";
     options.WorkerId = Environment.MachineName;
     options.MaxConcurrentJobs = 32;
-    options.Queues.Add("mail");
+    options.Queues = new List<string> { "mail" };
     options.BuildId = "mailer-2026.07";
 });
-
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>("mail.send");
 ```
 
-Workers pull only when they have free slots. PostgreSQL atomically creates a
-physical Attempt and lease using `FOR UPDATE SKIP LOCKED`. The server recalculates
-capacity from active Attempts and does not rely on worker-reported capacity
-alone.
+Workers request work only when they have free slots. PostgreSQL atomically
+creates an Attempt and lease with `FOR UPDATE SKIP LOCKED`. The server derives
+capacity from active Attempts and validates claims against the queues and
+capabilities registered by the Worker Session.
 
-## Cron schedules
-
-Schedules are independent from handler attributes:
+## Independent schedules
 
 ```csharp
 await schedules.UpsertCronAsync(
@@ -125,9 +128,9 @@ await schedules.UpsertCronAsync(
     });
 ```
 
-Multiple control-plane replicas reconcile schedules through recoverable claims
-and transactional version checks. Advancing the schedule, creating the Run, and
-writing the Outbox notification happen atomically.
+Multiple control-plane replicas reconcile schedules through expiring claims
+and optimistic versions. Cursor advancement, Run creation, and Outbox creation
+occur in one PostgreSQL transaction.
 
 ## Runtime model
 
@@ -137,24 +140,25 @@ JobSchedule ──creates──> JobRun ──contains──> JobAttempt
 Worker ──starts──> WorkerSession ──temporarily owns──> JobAttempt
 ```
 
-A retry creates a new Attempt for the same logical Run. Attempt history records
-the WorkerId, SessionId, SessionEpoch, lease outcome, and completion result.
+A retry or reassignment creates another Attempt under the same logical Run.
+Completion is accepted only from the current unexpired Attempt and active
+Worker Session. Stale workers cannot overwrite newer sessions.
 
-Completion is accepted only from the current unexpired Attempt and active Worker
-Session. A stale worker cannot overwrite a newer Session even when it later
-recovers network connectivity.
+## Dashboard
 
-## Delivery guarantee
+`AddKubeJobDashboard()` provides V2-native operational pages:
 
-KubeJob provides **at-least-once execution**. It does not claim exactly-once
-external side effects. Handlers that call external systems should use domain
-idempotency or an application Outbox where required.
+- runtime overview and Outbox backlog;
+- logical Run filtering and pagination;
+- Run detail with a complete Attempt timeline;
+- Worker Session state, epoch, capacity, queues, capabilities, labels, and heartbeat;
+- independent Schedule state, policies, next/last fire time, and enable/disable actions.
 
-PostgreSQL is the state source. MQ integration uses `IWorkAvailableNotifier` as
-an asynchronous wake-up hint; duplicate or missing notifications cannot create a
-second valid Attempt. Workers always claim against durable state.
+The Dashboard deliberately does not expose lease or fencing credentials. Run
+payloads may contain application data, so production hosts should protect the
+Dashboard route with their normal authentication and authorization policy.
 
-## Status and diagnostics
+## HTTP diagnostics
 
 ```text
 GET  /api/kubejob/jobs/{runId}
@@ -167,12 +171,10 @@ POST   /api/kubejob/schedules/{scheduleId}/enabled
 DELETE /api/kubejob/schedules/{scheduleId}
 ```
 
-The Attempt list is the authoritative answer to which node executed a job; a
-retry may move to another Worker Session.
+Attempt history is the authoritative answer to which Worker Session executed a
+job; retries may move between nodes.
 
-## Storage
-
-The PostgreSQL V2 schema uses separate tables for:
+## PostgreSQL schema
 
 ```text
 Kj2_JobRuns
@@ -182,17 +184,9 @@ Kj2_JobSchedules
 Kj2_Outbox
 ```
 
-Legacy `Kj_*` tables are retained during migration.
-
-## Migration
-
-Legacy non-generic `IKubeJob` handlers continue to compile. Convert handlers one
-at a time to `IKubeJob<TPayload>`, register them with
-`AddKubeJobHandler<TJob, TPayload>`, and move cron configuration into
-`IJobScheduleClient`.
-
-See [V2 Getting Started](./docs/v2/getting-started.md) for the complete migration
-sequence and operational semantics.
+PostgreSQL is the source of truth. Optional MQ integration publishes only
+queue-specific wake-up hints from the transactional Outbox; duplicate or
+missing notifications cannot grant ownership.
 
 ## License
 
