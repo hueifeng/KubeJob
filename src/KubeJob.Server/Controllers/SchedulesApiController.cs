@@ -18,7 +18,7 @@ public sealed class SchedulesApiController : ControllerBase
     }
 
     [HttpPut("{scheduleId}")]
-    public async Task<ActionResult<JobScheduleRecord>> Upsert(
+    public async Task<ActionResult<JobScheduleSnapshot>> Upsert(
         string scheduleId,
         [FromBody] UpsertCronScheduleRequest request,
         CancellationToken cancellationToken)
@@ -69,7 +69,7 @@ public sealed class SchedulesApiController : ControllerBase
             UpdatedAt = now
         }, cancellationToken);
 
-        return Ok(schedule);
+        return Ok(DefaultJobScheduleClient.ToSnapshot(schedule));
     }
 
     [HttpGet("{scheduleId}")]
