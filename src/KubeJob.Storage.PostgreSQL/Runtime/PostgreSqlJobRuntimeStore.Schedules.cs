@@ -201,6 +201,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             WHERE Id = @ScheduleId
               AND ClaimToken = @ClaimToken
               AND Version = @ExpectedVersion
+              AND ClaimUntil > clock_timestamp()
             FOR UPDATE;",
             new
             {
@@ -255,7 +256,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @Priority,
                      @Pending, @Now, @Now, 0, @MaxAttempts, @TimeoutSeconds,
                      @IdempotencyKey, @ScheduleId, @ScheduledFor, FALSE, 0)
-                ON CONFLICT DO NOTHING;",
+                ON CONFLICT (ScheduleId, ScheduledFor)
+                    WHERE ScheduleId IS NOT NULL AND ScheduledFor IS NOT NULL
+                DO NOTHING;",
                 new
                 {
                     Id = command.RunId,
@@ -337,8 +340,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobSchedules
-            SET ClaimUntil = @RetryAt,
-                UpdatedAt = clock_timestamp()
+            SET ClaimToken = NULL,
+                ClaimUntil = @RetryAt,
+                UpdatedAt = clock_timestamp(),
+                Version = Version + 1
             WHERE Id = @ScheduleId
               AND ClaimToken = @ClaimToken;",
             new
