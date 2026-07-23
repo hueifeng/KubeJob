@@ -35,9 +35,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     public async ValueTask<IReadOnlyList<OutboxMessageRecord>> ClaimPendingAsync(
         DateTimeOffset now,
+        TimeSpan claimDuration,
         int batchSize,
         CancellationToken cancellationToken)
     {
+        _ = now;
+        if (claimDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(claimDuration));
+        }
+
         if (batchSize <= 0)
         {
             return Array.Empty<OutboxMessageRecord>();
@@ -45,12 +52,17 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var databaseNow = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
+            "SELECT clock_timestamp();",
+            transaction: transaction,
+            cancellationToken: cancellationToken));
+        var claimUntil = databaseNow.Add(claimDuration);
 
         var messages = (await connection.QueryAsync<OutboxMessageRecord>(new CommandDefinition(@"
             SELECT *
             FROM Kj2_Outbox
-            WHERE State IN (@Pending, @Failed)
-              AND AvailableAt <= clock_timestamp()
+            WHERE State IN (@Pending, @Failed, @Publishing)
+              AND AvailableAt <= @Now
             ORDER BY AvailableAt, CreatedAt
             FOR UPDATE SKIP LOCKED
             LIMIT @BatchSize;",
@@ -58,6 +70,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 Pending = (int)OutboxDeliveryState.Pending,
                 Failed = (int)OutboxDeliveryState.Failed,
+                Publishing = (int)OutboxDeliveryState.Publishing,
+                Now = databaseNow,
                 BatchSize = batchSize
             },
             transaction,
@@ -68,11 +82,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
             await connection.ExecuteAsync(new CommandDefinition(@"
                 UPDATE Kj2_Outbox
                 SET State = @Publishing,
+                    AvailableAt = @ClaimUntil,
                     PublishAttempts = PublishAttempts + 1
                 WHERE Id = ANY(@Ids);",
                 new
                 {
                     Publishing = (int)OutboxDeliveryState.Publishing,
+                    ClaimUntil = claimUntil,
                     Ids = messages.Select(x => x.Id).ToArray()
                 },
                 transaction,
@@ -81,6 +97,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             foreach (var message in messages)
             {
                 message.State = OutboxDeliveryState.Publishing;
+                message.AvailableAt = claimUntil;
                 message.PublishAttempts++;
             }
         }
@@ -105,7 +122,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 MessageId = messageId,
                 Published = (int)OutboxDeliveryState.Published,
-                PublishedAt = publishedAt
+                PublishedAt = publishedAt.ToUniversalTime()
             },
             cancellationToken: cancellationToken));
     }
@@ -128,7 +145,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 MessageId = messageId,
                 Failed = (int)OutboxDeliveryState.Failed,
                 Error = error,
-                NextAttemptAt = nextAttemptAt
+                NextAttemptAt = nextAttemptAt.ToUniversalTime()
             },
             cancellationToken: cancellationToken));
     }
