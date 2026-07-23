@@ -10,6 +10,8 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    env:
+      KUBEJOB_RUN_POSTGRES_TESTS: '1'
 
     steps:
     - uses: actions/checkout@v4
