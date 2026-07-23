@@ -36,7 +36,7 @@ public sealed class KubeJobWorkerOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(5);
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
-    public void Validate()
+    internal void ValidateV2()
     {
         if (!Uri.TryCreate(ServerEndpoint, UriKind.Absolute, out var endpoint)
             || endpoint.Scheme is not ("http" or "https"))
