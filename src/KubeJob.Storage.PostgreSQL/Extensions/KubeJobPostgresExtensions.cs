@@ -1,8 +1,11 @@
 using System;
 using KubeJob.Server.Data;
 using KubeJob.Server.Options;
+using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Data;
+using KubeJob.Storage.PostgreSQL.Runtime;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Extensions
 {
@@ -12,15 +15,24 @@ namespace KubeJob.Storage.PostgreSQL.Extensions
         {
             options.StorageConfigurator = services =>
             {
-                services.AddSingleton<IKubeJobRepository>(sp => new KubeJobRepository(connectionString));
-                services.AddSingleton<KubeJob.Server.Data.IStorageInitializer>(sp => new DbInitializer(connectionString));
+                services.AddSingleton<IKubeJobRepository>(_ => new KubeJobRepository(connectionString));
+                services.AddSingleton<KubeJob.Server.Data.IStorageInitializer>(_ => new DbInitializer(connectionString));
+
+                services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+                services.AddSingleton<PostgreSqlJobRuntimeStore>();
+                services.AddSingleton<IJobSubmissionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+                services.AddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+                services.AddSingleton<IJobClaimStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+                services.AddSingleton<IJobCompletionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+                services.AddSingleton<IJobQueryStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+                services.AddSingleton<IOutboxStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
             };
-            
+
             if (options.LockConfigurator == null)
             {
                 options.LockConfigurator = services =>
                 {
-                    services.AddSingleton<IKubeJobLockProvider>(sp => new PostgreSqlLockProvider(connectionString));
+                    services.AddSingleton<IKubeJobLockProvider>(_ => new PostgreSqlLockProvider(connectionString));
                 };
             }
 
