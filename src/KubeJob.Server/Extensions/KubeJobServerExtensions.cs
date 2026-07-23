@@ -18,7 +18,7 @@ namespace KubeJob.Server.Extensions
             configure?.Invoke(options);
 
             services.AddSingleton(options);
-            services.AddSingleton<IOptions<KubeJobServerOptions>>(_ => Options.Create(options));
+            services.AddSingleton<IOptions<KubeJobServerOptions>>(_ => Microsoft.Extensions.Options.Options.Create(options));
 
             services.AddSingleton<IServerIdentity, DefaultServerIdentity>();
 
