@@ -1,0 +1,112 @@
+using KubeJob.Core.Client;
+using KubeJob.Core.Runtime;
+
+namespace KubeJob.Server.Runtime;
+
+public sealed record SubmitJobCommand(
+    string JobKey,
+    string PayloadJson,
+    string Queue,
+    int Priority,
+    DateTimeOffset AvailableAt,
+    string? IdempotencyKey,
+    string? ConcurrencyKey,
+    int MaxAttempts,
+    int TimeoutSeconds);
+
+public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
+
+public interface IJobSubmissionStore
+{
+    ValueTask<SubmitJobResult> SubmitAsync(
+        SubmitJobCommand command,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> RequestCancelAsync(
+        string runId,
+        string? reason,
+        CancellationToken cancellationToken);
+}
+
+public interface IWorkerSessionStore
+{
+    ValueTask<WorkerSessionRecord> RegisterAsync(
+        RegisterWorkerSessionRequest request,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> HeartbeatAsync(
+        WorkerHeartbeatRequest request,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> CloseAsync(
+        string workerId,
+        string sessionId,
+        long sessionEpoch,
+        CancellationToken cancellationToken);
+}
+
+public interface IJobClaimStore
+{
+    ValueTask<IReadOnlyList<ClaimedJob>> ClaimAsync(
+        ClaimJobsRequest request,
+        TimeSpan leaseDuration,
+        int maxBatchSize,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<LeaseRenewalResult>> RenewLeasesAsync(
+        RenewLeasesRequest request,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken);
+}
+
+public interface IJobCompletionStore
+{
+    ValueTask<CompleteAttemptResponse> CompleteAsync(
+        CompleteAttemptRequest request,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken);
+
+    ValueTask<int> RequeueExpiredLeasesAsync(
+        DateTimeOffset now,
+        TimeSpan retryDelay,
+        int batchSize,
+        CancellationToken cancellationToken);
+}
+
+public interface IJobQueryStore
+{
+    ValueTask<JobRunRecord?> GetRunAsync(
+        string runId,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(
+        string runId,
+        CancellationToken cancellationToken);
+}
+
+public interface IOutboxStore
+{
+    ValueTask<IReadOnlyList<OutboxMessageRecord>> ClaimPendingAsync(
+        DateTimeOffset now,
+        int batchSize,
+        CancellationToken cancellationToken);
+
+    ValueTask MarkPublishedAsync(
+        string messageId,
+        DateTimeOffset publishedAt,
+        CancellationToken cancellationToken);
+
+    ValueTask MarkFailedAsync(
+        string messageId,
+        string error,
+        DateTimeOffset nextAttemptAt,
+        CancellationToken cancellationToken);
+}
+
+public interface IWorkAvailableNotifier
+{
+    ValueTask PublishAsync(
+        string queue,
+        string payloadJson,
+        CancellationToken cancellationToken);
+}
