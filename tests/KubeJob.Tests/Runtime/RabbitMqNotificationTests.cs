@@ -30,7 +30,7 @@ public sealed class RabbitMqNotificationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddKubeJobWorkerRuntime(options =>
+        services.AddKubeJobWorker(options =>
         {
             options.ServerEndpoint = "https://jobs.internal/";
             options.WorkerId = "worker-1";
