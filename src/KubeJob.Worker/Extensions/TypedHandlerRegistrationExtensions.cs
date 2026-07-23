@@ -1,6 +1,7 @@
 using System.Reflection;
 using KubeJob.Core.Attributes;
 using KubeJob.Core.Interfaces;
+using KubeJob.Core.Jobs;
 using KubeJob.Worker.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -29,6 +30,6 @@ public static class TypedHandlerRegistrationExtensions
                 $"Typed handler '{typeof(TJob).FullName}' must declare [KubeJob(\"stable.key\")].");
         }
 
-        return services.AddKubeJobHandler<TJob, TPayload>(jobKey);
+        return services.AddKubeJobHandler<TJob, TPayload>(new JobKey<TPayload>(jobKey));
     }
 }
