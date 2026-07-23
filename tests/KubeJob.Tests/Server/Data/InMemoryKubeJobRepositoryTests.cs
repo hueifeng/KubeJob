@@ -27,13 +27,14 @@ namespace KubeJob.Tests.Server.Data
             (await repository.InsertJobRunAsync(run)).Should().BeTrue();
             (await repository.AssignRunAsync(run.Id, "worker-1", "token-1")).Should().BeTrue();
             (await repository.GetAssignedRunsForNodeAsync("worker-1", 1)).Should().ContainSingle();
+            var assignmentToken = (await repository.GetJobRunAsync(run.Id))!.RowVersion;
 
             await repository.MarkRunStatusAsync(run.Id, JobStatus.Succeeded,
-                workerId: "stale-worker", rowVersion: "token-1");
+                workerId: "stale-worker", rowVersion: assignmentToken);
             (await repository.GetJobRunAsync(run.Id))!.Status.Should().Be(JobStatus.Assigned);
 
             await repository.MarkRunStatusAsync(run.Id, JobStatus.Succeeded,
-                workerId: "worker-1", rowVersion: "token-1");
+                workerId: "worker-1", rowVersion: assignmentToken);
             (await repository.GetJobRunAsync(run.Id))!.Status.Should().Be(JobStatus.Succeeded);
         }
 

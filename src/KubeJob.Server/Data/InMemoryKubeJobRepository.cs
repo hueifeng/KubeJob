@@ -106,7 +106,7 @@ namespace KubeJob.Server.Data
             if (_runs.TryGetValue(runId, out var run) && run.Status == JobStatus.Pending && run.RowVersion == oldRowVersion)
             {
                 run.TargetNodeId = targetNodeId;
-                run.Status = JobStatus.Assigned;
+                run.Status = JobStatus.Running;
                 run.RowVersion = Guid.NewGuid().ToString();
                 return Task.FromResult(true);
             }
