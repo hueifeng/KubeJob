@@ -20,7 +20,7 @@ public sealed class JobScheduleRecord
     public DateTimeOffset? LastFireAt { get; set; }
     public string? ClaimToken { get; set; }
     public DateTimeOffset? ClaimUntil { get; set; }
-    public DateTimeOffset CreatedAt { get; init; }
+    public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public long Version { get; set; }
 }
