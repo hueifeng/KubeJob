@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
 
