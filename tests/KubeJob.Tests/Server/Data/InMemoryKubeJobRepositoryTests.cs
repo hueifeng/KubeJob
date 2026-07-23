@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using KubeJob.Core.Domain;
 using KubeJob.Core.Enums;
+using KubeJob.Server.Data;
 using Xunit;
 
 namespace KubeJob.Tests.Server.Data
