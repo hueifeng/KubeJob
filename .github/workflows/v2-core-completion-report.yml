@@ -46,7 +46,21 @@ jobs:
       - id: validate
         name: Validate completed V2 core
         continue-on-error: true
-        run: bash eng/validate-v2-complete.sh
+        shell: bash
+        run: |
+          mkdir -p artifacts/validation
+          set -o pipefail
+          bash eng/validate-v2-complete.sh 2>&1 \
+            | tee artifacts/validation/v2-core-completion.log
+
+      - name: Upload validation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-core-completion-log
+          path: artifacts/validation/v2-core-completion.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Report completion result
         if: always() && github.event_name == 'pull_request'
