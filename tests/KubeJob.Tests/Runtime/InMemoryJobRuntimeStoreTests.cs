@@ -37,6 +37,22 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Runs_with_the_same_concurrency_key_do_not_run_together()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(concurrencyKey: "tenant:42"), CancellationToken.None);
+        await store.SubmitAsync(NewCommand(concurrencyKey: "tenant:42"), CancellationToken.None);
+        var workerA = await RegisterAsync(store, "worker-a", "session-a");
+        var workerB = await RegisterAsync(store, "worker-b", "session-b");
+
+        var claims = await Task.WhenAll(
+            store.ClaimAsync(NewClaim(workerA), TimeSpan.FromSeconds(30), 1, CancellationToken.None).AsTask(),
+            store.ClaimAsync(NewClaim(workerB), TimeSpan.FromSeconds(30), 1, CancellationToken.None).AsTask());
+
+        claims.Sum(x => x.Count).Should().Be(1);
+    }
+
+    [Fact]
     public async Task Retry_creates_a_new_attempt_for_the_same_run()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -62,6 +78,50 @@ public sealed class InMemoryJobRuntimeStoreTests
         second.RunId.Should().Be(run.Id);
         second.AttemptNumber.Should().Be(2);
         second.AttemptId.Should().NotBe(first.AttemptId);
+    }
+
+    [Fact]
+    public async Task Completion_from_expired_attempt_is_rejected_before_reaper_runs()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(maxAttempts: 2), CancellationToken.None);
+        var worker = await RegisterAsync(store, "worker", "session");
+        var claim = (await store.ClaimAsync(
+            NewClaim(worker),
+            TimeSpan.FromSeconds(-1),
+            1,
+            CancellationToken.None)).Single();
+
+        var completion = await store.CompleteAsync(
+            NewCompletion(worker, claim, JobAttemptOutcome.Succeeded),
+            TimeSpan.Zero,
+            CancellationToken.None);
+
+        completion.Accepted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Expired_attempt_cannot_be_renewed()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(maxAttempts: 2), CancellationToken.None);
+        var worker = await RegisterAsync(store, "worker", "session");
+        var claim = (await store.ClaimAsync(
+            NewClaim(worker),
+            TimeSpan.FromSeconds(-1),
+            1,
+            CancellationToken.None)).Single();
+
+        var renewal = await store.RenewLeasesAsync(
+            new RenewLeasesRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                new[] { new LeaseRenewal(claim.AttemptId, claim.LeaseToken) }),
+            TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        renewal.Single().Renewed.Should().BeFalse();
     }
 
     [Fact]
@@ -103,6 +163,26 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Re_registering_worker_invalidates_previous_session_epoch()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var oldSession = await RegisterAsync(store, "worker", "session-old");
+        var newSession = await RegisterAsync(store, "worker", "session-new");
+
+        var oldHeartbeat = await store.HeartbeatAsync(
+            new WorkerHeartbeatRequest(
+                oldSession.WorkerId,
+                oldSession.SessionId,
+                oldSession.Epoch,
+                1,
+                WorkerSessionState.Ready),
+            CancellationToken.None);
+
+        newSession.Epoch.Should().Be(oldSession.Epoch + 1);
+        oldHeartbeat.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Canceling_pending_run_prevents_claim()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -122,16 +202,42 @@ public sealed class InMemoryJobRuntimeStoreTests
         snapshot!.Phase.Should().Be(JobPhase.Canceled);
     }
 
+    [Fact]
+    public async Task Failed_outbox_message_becomes_available_for_retry()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        var firstClaim = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            10,
+            CancellationToken.None);
+        var message = firstClaim.Single();
+
+        await store.MarkFailedAsync(
+            message.Id,
+            "broker unavailable",
+            DateTimeOffset.UtcNow.AddSeconds(-1),
+            CancellationToken.None);
+        var retryClaim = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow,
+            10,
+            CancellationToken.None);
+
+        retryClaim.Single().Id.Should().Be(message.Id);
+        retryClaim.Single().PublishAttempts.Should().Be(2);
+    }
+
     private static SubmitJobCommand NewCommand(
         string? idempotencyKey = null,
-        int maxAttempts = 1) => new(
+        int maxAttempts = 1,
+        string? concurrencyKey = null) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         "default",
         0,
         DateTimeOffset.UtcNow,
         idempotencyKey,
-        null,
+        concurrencyKey,
         maxAttempts,
         300);
 
