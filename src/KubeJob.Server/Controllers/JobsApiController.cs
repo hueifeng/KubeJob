@@ -45,21 +45,33 @@ public sealed class JobsApiController : ControllerBase
             return BadRequest("PayloadJson must contain valid JSON.");
         }
 
-        var result = await _submissions.SubmitAsync(
-            new SubmitJobCommand(
-                request.JobKey,
-                request.PayloadJson,
-                request.Queue,
-                request.Priority,
-                (request.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime(),
-                request.IdempotencyKey,
-                request.ConcurrencyKey,
-                request.MaxAttempts,
-                request.TimeoutSeconds),
-            cancellationToken);
+        try
+        {
+            var result = await _submissions.SubmitAsync(
+                new SubmitJobCommand(
+                    request.JobKey,
+                    request.PayloadJson,
+                    request.Queue,
+                    request.Priority,
+                    (request.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime(),
+                    request.IdempotencyKey,
+                    request.ConcurrencyKey,
+                    request.MaxAttempts,
+                    request.TimeoutSeconds),
+                cancellationToken);
 
-        var handle = new JobHandle(result.Run.Id);
-        return result.Existing ? Ok(handle) : Accepted(handle);
+            var handle = new JobHandle(result.Run.Id);
+            return result.Existing ? Ok(handle) : Accepted(handle);
+        }
+        catch (IdempotencyConflictException conflict)
+        {
+            return Conflict(new
+            {
+                code = "idempotency_conflict",
+                conflict.IdempotencyKey,
+                conflict.ExistingJobId
+            });
+        }
     }
 
     [HttpGet("{runId}")]
