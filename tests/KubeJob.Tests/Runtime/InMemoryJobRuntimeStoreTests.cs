@@ -183,6 +183,17 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Retrying_same_session_registration_preserves_epoch()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var first = await RegisterAsync(store, "worker", "same-session");
+        var retry = await RegisterAsync(store, "worker", "same-session");
+
+        retry.Epoch.Should().Be(first.Epoch);
+        retry.SessionId.Should().Be(first.SessionId);
+    }
+
+    [Fact]
     public async Task Canceling_pending_run_prevents_claim()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -209,6 +220,7 @@ public sealed class InMemoryJobRuntimeStoreTests
         await store.SubmitAsync(NewCommand(), CancellationToken.None);
         var firstClaim = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromSeconds(30),
             10,
             CancellationToken.None);
         var message = firstClaim.Single();
@@ -220,11 +232,40 @@ public sealed class InMemoryJobRuntimeStoreTests
             CancellationToken.None);
         var retryClaim = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(30),
             10,
             CancellationToken.None);
 
         retryClaim.Single().Id.Should().Be(message.Id);
         retryClaim.Single().PublishAttempts.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Abandoned_publishing_message_is_reclaimed_after_claim_lease()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        var firstNow = DateTimeOffset.UtcNow.AddSeconds(1);
+        var firstClaim = await store.ClaimPendingAsync(
+            firstNow,
+            TimeSpan.FromSeconds(10),
+            10,
+            CancellationToken.None);
+
+        var beforeExpiry = await store.ClaimPendingAsync(
+            firstNow.AddSeconds(9),
+            TimeSpan.FromSeconds(10),
+            10,
+            CancellationToken.None);
+        var afterExpiry = await store.ClaimPendingAsync(
+            firstNow.AddSeconds(11),
+            TimeSpan.FromSeconds(10),
+            10,
+            CancellationToken.None);
+
+        beforeExpiry.Should().BeEmpty();
+        afterExpiry.Single().Id.Should().Be(firstClaim.Single().Id);
+        afterExpiry.Single().PublishAttempts.Should().Be(2);
     }
 
     private static SubmitJobCommand NewCommand(
