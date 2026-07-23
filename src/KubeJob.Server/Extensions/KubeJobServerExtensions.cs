@@ -56,16 +56,20 @@ namespace KubeJob.Server.Extensions
 
             services.AddControllers();
 
-            // Legacy runtime remains enabled during the migration window.
-            services.AddHostedService<CronSchedulerService>();
-            services.AddHostedService<JobDispatcherService>();
-            services.AddHostedService<NodeHealthService>();
-            services.AddHostedService<HistoryCleanupService>();
+            if (options.EnableLegacyHostedServices)
+            {
+                services.AddHostedService<CronSchedulerService>();
+                services.AddHostedService<JobDispatcherService>();
+                services.AddHostedService<NodeHealthService>();
+                services.AddHostedService<HistoryCleanupService>();
+            }
 
-            // V2 reconcilers are bounded and coordinate through store transactions.
-            services.AddHostedService<ScheduleReconcilerService>();
-            services.AddHostedService<LeaseReaperService>();
-            services.AddHostedService<OutboxPublisherService>();
+            if (options.EnableV2HostedServices)
+            {
+                services.AddHostedService<ScheduleReconcilerService>();
+                services.AddHostedService<LeaseReaperService>();
+                services.AddHostedService<OutboxPublisherService>();
+            }
 
             return services;
         }
