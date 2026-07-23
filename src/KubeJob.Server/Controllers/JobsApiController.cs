@@ -27,16 +27,18 @@ public sealed class JobsApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.JobKey)
+            || string.IsNullOrWhiteSpace(request.PayloadJson)
             || string.IsNullOrWhiteSpace(request.Queue)
             || request.MaxAttempts < 1
             || request.TimeoutSeconds < 1)
         {
-            return BadRequest("JobKey, queue, positive MaxAttempts, and positive TimeoutSeconds are required.");
+            return BadRequest(
+                "JobKey, valid payload JSON, queue, positive MaxAttempts, and positive TimeoutSeconds are required.");
         }
 
         try
         {
-            using var _ = JsonDocument.Parse(request.PayloadJson);
+            using var document = JsonDocument.Parse(request.PayloadJson);
         }
         catch (JsonException)
         {
@@ -49,7 +51,7 @@ public sealed class JobsApiController : ControllerBase
                 request.PayloadJson,
                 request.Queue,
                 request.Priority,
-                request.NotBefore ?? DateTimeOffset.UtcNow,
+                (request.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime(),
                 request.IdempotencyKey,
                 request.ConcurrencyKey,
                 request.MaxAttempts,
