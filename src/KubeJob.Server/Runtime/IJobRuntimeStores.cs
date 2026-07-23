@@ -86,8 +86,13 @@ public interface IJobQueryStore
 
 public interface IOutboxStore
 {
+    /// <summary>
+    /// Claims messages for publication. A message in Publishing state becomes claimable
+    /// again after <paramref name="claimDuration"/>, allowing recovery after publisher crashes.
+    /// </summary>
     ValueTask<IReadOnlyList<OutboxMessageRecord>> ClaimPendingAsync(
         DateTimeOffset now,
+        TimeSpan claimDuration,
         int batchSize,
         CancellationToken cancellationToken);
 
