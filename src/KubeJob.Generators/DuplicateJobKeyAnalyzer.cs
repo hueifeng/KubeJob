@@ -19,7 +19,8 @@ public sealed class DuplicateJobKeyAnalyzer : DiagnosticAnalyzer
         messageFormat: "Job key '{0}' is declared by multiple handlers: {1}",
         category: "KubeJob.Generators",
         defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true);
+        isEnabledByDefault: true,
+        customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(DuplicateJobKey);
