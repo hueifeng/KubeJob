@@ -26,6 +26,26 @@ public sealed partial class PostgreSqlJobRuntimeStore :
 
     private static string NewId() => Guid.NewGuid().ToString("N");
 
+    /// <summary>
+    /// Npgsql exposes PostgreSQL timestamptz scalars as UTC DateTime values.
+    /// Normalize the database clock at one boundary instead of asking Dapper
+    /// to convert DateTime directly to DateTimeOffset.
+    /// </summary>
+    private static async ValueTask<DateTimeOffset> GetDatabaseNowAsync(
+        IDbConnection connection,
+        IDbTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        var value = await connection.ExecuteScalarAsync<DateTime>(new CommandDefinition(
+            "SELECT clock_timestamp();",
+            transaction: transaction,
+            cancellationToken: cancellationToken));
+        var utc = value.Kind == DateTimeKind.Utc
+            ? value
+            : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        return new DateTimeOffset(utc);
+    }
+
     private static JobAttemptPhase MapAttemptPhase(JobAttemptOutcome outcome) => outcome switch
     {
         JobAttemptOutcome.Succeeded => JobAttemptPhase.Succeeded,
