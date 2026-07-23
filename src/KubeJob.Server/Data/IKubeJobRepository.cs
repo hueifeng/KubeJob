@@ -21,6 +21,13 @@ namespace KubeJob.Server.Data
         Task<bool> HasActiveRunsForSpecAsync(string specId);
         Task CancelActiveRunsForSpecAsync(string specId, string reason);
         Task<bool> AssignRunAsync(string runId, string targetNodeId, string oldRowVersion);
+        Task<bool> TryTransitionRunStatusAsync(
+            string runId,
+            string targetNodeId,
+            JobStatus expectedStatus,
+            JobStatus newStatus,
+            DateTime? startTime = null,
+            DateTime? endTime = null);
         Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId);
         Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null);
         Task<List<JobRun>> GetRecentRunsAsync(int limit = 50);

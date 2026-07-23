@@ -112,6 +112,26 @@ namespace KubeJob.Server.Data
             return Task.FromResult(false);
         }
 
+        public Task<bool> TryTransitionRunStatusAsync(
+            string runId,
+            string targetNodeId,
+            JobStatus expectedStatus,
+            JobStatus newStatus,
+            DateTime? startTime = null,
+            DateTime? endTime = null)
+        {
+            if (!_runs.TryGetValue(runId, out var run) ||
+                run.Status != expectedStatus ||
+                !string.Equals(run.TargetNodeId, targetNodeId, StringComparison.Ordinal))
+                return Task.FromResult(false);
+
+            run.Status = newStatus;
+            if (startTime.HasValue) run.StartTime = startTime;
+            if (endTime.HasValue) run.EndTime = endTime;
+            run.RowVersion = Guid.NewGuid().ToString("N");
+            return Task.FromResult(true);
+        }
+
         public Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId)
         {
             var assigned = _runs.Values

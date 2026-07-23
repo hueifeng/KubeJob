@@ -153,6 +153,38 @@ namespace KubeJob.Storage.PostgreSQL.Data
             return affected > 0;
         }
 
+        public async Task<bool> TryTransitionRunStatusAsync(
+            string runId,
+            string targetNodeId,
+            JobStatus expectedStatus,
+            JobStatus newStatus,
+            DateTime? startTime = null,
+            DateTime? endTime = null)
+        {
+            using var conn = CreateConnection();
+            const string sql = """
+                UPDATE Kj_JobRuns
+                SET Status = @NewStatus,
+                    StartTime = COALESCE(@StartTime, StartTime),
+                    EndTime = COALESCE(@EndTime, EndTime),
+                    RowVersion = @NewRowVersion
+                WHERE Id = @Id
+                  AND TargetNodeId = @TargetNodeId
+                  AND Status = @ExpectedStatus;
+                """;
+            var affected = await conn.ExecuteAsync(sql, new
+            {
+                Id = runId,
+                TargetNodeId = targetNodeId,
+                ExpectedStatus = (int)expectedStatus,
+                NewStatus = (int)newStatus,
+                StartTime = startTime,
+                EndTime = endTime,
+                NewRowVersion = Guid.NewGuid().ToString("N")
+            });
+            return affected == 1;
+        }
+
         public async Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId)
         {
             using var conn = CreateConnection();
