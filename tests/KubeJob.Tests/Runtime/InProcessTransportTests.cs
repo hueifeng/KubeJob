@@ -16,14 +16,13 @@ public sealed class InProcessTransportTests
         services.AddLogging();
         services.AddKubeJobServer();
         services.UseInProcessKubeJobWorkerTransport();
-        services.AddKubeJobWorkerRuntime(options =>
+        services.AddKubeJobWorker(options =>
         {
             options.WorkerId = "unified-worker";
             options.MaxConcurrentJobs = 1;
         });
 
         using var provider = services.BuildServiceProvider();
-
         provider.GetRequiredService<IWorkerRuntimeClient>()
             .Should().BeOfType<InProcessWorkerRuntimeClient>();
     }
@@ -39,36 +38,20 @@ public sealed class InProcessTransportTests
 
         var submissions = provider.GetRequiredService<IJobSubmissionStore>();
         await submissions.SubmitAsync(
-            new SubmitJobCommand(
-                "test.echo",
-                "{}",
-                "default",
-                0,
-                DateTimeOffset.UtcNow,
-                null,
-                null,
-                1,
-                30),
+            new SubmitJobCommand("test.echo", "{}", "default", 0, DateTimeOffset.UtcNow, null, null, 1, 30),
             CancellationToken.None);
 
         var client = provider.GetRequiredService<IWorkerRuntimeClient>();
         var registration = await client.RegisterAsync(
             new RegisterWorkerSessionRequest(
-                "worker",
-                "session",
-                "test",
-                "localhost",
-                1,
+                "worker", "session", "test", "localhost", 1,
                 new[] { "default" },
                 new[] { "test.echo" },
                 new Dictionary<string, string>()),
             CancellationToken.None);
         var claims = await client.ClaimAsync(
             new ClaimJobsRequest(
-                "worker",
-                "session",
-                registration.SessionEpoch,
-                1,
+                "worker", "session", registration.SessionEpoch, 1,
                 new[] { "default" },
                 new[] { "test.echo" }),
             CancellationToken.None);
