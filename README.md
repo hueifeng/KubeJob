@@ -1,6 +1,6 @@
 # KubeJob
 
-[中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [Architecture](./docs/v2/architecture.md)
+[中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [Architecture](./docs/v2/architecture.md) · [Hardening Review](./docs/v2/hardening-review.md)
 
 KubeJob is a typed, embeddable, distributed background-job runtime for .NET.
 It uses logical Runs, physical Attempts, pull-based workers, expiring leases,
@@ -162,8 +162,9 @@ Worker Session. Stale workers cannot overwrite newer sessions.
 - independent Schedule state, policies, and next/last fire time.
 
 The Dashboard deliberately does not expose lease or fencing credentials. It is
-**read-only by default**, and serialized job payloads are **hidden by default**.
-Production hosts should bind it to their normal authorization policy:
+**read-only by default**, serialized job payloads are **hidden by default**, and
+its embedded UI has no public CDN dependency. Production hosts should bind it
+to their normal authorization policy:
 
 ```csharp
 builder.Services.AddAuthorization(options =>
@@ -178,6 +179,8 @@ builder.Services.AddKubeJobDashboard(options =>
     options.AuthorizationPolicy = "KubeJobDashboard";
     options.ShowPayloads = false;
     options.AllowMutatingActions = false;
+    options.MaximumWorkerSessions = 250;
+    options.MaximumSchedules = 250;
 });
 ```
 
