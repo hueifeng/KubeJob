@@ -11,11 +11,14 @@ public sealed record DashboardRunsViewModel(
 
 public sealed record DashboardRunDetailsViewModel(
     JobRunRecord Run,
-    IReadOnlyList<JobAttemptRecord> Attempts);
+    IReadOnlyList<JobAttemptRecord> Attempts,
+    bool ShowPayload,
+    bool AllowMutatingActions);
 
 public sealed record DashboardWorkersViewModel(
     IReadOnlyList<WorkerSessionRecord> Sessions,
     DateTimeOffset ObservedAt);
 
 public sealed record DashboardSchedulesViewModel(
-    IReadOnlyList<JobScheduleRecord> Schedules);
+    IReadOnlyList<JobScheduleRecord> Schedules,
+    bool AllowMutatingActions);
