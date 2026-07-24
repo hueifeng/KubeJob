@@ -77,7 +77,7 @@ public sealed class UnifiedRuntimeEndToEndTests
         builder.Services.AddKubeJobHandler<EchoJob, EchoPayload>();
         builder.Services.AddSingleton<ExecutionProbe>();
 
-        await using var host = builder.Build();
+        using var host = builder.Build();
         await host.StartAsync();
 
         try
@@ -103,7 +103,7 @@ public sealed class UnifiedRuntimeEndToEndTests
                 .Executions.Single();
 
             status.Phase.Should().Be(JobPhase.Succeeded);
-            status.Attempt.Should().Be(1);
+            status.AttemptCount.Should().Be(1);
             observation.Value.Should().Be("hello");
             observation.RunId.Should().Be(handle.JobId);
             observation.AttemptNumber.Should().Be(1);
