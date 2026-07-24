@@ -34,7 +34,8 @@ public sealed class WorkerAndDashboardHardeningTests
         options.WorkerId.Should().Be("worker-a");
         options.BuildId.Should().Be("build-42");
         options.Queues.Should().Equal("default", "mail");
-        options.Labels.Should().ContainSingle("env", "production");
+        options.Labels.Should().HaveCount(1);
+        options.Labels["env"].Should().Be("production");
     }
 
     [Fact]
