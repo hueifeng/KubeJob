@@ -14,6 +14,17 @@ public sealed partial class InMemoryJobRuntimeStore
         {
             var sessions = _sessions.Values.ToArray();
             var schedules = _schedules.Values.ToArray();
+            var queues = _runs.Values
+                .Where(run => run.Phase is JobPhase.Pending or JobPhase.Running)
+                .GroupBy(run => run.Queue, StringComparer.Ordinal)
+                .Select(group => new DashboardQueueSummary(
+                    group.Key,
+                    group.Count(run => run.Phase == JobPhase.Pending),
+                    group.Count(run => run.Phase == JobPhase.Running)))
+                .OrderByDescending(queue => queue.ActiveRuns)
+                .ThenBy(queue => queue.Queue, StringComparer.Ordinal)
+                .Take(12)
+                .ToArray();
             var recent = _runs.Values
                 .OrderByDescending(run => run.CreatedAt)
                 .ThenByDescending(run => run.Id, StringComparer.Ordinal)
@@ -41,6 +52,7 @@ public sealed partial class InMemoryJobRuntimeStore
                     OutboxDeliveryState.Pending or
                     OutboxDeliveryState.Publishing or
                     OutboxDeliveryState.Failed),
+                Queues: queues,
                 RecentRuns: recent));
         }
     }
