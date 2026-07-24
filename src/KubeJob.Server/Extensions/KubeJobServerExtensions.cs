@@ -1,5 +1,6 @@
 using KubeJob.Core.Client;
 using KubeJob.Core.Scheduling;
+using KubeJob.Server.Controllers;
 using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Builder;
@@ -34,7 +35,8 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
         services.AddOptions<JobRuntimeOptions>();
 
-        services.AddControllers();
+        services.AddControllers()
+            .AddApplicationPart(typeof(JobsApiController).Assembly);
         services.AddHostedService<ScheduleReconcilerService>();
         services.AddHostedService<LeaseReaperService>();
         services.AddHostedService<OutboxPublisherService>();
@@ -55,7 +57,8 @@ public static class KubeJobServerExtensions
             mvc.Conventions.Add(new KubeJobDashboardRouteConvention(
                 options.GetNormalizedRoutePrefix(),
                 options.GetNormalizedAuthorizationPolicy()));
-        });
+        })
+        .AddApplicationPart(typeof(DashboardController).Assembly);
         return services;
     }
 
