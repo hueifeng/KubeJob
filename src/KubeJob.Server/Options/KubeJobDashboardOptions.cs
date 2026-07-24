@@ -17,6 +17,18 @@ public sealed class KubeJobDashboardOptions
     /// </summary>
     public string? AuthorizationPolicy { get; set; }
 
+    /// <summary>
+    /// Controls whether serialized job payloads are rendered on Run detail pages.
+    /// Payloads are hidden by default because they may contain secrets or personal data.
+    /// </summary>
+    public bool ShowPayloads { get; set; }
+
+    /// <summary>
+    /// Enables operational write actions such as canceling Runs and enabling or
+    /// disabling Schedules. The dashboard is read-only by default.
+    /// </summary>
+    public bool AllowMutatingActions { get; set; }
+
     internal string GetNormalizedRoutePrefix()
         => string.IsNullOrWhiteSpace(RoutePrefix)
             ? "kubejob"
