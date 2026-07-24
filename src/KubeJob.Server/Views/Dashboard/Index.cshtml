@@ -49,42 +49,32 @@
 </div>
 
 <div class="row g-3 mb-4">
-    <div class="col-md-8">
+    <div class="col-lg-7">
         <div class="section-header d-flex justify-content-between align-items-center">
             <div>
-                <h5 class="mb-1 fw-bold">Recent logical runs</h5>
-                <div class="text-muted small">Retries remain under the same Run and appear as separate Attempts.</div>
+                <h5 class="mb-1 fw-bold">Queue backlog</h5>
+                <div class="text-muted small">Active logical Runs grouped by their submission queue.</div>
             </div>
-            <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View all</a>
+            <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View runs</a>
         </div>
-        <div class="table-card">
+        <div class="table-card h-100">
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
-                    <thead><tr><th>Run</th><th>Job / Queue</th><th>Phase</th><th>Attempts</th><th>Created</th></tr></thead>
+                    <thead><tr><th>Queue</th><th>Pending</th><th>Running</th><th>Active</th></tr></thead>
                     <tbody>
-                    @if (overview.RecentRuns.Count == 0)
+                    @if (overview.Queues.Count == 0)
                     {
-                        <tr><td colspan="5" class="text-center text-muted py-5">No runs have been submitted.</td></tr>
+                        <tr><td colspan="4" class="text-center text-muted py-5">No active queue backlog.</td></tr>
                     }
                     else
                     {
-                        @foreach (var run in overview.RecentRuns)
+                        @foreach (var queue in overview.Queues)
                         {
-                            var badge = run.Phase switch
-                            {
-                                JobPhase.Succeeded => "bg-success-subtle text-success",
-                                JobPhase.Running => "bg-primary-subtle text-primary",
-                                JobPhase.Pending => "bg-warning-subtle text-warning-emphasis",
-                                JobPhase.Canceled => "bg-secondary-subtle text-secondary",
-                                JobPhase.Dead => "bg-dark-subtle text-dark",
-                                _ => "bg-danger-subtle text-danger"
-                            };
                             <tr>
-                                <td><a asp-action="Run" asp-route-id="@run.Id" class="mono text-decoration-none">@run.Id[..Math.Min(10, run.Id.Length)]</a></td>
-                                <td><div class="fw-semibold">@run.JobKey</div><div class="small text-muted">@run.Queue</div></td>
-                                <td><span class="badge @badge">@run.Phase</span></td>
-                                <td>@run.AttemptCount / @run.MaxAttempts</td>
-                                <td class="text-muted small">@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                <td><a asp-action="Runs" asp-route-queue="@queue.Queue" class="fw-semibold text-decoration-none">@queue.Queue</a></td>
+                                <td><span class="badge bg-warning-subtle text-warning-emphasis">@queue.PendingRuns</span></td>
+                                <td><span class="badge bg-primary-subtle text-primary">@queue.RunningRuns</span></td>
+                                <td class="fw-bold">@queue.ActiveRuns</td>
                             </tr>
                         }
                     }
@@ -93,13 +83,60 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
-        <div class="section-header"><h5 class="mb-1 fw-bold">Runtime signals</h5><div class="text-muted small">Operational backlog and terminal totals.</div></div>
-        <div class="detail-card p-3">
+    <div class="col-lg-5">
+        <div class="section-header">
+            <h5 class="mb-1 fw-bold">Runtime signals</h5>
+            <div class="text-muted small">Operational backlog and terminal totals.</div>
+        </div>
+        <div class="detail-card p-3 h-100">
             <div class="d-flex justify-content-between py-2 border-bottom"><span>Outbox pending</span><strong>@overview.PendingOutboxMessages</strong></div>
             <div class="d-flex justify-content-between py-2 border-bottom"><span>Succeeded runs</span><strong class="text-success">@overview.SucceededRuns</strong></div>
             <div class="d-flex justify-content-between py-2 border-bottom"><span>Canceled runs</span><strong>@overview.CanceledRuns</strong></div>
+            <div class="d-flex justify-content-between py-2 border-bottom"><span>Ready workers</span><strong>@overview.ReadyWorkers</strong></div>
             <div class="d-flex justify-content-between py-2"><span>Total terminal</span><strong>@(overview.SucceededRuns + overview.FailedRuns + overview.CanceledRuns + overview.DeadRuns)</strong></div>
         </div>
+    </div>
+</div>
+
+<div class="section-header d-flex justify-content-between align-items-center">
+    <div>
+        <h5 class="mb-1 fw-bold">Recent logical runs</h5>
+        <div class="text-muted small">Retries remain under the same Run and appear as separate Attempts.</div>
+    </div>
+    <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View all</a>
+</div>
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead><tr><th>Run</th><th>Job / Queue</th><th>Phase</th><th>Attempts</th><th>Created</th></tr></thead>
+            <tbody>
+            @if (overview.RecentRuns.Count == 0)
+            {
+                <tr><td colspan="5" class="text-center text-muted py-5">No runs have been submitted.</td></tr>
+            }
+            else
+            {
+                @foreach (var run in overview.RecentRuns)
+                {
+                    var badge = run.Phase switch
+                    {
+                        JobPhase.Succeeded => "bg-success-subtle text-success",
+                        JobPhase.Running => "bg-primary-subtle text-primary",
+                        JobPhase.Pending => "bg-warning-subtle text-warning-emphasis",
+                        JobPhase.Canceled => "bg-secondary-subtle text-secondary",
+                        JobPhase.Dead => "bg-dark-subtle text-dark",
+                        _ => "bg-danger-subtle text-danger"
+                    };
+                    <tr>
+                        <td><a asp-action="Run" asp-route-id="@run.Id" class="mono text-decoration-none">@run.Id[..Math.Min(10, run.Id.Length)]</a></td>
+                        <td><div class="fw-semibold">@run.JobKey</div><div class="small text-muted">@run.Queue</div></td>
+                        <td><span class="badge @badge">@run.Phase</span></td>
+                        <td>@run.AttemptCount / @run.MaxAttempts</td>
+                        <td class="text-muted small">@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
     </div>
 </div>
