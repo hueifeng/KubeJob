@@ -162,6 +162,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
     }
 
     public async ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
+        int limit,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -180,7 +181,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                    StartedAt,
                    LastHeartbeatAt
             FROM Kj2_WorkerSessions
-            ORDER BY State, LastHeartbeatAt DESC, WorkerId, Epoch DESC;",
+            ORDER BY State, LastHeartbeatAt DESC, WorkerId, Epoch DESC
+            LIMIT @Limit;",
+            new { Limit = Math.Clamp(limit, 1, 1000) },
             cancellationToken: cancellationToken));
 
         return rows.Select(row => new WorkerSessionRecord
@@ -205,13 +208,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
     }
 
     public async ValueTask<IReadOnlyList<JobScheduleRecord>> GetSchedulesAsync(
+        int limit,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return (await connection.QueryAsync<JobScheduleRecord>(new CommandDefinition(@"
             SELECT *
             FROM Kj2_JobSchedules
-            ORDER BY Enabled DESC, NextFireAt, Id;",
+            ORDER BY Enabled DESC, NextFireAt, Id
+            LIMIT @Limit;",
+            new { Limit = Math.Clamp(limit, 1, 1000) },
             cancellationToken: cancellationToken))).ToArray();
     }
 
