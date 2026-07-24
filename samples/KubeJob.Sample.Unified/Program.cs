@@ -1,5 +1,5 @@
 using KubeJob;
-using KubeJob.Sample.WorkerNode.Jobs;
+using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Server.Extensions;
 using KubeJob.Worker.Extensions;
 
