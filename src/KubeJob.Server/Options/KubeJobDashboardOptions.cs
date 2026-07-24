@@ -29,6 +29,17 @@ public sealed class KubeJobDashboardOptions
     /// </summary>
     public bool AllowMutatingActions { get; set; }
 
+    /// <summary>
+    /// Maximum Worker Sessions returned by the simple operations view. Runs have
+    /// dedicated pagination; Worker Sessions are deliberately bounded instead.
+    /// </summary>
+    public int MaximumWorkerSessions { get; set; } = 250;
+
+    /// <summary>
+    /// Maximum Schedules returned by the simple operations view.
+    /// </summary>
+    public int MaximumSchedules { get; set; } = 250;
+
     internal string GetNormalizedRoutePrefix()
         => string.IsNullOrWhiteSpace(RoutePrefix)
             ? "kubejob"
@@ -38,4 +49,10 @@ public sealed class KubeJobDashboardOptions
         => string.IsNullOrWhiteSpace(AuthorizationPolicy)
             ? null
             : AuthorizationPolicy.Trim();
+
+    internal int GetNormalizedMaximumWorkerSessions() =>
+        Math.Clamp(MaximumWorkerSessions, 1, 1000);
+
+    internal int GetNormalizedMaximumSchedules() =>
+        Math.Clamp(MaximumSchedules, 1, 1000);
 }
