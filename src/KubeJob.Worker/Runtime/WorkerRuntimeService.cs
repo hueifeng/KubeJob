@@ -16,6 +16,8 @@ namespace KubeJob.Worker.Runtime;
 /// </summary>
 public sealed class WorkerRuntimeService : BackgroundService
 {
+    private const string TruncatedSuffix = "\n...[truncated]";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly JobHandlerRegistry _registry;
     private readonly IWorkerRuntimeClient _runtimeClient;
@@ -24,7 +26,9 @@ public sealed class WorkerRuntimeService : BackgroundService
     private readonly Channel<ClaimedJob> _channel;
     private readonly ConcurrentDictionary<string, OwnedAttempt> _owned = new(StringComparer.Ordinal);
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
+    private readonly string _hostName = Environment.MachineName;
 
+    private CancellationTokenSource? _sessionLifetime;
     private long _sessionEpoch;
     private int _reservedSlots;
     private int _draining;
@@ -41,7 +45,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         _runtimeClient = runtimeClient;
         _options = options.Value;
         _logger = logger;
-        _options.ValidateV2();
+        _options.Validate();
 
         _channel = Channel.CreateBounded<ClaimedJob>(new BoundedChannelOptions(_options.MaxConcurrentJobs)
         {
@@ -60,31 +64,36 @@ public sealed class WorkerRuntimeService : BackgroundService
                 "The worker has no typed handlers. Register at least one AddKubeJobHandler<TJob, TPayload>.");
         }
 
-        await RegisterSessionUntilAcceptedAsync(stoppingToken);
-        _logger.LogInformation(
-            "KubeJob worker {WorkerId} session {SessionId}/{Epoch} started with capacity {Capacity}",
-            _options.WorkerId,
-            _sessionId,
-            _sessionEpoch,
-            _options.MaxConcurrentJobs);
-
-        var consumers = Enumerable.Range(0, _options.MaxConcurrentJobs)
-            .Select(index => ConsumeAsync(index, stoppingToken))
-            .ToArray();
-        var coordinationLoops = new[]
-        {
-            ClaimLoopAsync(stoppingToken),
-            RenewLoopAsync(stoppingToken),
-            HeartbeatLoopAsync(stoppingToken)
-        };
+        using var sessionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        _sessionLifetime = sessionLifetime;
+        var runtimeToken = sessionLifetime.Token;
 
         try
         {
+            await RegisterSessionUntilAcceptedAsync(runtimeToken);
+            _logger.LogInformation(
+                "KubeJob worker {WorkerId} session {SessionId}/{Epoch} started with capacity {Capacity}",
+                _options.WorkerId,
+                _sessionId,
+                _sessionEpoch,
+                _options.MaxConcurrentJobs);
+
+            var consumers = Enumerable.Range(0, _options.MaxConcurrentJobs)
+                .Select(index => ConsumeAsync(index, runtimeToken))
+                .ToArray();
+            var coordinationLoops = new[]
+            {
+                ClaimLoopAsync(runtimeToken),
+                RenewLoopAsync(runtimeToken),
+                HeartbeatLoopAsync(runtimeToken)
+            };
+
             await Task.WhenAll(consumers.Concat(coordinationLoops));
         }
         finally
         {
             _channel.Writer.TryComplete();
+            Interlocked.CompareExchange(ref _sessionLifetime, null, sessionLifetime);
         }
     }
 
@@ -104,10 +113,7 @@ public sealed class WorkerRuntimeService : BackgroundService
 
         if (!_owned.IsEmpty)
         {
-            foreach (var owned in _owned.Values)
-            {
-                owned.CancellationSource.Cancel();
-            }
+            CancelOwnedAttempts();
         }
 
         await CloseSessionBestEffortAsync(cancellationToken);
@@ -120,9 +126,9 @@ public sealed class WorkerRuntimeService : BackgroundService
             _options.WorkerId,
             _sessionId,
             _options.BuildId,
-            Environment.MachineName,
+            _hostName,
             _options.MaxConcurrentJobs,
-            _options.Queues.Distinct(StringComparer.Ordinal).ToArray(),
+            _options.Queues,
             _registry.Capabilities,
             new Dictionary<string, string>(_options.Labels, StringComparer.Ordinal));
 
@@ -197,6 +203,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                     var owned = new OwnedAttempt(job);
                     if (!_owned.TryAdd(job.AttemptId, owned))
                     {
+                        owned.CancellationSource.Dispose();
                         continue;
                     }
 
@@ -212,6 +219,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                             removed.CancellationSource.Dispose();
                             Interlocked.Decrement(ref _reservedSlots);
                         }
+
                         throw;
                     }
                 }
@@ -273,7 +281,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                             _options.WorkerId,
                             _sessionId,
                             Volatile.Read(ref _sessionEpoch),
-                            Environment.MachineName,
+                            _hostName,
                             _options.BuildId)
                     };
 
@@ -298,7 +306,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                         job,
                         JobAttemptOutcome.Canceled,
                         "canceled",
-                        "Execution was canceled by the control plane or worker drain.",
+                        "Execution was canceled by the control plane, worker drain, or session fencing.",
                         stoppingToken);
                 }
                 catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
@@ -400,11 +408,32 @@ public sealed class WorkerRuntimeService : BackgroundService
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                await SendHeartbeatBestEffortAsync(
-                    Volatile.Read(ref _draining) == 0
-                        ? WorkerSessionState.Ready
-                        : WorkerSessionState.Draining,
-                    stoppingToken);
+                bool accepted;
+                try
+                {
+                    accepted = await SendHeartbeatAsync(
+                        Volatile.Read(ref _draining) == 0
+                            ? WorkerSessionState.Ready
+                            : WorkerSessionState.Draining,
+                        stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "KubeJob heartbeat failed");
+                    continue;
+                }
+
+                if (!accepted)
+                {
+                    FenceSession();
+                    throw new InvalidOperationException(
+                        $"KubeJob worker session '{_options.WorkerId}/{_sessionId}/{Volatile.Read(ref _sessionEpoch)}' " +
+                        "was rejected by the control plane and must restart with a new SessionId.");
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -412,40 +441,55 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
     }
 
-    private async Task SendHeartbeatBestEffortAsync(
+    private async ValueTask<bool> SendHeartbeatAsync(
         WorkerSessionState state,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _sessionEpoch) == 0)
         {
-            return;
+            return true;
         }
 
+        return await _runtimeClient.HeartbeatAsync(
+            new WorkerHeartbeatRequest(
+                _options.WorkerId,
+                _sessionId,
+                Volatile.Read(ref _sessionEpoch),
+                Math.Max(0, _options.MaxConcurrentJobs - Volatile.Read(ref _reservedSlots)),
+                state),
+            cancellationToken);
+    }
+
+    private async Task SendHeartbeatBestEffortAsync(
+        WorkerSessionState state,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            var accepted = await _runtimeClient.HeartbeatAsync(
-                new WorkerHeartbeatRequest(
-                    _options.WorkerId,
-                    _sessionId,
-                    Volatile.Read(ref _sessionEpoch),
-                    Math.Max(0, _options.MaxConcurrentJobs - Volatile.Read(ref _reservedSlots)),
-                    state),
-                cancellationToken);
-
-            if (!accepted)
-            {
-                foreach (var owned in _owned.Values)
-                {
-                    owned.CancellationSource.Cancel();
-                }
-            }
+            await SendHeartbeatAsync(state, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "KubeJob heartbeat failed");
+            _logger.LogDebug(ex, "KubeJob heartbeat failed during shutdown");
+        }
+    }
+
+    private void FenceSession()
+    {
+        Interlocked.Exchange(ref _draining, 1);
+        _channel.Writer.TryComplete();
+        CancelOwnedAttempts();
+        Volatile.Read(ref _sessionLifetime)?.Cancel();
+    }
+
+    private void CancelOwnedAttempts()
+    {
+        foreach (var owned in _owned.Values)
+        {
+            owned.CancellationSource.Cancel();
         }
     }
 
@@ -489,8 +533,8 @@ public sealed class WorkerRuntimeService : BackgroundService
             job.AttemptNumber,
             job.LeaseToken,
             outcome,
-            failureCode,
-            failureMessage);
+            Truncate(failureCode, 200),
+            Truncate(failureMessage, _options.MaximumFailureMessageLength));
 
         for (var attempt = 1; attempt <= 3; attempt++)
         {
@@ -515,12 +559,29 @@ public sealed class WorkerRuntimeService : BackgroundService
                     attempt);
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
 
         _logger.LogError(
             "Unable to report completion for attempt {AttemptId}; waiting for lease reconciliation",
             job.AttemptId);
+    }
+
+    private static string? Truncate(string? value, int maximumLength)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maximumLength)
+        {
+            return value;
+        }
+
+        return value[..(maximumLength - TruncatedSuffix.Length)] + TruncatedSuffix;
     }
 
     private sealed class OwnedAttempt
