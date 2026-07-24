@@ -1,5 +1,6 @@
 using KubeJob.Core.Client;
 using KubeJob.Server.Dashboard;
+using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,17 +13,20 @@ public sealed class DashboardController : Controller
     private readonly IJobQueryStore _queries;
     private readonly IJobSubmissionStore _submissions;
     private readonly IJobScheduleStore _schedules;
+    private readonly KubeJobDashboardOptions _options;
 
     public DashboardController(
         IJobRuntimeDashboardStore dashboard,
         IJobQueryStore queries,
         IJobSubmissionStore submissions,
-        IJobScheduleStore schedules)
+        IJobScheduleStore schedules,
+        KubeJobDashboardOptions options)
     {
         _dashboard = dashboard;
         _queries = queries;
         _submissions = submissions;
         _schedules = schedules;
+        _options = options;
     }
 
     [HttpGet("")]
@@ -64,7 +68,11 @@ public sealed class DashboardController : Controller
         var attempts = await _queries.GetAttemptsAsync(id, cancellationToken);
         return View(
             "~/Views/Dashboard/Run.cshtml",
-            new DashboardRunDetailsViewModel(run, attempts));
+            new DashboardRunDetailsViewModel(
+                run,
+                attempts,
+                _options.ShowPayloads,
+                _options.AllowMutatingActions));
     }
 
     [HttpPost("runs/{id}/cancel")]
@@ -74,6 +82,11 @@ public sealed class DashboardController : Controller
         [FromForm] string? reason,
         CancellationToken cancellationToken)
     {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
+        }
+
         await _submissions.RequestCancelAsync(
             id,
             string.IsNullOrWhiteSpace(reason) ? "Canceled from dashboard." : reason.Trim(),
@@ -96,7 +109,7 @@ public sealed class DashboardController : Controller
         var schedules = await _dashboard.GetSchedulesAsync(cancellationToken);
         return View(
             "~/Views/Dashboard/Schedules.cshtml",
-            new DashboardSchedulesViewModel(schedules));
+            new DashboardSchedulesViewModel(schedules, _options.AllowMutatingActions));
     }
 
     [HttpPost("schedules/{id}/enabled")]
@@ -106,6 +119,11 @@ public sealed class DashboardController : Controller
         [FromForm] bool enabled,
         CancellationToken cancellationToken)
     {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
+        }
+
         var schedule = await _schedules.GetAsync(id, cancellationToken);
         if (schedule is null)
         {
