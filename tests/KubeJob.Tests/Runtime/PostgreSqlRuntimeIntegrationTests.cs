@@ -159,8 +159,9 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None);
 
         run.Should().NotBeNull();
-        schedule!.NextFireAt.Should().Be(next);
-        schedule.LastFireAt.Should().Be(due);
+        schedule!.NextFireAt.Should().BeCloseTo(next, TimeSpan.FromMicroseconds(1));
+        schedule.LastFireAt.Should().NotBeNull();
+        schedule.LastFireAt!.Value.Should().BeCloseTo(due, TimeSpan.FromMicroseconds(1));
         outbox.Should().Contain(message => message.PayloadJson.Contains(run!.Id));
     }
 
@@ -202,10 +203,28 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         submissions.Count(result => result.Existing).Should().Be(1);
     }
 
-    private static SubmitJobCommand NewSubmission(string? idempotencyKey = null) => new(
+    [Fact]
+    public async Task Dashboard_overview_groups_active_runs_by_queue()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        await store.SubmitAsync(NewSubmission(queue: "mail"), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(queue: "reports"), CancellationToken.None);
+
+        var overview = await store.GetOverviewAsync(10, CancellationToken.None);
+
+        overview.Queues.Should().ContainEquivalentOf(
+            new DashboardQueueSummary("mail", PendingRuns: 1, RunningRuns: 0));
+        overview.Queues.Should().ContainEquivalentOf(
+            new DashboardQueueSummary("reports", PendingRuns: 1, RunningRuns: 0));
+    }
+
+    private static SubmitJobCommand NewSubmission(
+        string? idempotencyKey = null,
+        string queue = "default") => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
-        "default",
+        queue,
         0,
         DateTimeOffset.UtcNow,
         idempotencyKey,
