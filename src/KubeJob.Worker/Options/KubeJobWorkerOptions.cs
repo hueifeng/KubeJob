@@ -5,6 +5,8 @@ namespace KubeJob.Worker.Options;
 /// </summary>
 public sealed class KubeJobWorkerOptions
 {
+    private const int MaximumMetadataItems = 256;
+
     /// <summary>
     /// HTTP endpoint of the KubeJob control plane. Unified hosts replace the
     /// transport and do not make localhost HTTP calls.
@@ -66,9 +68,9 @@ public sealed class KubeJobWorkerOptions
             throw new InvalidOperationException("BuildId cannot exceed 300 characters.");
         }
 
-        if (MaxConcurrentJobs < 1)
+        if (MaxConcurrentJobs is < 1 or > 10_000)
         {
-            throw new InvalidOperationException("MaxConcurrentJobs must be positive.");
+            throw new InvalidOperationException("MaxConcurrentJobs must be between 1 and 10000.");
         }
 
         if (ClaimBatchSize is < 1 or > 1024)
@@ -91,6 +93,11 @@ public sealed class KubeJobWorkerOptions
             throw new InvalidOperationException("At least one non-empty queue is required.");
         }
 
+        if (Queues.Count > MaximumMetadataItems)
+        {
+            throw new InvalidOperationException($"A worker cannot register more than {MaximumMetadataItems} queues.");
+        }
+
         if (Queues.Any(queue => queue.Length > 100))
         {
             throw new InvalidOperationException("Queue names cannot exceed 100 characters.");
@@ -101,19 +108,30 @@ public sealed class KubeJobWorkerOptions
             throw new InvalidOperationException("Labels cannot be null.");
         }
 
-        if (Labels.Any(label => string.IsNullOrWhiteSpace(label.Key)
-                                || label.Key.Length > 200
-                                || label.Value is null
-                                || label.Value.Length > 1000))
+        if (Labels.Count > MaximumMetadataItems)
         {
-            throw new InvalidOperationException(
-                "Label keys must contain 1-200 characters and values cannot exceed 1000 characters.");
+            throw new InvalidOperationException($"A worker cannot register more than {MaximumMetadataItems} labels.");
         }
 
-        Labels = Labels.ToDictionary(
-            label => label.Key.Trim(),
-            label => label.Value,
-            StringComparer.Ordinal);
+        var normalizedLabels = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var label in Labels)
+        {
+            var key = label.Key?.Trim() ?? string.Empty;
+            var value = label.Value ?? string.Empty;
+            if (key.Length is < 1 or > 200 || value.Length > 1000)
+            {
+                throw new InvalidOperationException(
+                    "Label keys must contain 1-200 characters and values cannot exceed 1000 characters.");
+            }
+
+            if (!normalizedLabels.TryAdd(key, value))
+            {
+                throw new InvalidOperationException(
+                    $"Worker labels contain duplicate key '{key}' after normalization.");
+            }
+        }
+
+        Labels = normalizedLabels;
 
         if (EmptyPollDelay <= TimeSpan.Zero)
         {
