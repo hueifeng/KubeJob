@@ -87,6 +87,11 @@ public sealed class OutboxPublisherService : BackgroundService
                             stoppingToken);
                     }
                 }
+
+                if (!publishedAny)
+                {
+                    await Task.Delay(_options.OutboxPollInterval, stoppingToken);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -95,11 +100,6 @@ public sealed class OutboxPublisherService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "KubeJob outbox publisher iteration failed");
-            }
-
-            if (!publishedAny)
-            {
-                await Task.Delay(_options.OutboxPollInterval, stoppingToken);
             }
         }
     }
