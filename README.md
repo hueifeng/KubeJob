@@ -71,16 +71,23 @@ builder.Services.AddKubeJob(
         worker.BuildId = "mailer-2026.07";
     });
 
-builder.Services.AddKubeJobDashboard("admin/jobs");
+builder.Services.AddKubeJobDashboard(options =>
+{
+    options.RoutePrefix = "admin/jobs";
+    options.AuthorizationPolicy = "KubeJobDashboard";
+});
 
 var app = builder.Build();
 app.InitializeKubeJobDatabase();
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapControllers();
 app.Run();
 ```
 
-The in-process transport preserves the same Attempt, lease, retry,
-cancellation, and fencing semantics as distributed deployment.
+The host owns authentication and defines the named authorization policy. The
+in-process transport preserves the same Attempt, lease, retry, cancellation,
+and fencing semantics as distributed deployment.
 
 ## Distributed deployment
 
@@ -152,11 +159,31 @@ Worker Session. Stale workers cannot overwrite newer sessions.
 - logical Run filtering and pagination;
 - Run detail with a complete Attempt timeline;
 - Worker Session state, epoch, capacity, queues, capabilities, labels, and heartbeat;
-- independent Schedule state, policies, next/last fire time, and enable/disable actions.
+- independent Schedule state, policies, and next/last fire time.
 
-The Dashboard deliberately does not expose lease or fencing credentials. Run
-payloads may contain application data, so production hosts should protect the
-Dashboard route with their normal authentication and authorization policy.
+The Dashboard deliberately does not expose lease or fencing credentials. It is
+**read-only by default**, and serialized job payloads are **hidden by default**.
+Production hosts should bind it to their normal authorization policy:
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("KubeJobDashboard", policy =>
+        policy.RequireRole("KubeJobOperator"));
+});
+
+builder.Services.AddKubeJobDashboard(options =>
+{
+    options.RoutePrefix = "admin/jobs";
+    options.AuthorizationPolicy = "KubeJobDashboard";
+    options.ShowPayloads = false;
+    options.AllowMutatingActions = false;
+});
+```
+
+Set `ShowPayloads` only when the route is protected and payload disclosure is
+acceptable. Set `AllowMutatingActions` to enable Run cancellation and Schedule
+enable/disable controls.
 
 ## HTTP diagnostics
 
