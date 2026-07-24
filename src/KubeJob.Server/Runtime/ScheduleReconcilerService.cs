@@ -45,6 +45,11 @@ public sealed class ScheduleReconcilerService : BackgroundService
                     processedAny = true;
                     await ProcessClaimAsync(claim, now, stoppingToken);
                 }
+
+                if (!processedAny)
+                {
+                    await Task.Delay(_options.SchedulePollInterval, stoppingToken);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -53,11 +58,6 @@ public sealed class ScheduleReconcilerService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "KubeJob schedule reconciliation iteration failed");
-            }
-
-            if (!processedAny)
-            {
-                await Task.Delay(_options.SchedulePollInterval, stoppingToken);
             }
         }
     }
