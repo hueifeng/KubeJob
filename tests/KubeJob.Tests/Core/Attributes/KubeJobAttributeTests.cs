@@ -25,10 +25,10 @@ public sealed class KubeJobAttributeTests
         act.Should().Throw<ArgumentException>();
     }
 
-    private sealed record DummyPayload(string Value);
+    public sealed record DummyPayload(string Value);
 
     [KubeJob("report.generate")]
-    private sealed class DummyJob : IKubeJob<DummyPayload>
+    public sealed class DummyJob : IKubeJob<DummyPayload>
     {
         public ValueTask ExecuteAsync(
             DummyPayload payload,
