@@ -77,6 +77,8 @@ public sealed class DashboardApiTests
         overviewHtml.Should().Contain("Runtime Overview");
         overviewHtml.Should().Contain("Runs & Attempts");
         overviewHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+        overviewHtml.Should().NotContain("cdn.jsdelivr.net");
+        overviewHtml.Should().NotContain("cdnjs.cloudflare.com");
 
         using var detailRequest = CreateAuthorizedRequest($"/admin/jobs/runs/{run.Id}");
         using var detailResponse = await client.SendAsync(detailRequest);
