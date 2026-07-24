@@ -4,6 +4,7 @@
 - [中文使用指南](./getting-started.zh-CN.md)
 - [Runtime Architecture](./architecture.md)
 - [Security and Trust Boundaries](./security.md)
+- [V2 Hardening Review](./hardening-review.md)
 - [RabbitMQ Notification Acceleration](./rabbitmq-notifications.md)
 - [Completion Criteria](./completion-criteria.md)
 - [Post-Runtime Roadmap](./roadmap.md)
