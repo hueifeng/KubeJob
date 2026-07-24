@@ -69,6 +69,18 @@ public sealed class DbInitializer : IStorageInitializer
                 ON Kj2_JobRuns (ScheduleId, Phase)
                 WHERE ScheduleId IS NOT NULL AND Phase IN (0, 1);
 
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardRecent
+                ON Kj2_JobRuns (CreatedAt DESC, Id DESC);
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardPhase
+                ON Kj2_JobRuns (Phase, CreatedAt DESC, Id DESC);
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardQueue
+                ON Kj2_JobRuns (Queue, CreatedAt DESC, Id DESC);
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardJobKey
+                ON Kj2_JobRuns ((LOWER(JobKey)) text_pattern_ops);
+
             CREATE TABLE IF NOT EXISTS Kj2_JobAttempts (
                 Id VARCHAR(64) PRIMARY KEY,
                 RunId VARCHAR(64) NOT NULL REFERENCES Kj2_JobRuns(Id) ON DELETE CASCADE,
@@ -122,6 +134,9 @@ public sealed class DbInitializer : IStorageInitializer
                 ON Kj2_WorkerSessions (LastHeartbeatAt)
                 WHERE State IN (0, 1);
 
+            CREATE INDEX IF NOT EXISTS IX_Kj2_WorkerSessions_Dashboard
+                ON Kj2_WorkerSessions (State, LastHeartbeatAt DESC, WorkerId, Epoch DESC);
+
             CREATE TABLE IF NOT EXISTS Kj2_JobSchedules (
                 Id VARCHAR(200) PRIMARY KEY,
                 JobKey VARCHAR(300) NOT NULL,
@@ -153,6 +168,9 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobSchedules_Claim
                 ON Kj2_JobSchedules (ClaimUntil)
                 WHERE ClaimToken IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobSchedules_Dashboard
+                ON Kj2_JobSchedules (Enabled DESC, NextFireAt, Id);
 
             CREATE TABLE IF NOT EXISTS Kj2_Outbox (
                 Id VARCHAR(64) PRIMARY KEY,
