@@ -76,7 +76,7 @@ public sealed class DashboardApiTests
         overviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         overviewHtml.Should().Contain("Runtime Overview");
         overviewHtml.Should().Contain("Runs &amp; Attempts");
-        overviewHtml.Should().NotContain("LeaseToken", StringComparison.OrdinalIgnoreCase);
+        overviewHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
 
         using var detailRequest = CreateAuthorizedRequest($"/admin/jobs/runs/{run.Id}");
         using var detailResponse = await client.SendAsync(detailRequest);
