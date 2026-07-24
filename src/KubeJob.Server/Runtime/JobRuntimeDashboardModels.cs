@@ -35,6 +35,30 @@ public sealed record DashboardRunQuery(
     }
 }
 
+/// <summary>
+/// Payload-free projection used by dashboard list pages. Large serialized payloads
+/// are loaded only for an explicitly opened Run detail page.
+/// </summary>
+public sealed class DashboardRunSummary
+{
+    public required string Id { get; init; }
+    public required string JobKey { get; init; }
+    public string Queue { get; init; } = "default";
+    public int Priority { get; init; }
+    public JobPhase Phase { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? CompletedAt { get; init; }
+    public int AttemptCount { get; init; }
+    public int MaxAttempts { get; init; }
+    public string? ScheduleId { get; init; }
+    public string? CurrentWorkerId { get; init; }
+    public string? CurrentSessionId { get; init; }
+    public bool CancelRequested { get; init; }
+    public string? FailureCode { get; init; }
+    public string? FailureMessage { get; init; }
+}
+
 public sealed record DashboardQueueSummary(
     string Queue,
     int PendingRuns,
@@ -58,7 +82,7 @@ public sealed record DashboardOverview(
     int DisabledSchedules,
     int PendingOutboxMessages,
     IReadOnlyList<DashboardQueueSummary> Queues,
-    IReadOnlyList<JobRunRecord> RecentRuns);
+    IReadOnlyList<DashboardRunSummary> RecentRuns);
 
 public interface IJobRuntimeDashboardStore
 {
@@ -66,7 +90,7 @@ public interface IJobRuntimeDashboardStore
         int recentRunCount,
         CancellationToken cancellationToken);
 
-    ValueTask<DashboardPage<JobRunRecord>> GetRunsAsync(
+    ValueTask<DashboardPage<DashboardRunSummary>> GetRunsAsync(
         DashboardRunQuery query,
         CancellationToken cancellationToken);
 
