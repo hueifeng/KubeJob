@@ -8,12 +8,31 @@ namespace KubeJob.Storage.PostgreSQL.Runtime;
 
 public sealed partial class PostgreSqlJobRuntimeStore
 {
+    private const string DashboardRunSummaryColumns = """
+        Id,
+        JobKey,
+        Queue,
+        Priority,
+        Phase,
+        CreatedAt,
+        StartedAt,
+        CompletedAt,
+        AttemptCount,
+        MaxAttempts,
+        ScheduleId,
+        CurrentWorkerId,
+        CurrentSessionId,
+        CancelRequested,
+        FailureCode,
+        FailureMessage
+        """;
+
     public async ValueTask<DashboardOverview> GetOverviewAsync(
         int recentRunCount,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-        using var grid = await connection.QueryMultipleAsync(new CommandDefinition(@"
+        using var grid = await connection.QueryMultipleAsync(new CommandDefinition($"""
             SELECT
                 COUNT(*) FILTER (WHERE Phase = @Pending)::int AS PendingRuns,
                 COUNT(*) FILTER (WHERE Phase = @Running)::int AS RunningRuns,
@@ -48,10 +67,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
             ORDER BY COUNT(*) DESC, Queue
             LIMIT 12;
 
-            SELECT *
+            SELECT {DashboardRunSummaryColumns}
             FROM Kj2_JobRuns
             ORDER BY CreatedAt DESC, Id DESC
-            LIMIT @RecentRunCount;",
+            LIMIT @RecentRunCount;
+            """,
             new
             {
                 Pending = (int)JobPhase.Pending,
@@ -79,7 +99,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 row.PendingRuns,
                 row.RunningRuns))
             .ToArray();
-        var recent = (await grid.ReadAsync<JobRunRecord>()).ToArray();
+        var recent = (await grid.ReadAsync<DashboardRunSummary>()).ToArray();
 
         return new DashboardOverview(
             runs.PendingRuns,
@@ -99,19 +119,19 @@ public sealed partial class PostgreSqlJobRuntimeStore
             recent);
     }
 
-    public async ValueTask<DashboardPage<JobRunRecord>> GetRunsAsync(
+    public async ValueTask<DashboardPage<DashboardRunSummary>> GetRunsAsync(
         DashboardRunQuery query,
         CancellationToken cancellationToken)
     {
         var normalized = query.Normalize();
         var phase = normalized.Phase is null ? (int?)null : (int)normalized.Phase.Value;
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-        using var grid = await connection.QueryMultipleAsync(new CommandDefinition(@"
-            SELECT *
+        using var grid = await connection.QueryMultipleAsync(new CommandDefinition($"""
+            SELECT {DashboardRunSummaryColumns}
             FROM Kj2_JobRuns
             WHERE (@Phase IS NULL OR Phase = @Phase)
               AND (@Queue IS NULL OR Queue = @Queue)
-              AND (@JobKey IS NULL OR JobKey ILIKE ('%' || @JobKey || '%'))
+              AND (@JobKey IS NULL OR LOWER(JobKey) LIKE LOWER(@JobKey) || '%')
             ORDER BY CreatedAt DESC, Id DESC
             OFFSET @Offset
             LIMIT @PageSize;
@@ -120,7 +140,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             FROM Kj2_JobRuns
             WHERE (@Phase IS NULL OR Phase = @Phase)
               AND (@Queue IS NULL OR Queue = @Queue)
-              AND (@JobKey IS NULL OR JobKey ILIKE ('%' || @JobKey || '%'));",
+              AND (@JobKey IS NULL OR LOWER(JobKey) LIKE LOWER(@JobKey) || '%');
+            """,
             new
             {
                 Phase = phase,
@@ -131,9 +152,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             },
             cancellationToken: cancellationToken));
 
-        var items = (await grid.ReadAsync<JobRunRecord>()).ToArray();
+        var items = (await grid.ReadAsync<DashboardRunSummary>()).ToArray();
         var total = await grid.ReadSingleAsync<int>();
-        return new DashboardPage<JobRunRecord>(
+        return new DashboardPage<DashboardRunSummary>(
             items,
             total,
             normalized.Page,
