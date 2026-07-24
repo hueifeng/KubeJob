@@ -39,6 +39,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
             FROM Kj2_Outbox
             WHERE State IN (@OutboxPending, @OutboxPublishing, @OutboxFailed);
 
+            SELECT Queue,
+                   COUNT(*) FILTER (WHERE Phase = @Pending)::int AS PendingRuns,
+                   COUNT(*) FILTER (WHERE Phase = @Running)::int AS RunningRuns
+            FROM Kj2_JobRuns
+            WHERE Phase IN (@Pending, @Running)
+            GROUP BY Queue
+            ORDER BY COUNT(*) DESC, Queue
+            LIMIT 12;
+
             SELECT *
             FROM Kj2_JobRuns
             ORDER BY CreatedAt DESC, Id DESC
@@ -64,6 +73,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var workers = await grid.ReadSingleAsync<WorkerCountsRow>();
         var schedules = await grid.ReadSingleAsync<ScheduleCountsRow>();
         var outbox = await grid.ReadSingleAsync<int>();
+        var queues = (await grid.ReadAsync<QueueSummaryRow>())
+            .Select(row => new DashboardQueueSummary(
+                row.Queue,
+                row.PendingRuns,
+                row.RunningRuns))
+            .ToArray();
         var recent = (await grid.ReadAsync<JobRunRecord>()).ToArray();
 
         return new DashboardOverview(
@@ -80,6 +95,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             schedules.EnabledSchedules,
             schedules.DisabledSchedules,
             outbox,
+            queues,
             recent);
     }
 
@@ -200,6 +216,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         public int EnabledSchedules { get; set; }
         public int DisabledSchedules { get; set; }
+    }
+
+    private sealed class QueueSummaryRow
+    {
+        public string Queue { get; set; } = string.Empty;
+        public int PendingRuns { get; set; }
+        public int RunningRuns { get; set; }
     }
 
     private sealed class WorkerDashboardRow
