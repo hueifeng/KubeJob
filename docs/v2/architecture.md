@@ -1,8 +1,8 @@
-# KubeJob V2 Runtime Architecture
+# KubeJob Runtime Architecture
 
 ## Product boundary
 
-KubeJob V2 is a typed, PostgreSQL-first distributed background-job runtime for
+KubeJob is a typed, PostgreSQL-first distributed background-job runtime for
 .NET. It is not a Kubernetes replacement, workflow-history engine, message
 broker, actor runtime, or CI/CD system.
 
@@ -94,8 +94,8 @@ The lease reconciler closes expired Attempts as `LeaseLost`, then either:
 
 ## Schedule reconciliation
 
-Schedules have their own recoverable claims and optimistic version. A reconciler
-computes a fire plan using cron plus the configured time zone.
+Schedules have recoverable claims and optimistic versions. A reconciler computes
+a fire plan using cron plus the configured time zone.
 
 The PostgreSQL fire transaction:
 
@@ -108,6 +108,28 @@ The PostgreSQL fire transaction:
 
 `FireOnce` creates one compensating Run after multiple missed occurrences.
 `SkipMissed` advances directly to the next future occurrence.
+
+## Dashboard query boundary
+
+The embedded Dashboard reads through `IJobRuntimeDashboardStore` and
+`IJobQueryStore`; it does not reach into storage repositories or worker protocol
+credentials.
+
+It exposes:
+
+```text
+Overview and Queue backlog
+Run list and Run detail
+Attempt timeline
+Worker Session state and capacity
+Schedule state and policies
+```
+
+The in-memory reference store and PostgreSQL provider implement the same query
+contract. The Dashboard is read-only and hides Payload JSON by default. A host
+may bind it to a named ASP.NET Core authorization policy and explicitly enable
+payload or mutation capabilities. LeaseToken and fencing credentials are never
+rendered.
 
 ## Bounded memory
 
@@ -133,6 +155,7 @@ ASP.NET process
 ├── control plane services
 ├── in-process worker protocol
 ├── worker execution engine
+├── optional Dashboard
 └── shared PostgreSQL state store
 ```
 
@@ -143,13 +166,14 @@ The transport is an interface call, not localhost HTTP.
 ```text
 API / client ──HTTP──> control plane replicas ──PostgreSQL
 worker replicas ──HTTP pull/renew/complete──> control plane replicas
+operators ──HTTP──> protected Dashboard route
 ```
 
 A worker may contact any healthy control-plane replica because coordination is
 transactional in the state store.
 
-## Compatibility window
+## Version boundary
 
-Legacy tables, services, and non-generic handlers remain available while V2 is
-adopted. V2 uses `Kj2_*` tables and explicit registration methods so queues can
-be migrated incrementally.
+The runtime is V2-only. The previous non-generic handler API, push dispatcher,
+JobSpec/WorkerNode model, legacy tables, and legacy Dashboard are not registered
+or supported as a compatibility path.
