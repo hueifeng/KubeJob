@@ -1,31 +1,39 @@
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using KubeJob.Core.Attributes;
-using KubeJob.Core.Context;
-using KubeJob.Core.Enums;
+using KubeJob.Core.Execution;
 using KubeJob.Core.Interfaces;
-using Microsoft.Extensions.Logging;
 
-namespace KubeJob.Sample.WorkerNode.Jobs
+namespace KubeJob.Sample.WorkerNode.Jobs;
+
+public sealed record SampleDataPayload(string Message, int Steps = 5);
+
+[KubeJob("sample.data")]
+public sealed class SampleDataJob : IKubeJob<SampleDataPayload>
 {
-    [KubeJob("sample-job-1", Cron = "*/1 * * * *", ExecuteModel = ExecuteModel.Standalone)]
-    [NodeSelector("env", "dev")]
-    public class SampleDataJob : IKubeJob
-    {
-        public async Task ExecuteAsync(KubeJobContext context, CancellationToken token)
-        {
-            context.Logger.LogInformation("Starting SampleDataJob on Shard {ShardIndex}/{TotalShards}", context.ShardIndex, context.TotalShards);
-            
-            // Simulate work
-            for (int i = 0; i < 5; i++)
-            {
-                token.ThrowIfCancellationRequested();
-                context.Logger.LogInformation("Working... Step {Step}", i + 1);
-                await Task.Delay(1000, token);
-            }
+    private readonly ILogger<SampleDataJob> _logger;
 
-            context.Logger.LogInformation("SampleDataJob Completed.");
+    public SampleDataJob(ILogger<SampleDataJob> logger)
+    {
+        _logger = logger;
+    }
+
+    public async ValueTask ExecuteAsync(
+        SampleDataPayload payload,
+        JobExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var steps = Math.Clamp(payload.Steps, 1, 100);
+        _logger.LogInformation(
+            "Executing {Message} as run {RunId}, attempt {AttemptNumber}, worker {WorkerId}",
+            payload.Message,
+            context.RunId,
+            context.AttemptNumber,
+            context.Worker.WorkerId);
+
+        for (var step = 1; step <= steps; step++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _logger.LogInformation("Sample step {Step}/{Steps}", step, steps);
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
         }
     }
 }

@@ -1,136 +1,141 @@
-@using KubeJob.Core.Enums
+@model DashboardIndexViewModel
 @{
-    ViewData["Title"] = "Dashboard Overview";
+    ViewData["Title"] = "Runtime Overview";
+    var overview = Model.Overview;
 }
+<meta http-equiv="refresh" content="20">
 
-<!-- Auto Refresh Meta Tag to keep dashboard live -->
-<meta http-equiv="refresh" content="30">
-
-<div class="row mb-4 g-4">
-    <!-- Active Nodes Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Nodes" class="text-decoration-none">
-            <div class="card stats-card bg-primary text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Active Nodes</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.ActiveNodesCount <span class="fs-5 opacity-75 fw-normal">/ @ViewBag.TotalNodesCount</span></h2>
-                    <i class="fa-solid fa-server stats-icon"></i>
-                </div>
+<div class="row g-3 mb-4">
+    <div class="col-sm-6 col-xl-3">
+        <div class="stats-card border-start border-4 border-primary">
+            <div class="card-body">
+                <div class="text-muted small text-uppercase fw-semibold">Active runs</div>
+                <div class="display-6 fw-bold">@(overview.PendingRuns + overview.RunningRuns)</div>
+                <div class="small text-muted">@overview.PendingRuns pending · @overview.RunningRuns running</div>
+                <i class="fa-solid fa-bolt stats-icon text-primary"></i>
             </div>
-        </a>
+        </div>
     </div>
-
-    <!-- Total Specs Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Specs" class="text-decoration-none">
-            <div class="card stats-card bg-info text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Job Specs</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.TotalSpecsCount</h2>
-                    <i class="fa-solid fa-cubes stats-icon"></i>
-                </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="stats-card border-start border-4 border-success">
+            <div class="card-body">
+                <div class="text-muted small text-uppercase fw-semibold">Worker capacity</div>
+                <div class="display-6 fw-bold">@overview.AvailableWorkerSlots<span class="fs-5 text-muted">/@overview.TotalWorkerCapacity</span></div>
+                <div class="small text-muted">@overview.ReadyWorkers ready · @overview.DrainingWorkers draining</div>
+                <i class="fa-solid fa-server stats-icon text-success"></i>
             </div>
-        </a>
+        </div>
     </div>
-
-    <!-- Success Jobs Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Runs" class="text-decoration-none">
-            <div class="card stats-card bg-success text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Success (Recent)</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.SuccessCount</h2>
-                    <i class="fa-solid fa-check-circle stats-icon"></i>
-                </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="stats-card border-start border-4 border-info">
+            <div class="card-body">
+                <div class="text-muted small text-uppercase fw-semibold">Schedules</div>
+                <div class="display-6 fw-bold">@overview.EnabledSchedules</div>
+                <div class="small text-muted">@overview.DisabledSchedules disabled</div>
+                <i class="fa-solid fa-calendar-days stats-icon text-info"></i>
             </div>
-        </a>
+        </div>
     </div>
-
-    <!-- Failed Jobs Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Runs" class="text-decoration-none">
-            <div class="card stats-card bg-danger text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Failed (Recent)</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.FailedCount</h2>
-                    <i class="fa-solid fa-triangle-exclamation stats-icon"></i>
-                </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="stats-card border-start border-4 border-danger">
+            <div class="card-body">
+                <div class="text-muted small text-uppercase fw-semibold">Terminal failures</div>
+                <div class="display-6 fw-bold">@(overview.FailedRuns + overview.DeadRuns)</div>
+                <div class="small text-muted">@overview.FailedRuns failed · @overview.DeadRuns dead</div>
+                <i class="fa-solid fa-triangle-exclamation stats-icon text-danger"></i>
             </div>
-        </a>
+        </div>
     </div>
 </div>
 
-<div class="d-flex justify-content-between align-items-center mt-5 section-header">
-    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-bolt text-primary me-2"></i>Recent Activity</h4>
-    <a asp-controller="Dashboard" asp-action="Runs" class="btn btn-sm btn-outline-primary rounded-pill px-3">View All</a>
+<div class="row g-3 mb-4">
+    <div class="col-lg-7">
+        <div class="section-header d-flex justify-content-between align-items-center">
+            <div>
+                <h5 class="mb-1 fw-bold">Queue backlog</h5>
+                <div class="text-muted small">Active logical Runs grouped by their submission queue.</div>
+            </div>
+            <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View runs</a>
+        </div>
+        <div class="table-card h-100">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead><tr><th>Queue</th><th>Pending</th><th>Running</th><th>Active</th></tr></thead>
+                    <tbody>
+                    @if (overview.Queues.Count == 0)
+                    {
+                        <tr><td colspan="4" class="text-center text-muted py-5">No active queue backlog.</td></tr>
+                    }
+                    else
+                    {
+                        @foreach (var queue in overview.Queues)
+                        {
+                            <tr>
+                                <td><a asp-action="Runs" asp-route-queue="@queue.Queue" class="fw-semibold text-decoration-none">@queue.Queue</a></td>
+                                <td><span class="badge bg-warning-subtle text-warning-emphasis">@queue.PendingRuns</span></td>
+                                <td><span class="badge bg-primary-subtle text-primary">@queue.RunningRuns</span></td>
+                                <td class="fw-bold">@queue.ActiveRuns</td>
+                            </tr>
+                        }
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="section-header">
+            <h5 class="mb-1 fw-bold">Runtime signals</h5>
+            <div class="text-muted small">Operational backlog and terminal totals.</div>
+        </div>
+        <div class="detail-card p-3 h-100">
+            <div class="d-flex justify-content-between py-2 border-bottom"><span>Outbox pending</span><strong>@overview.PendingOutboxMessages</strong></div>
+            <div class="d-flex justify-content-between py-2 border-bottom"><span>Succeeded runs</span><strong class="text-success">@overview.SucceededRuns</strong></div>
+            <div class="d-flex justify-content-between py-2 border-bottom"><span>Canceled runs</span><strong>@overview.CanceledRuns</strong></div>
+            <div class="d-flex justify-content-between py-2 border-bottom"><span>Ready workers</span><strong>@overview.ReadyWorkers</strong></div>
+            <div class="d-flex justify-content-between py-2"><span>Total terminal</span><strong>@(overview.SucceededRuns + overview.FailedRuns + overview.CanceledRuns + overview.DeadRuns)</strong></div>
+        </div>
+    </div>
 </div>
 
+<div class="section-header d-flex justify-content-between align-items-center">
+    <div>
+        <h5 class="mb-1 fw-bold">Recent logical runs</h5>
+        <div class="text-muted small">Retries remain under the same Run and appear as separate Attempts.</div>
+    </div>
+    <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View all</a>
+</div>
 <div class="table-card">
     <div class="table-responsive">
-        <table class="table table-hover table-borderless mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Run ID</th>
-                    <th>Spec ID</th>
-                    <th>Target Node</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Duration</th>
-                </tr>
-            </thead>
+        <table class="table table-hover mb-0">
+            <thead><tr><th>Run</th><th>Job / Queue</th><th>Phase</th><th>Attempts</th><th>Created</th></tr></thead>
             <tbody>
-                @if (ViewBag.RecentRuns == null || ViewBag.RecentRuns.Count == 0)
+            @if (overview.RecentRuns.Count == 0)
+            {
+                <tr><td colspan="5" class="text-center text-muted py-5">No runs have been submitted.</td></tr>
+            }
+            else
+            {
+                @foreach (var run in overview.RecentRuns)
                 {
+                    var badge = run.Phase switch
+                    {
+                        JobPhase.Succeeded => "bg-success-subtle text-success",
+                        JobPhase.Running => "bg-primary-subtle text-primary",
+                        JobPhase.Pending => "bg-warning-subtle text-warning-emphasis",
+                        JobPhase.Canceled => "bg-secondary-subtle text-secondary",
+                        JobPhase.Dead => "bg-dark-subtle text-dark",
+                        _ => "bg-danger-subtle text-danger"
+                    };
                     <tr>
-                        <td colspan="6" class="text-center text-muted py-4">
-                            <i class="fa-regular fa-folder-open fs-2 mb-2"></i><br />
-                            No recent activity found.
-                        </td>
+                        <td><a asp-action="Run" asp-route-id="@run.Id" class="mono text-decoration-none">@run.Id[..Math.Min(10, run.Id.Length)]</a></td>
+                        <td><div class="fw-semibold">@run.JobKey</div><div class="small text-muted">@run.Queue</div></td>
+                        <td><span class="badge @badge">@run.Phase</span></td>
+                        <td>@run.AttemptCount / @run.MaxAttempts</td>
+                        <td class="text-muted small">@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
                     </tr>
                 }
-                else
-                {
-                    @foreach (KubeJob.Core.Domain.JobRun run in ViewBag.RecentRuns)
-                    {
-                        var duration = run.EndTime.HasValue && run.StartTime.HasValue 
-                                        ? (run.EndTime.Value - run.StartTime.Value).TotalSeconds.ToString("0.0") + "s" 
-                                        : "-";
-                        <tr>
-                            <td><span class="font-monospace text-muted">@run.Id.Substring(0, 8)</span></td>
-                            <td class="fw-bold text-dark">@run.SpecId</td>
-                            <td>
-                                @if (string.IsNullOrEmpty(run.TargetNodeId))
-                                {
-                                    <span class="text-muted fst-italic">Pending Assign</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-light border text-dark"><i class="fa-solid fa-server text-primary me-1"></i> @run.TargetNodeId</span>
-                                }
-                            </td>
-                            <td>
-                                @if (run.Status == JobStatus.Succeeded)
-                                {
-                                    <span class="badge bg-success rounded-pill px-3"><i class="fa-solid fa-check me-1"></i> @run.Status</span>
-                                }
-                                else if (run.Status == JobStatus.Failed)
-                                {
-                                    <span class="badge bg-danger rounded-pill px-3"><i class="fa-solid fa-xmark me-1"></i> @run.Status</span>
-                                }
-                                else if (run.Status == JobStatus.Running)
-                                {
-                                    <span class="badge bg-info rounded-pill px-3"><i class="fa-solid fa-spinner fa-spin me-1"></i> @run.Status</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-warning text-dark rounded-pill px-3"><i class="fa-regular fa-clock me-1"></i> @run.Status</span>
-                                }
-                            </td>
-                            <td>@run.CreatedAt.ToString("MM-dd HH:mm:ss")</td>
-                            <td class="text-muted">@duration</td>
-                        </tr>
-                    }
-                }
+            }
             </tbody>
         </table>
     </div>

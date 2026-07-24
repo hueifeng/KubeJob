@@ -1,127 +1,145 @@
-using System.Threading.Tasks;
-using KubeJob.Server.Data;
+using KubeJob.Core.Client;
+using KubeJob.Server.Dashboard;
+using KubeJob.Server.Options;
+using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Mvc;
 
-namespace KubeJob.Server.Controllers
+namespace KubeJob.Server.Controllers;
+
+// The route prefix is applied by KubeJobDashboardRouteConvention.
+public sealed class DashboardController : Controller
 {
-    // Dynamic route applied via convention
-    public class DashboardController : Controller
+    private readonly IJobRuntimeDashboardStore _dashboard;
+    private readonly IJobQueryStore _queries;
+    private readonly IJobSubmissionStore _submissions;
+    private readonly IJobScheduleStore _schedules;
+    private readonly KubeJobDashboardOptions _options;
+
+    public DashboardController(
+        IJobRuntimeDashboardStore dashboard,
+        IJobQueryStore queries,
+        IJobSubmissionStore submissions,
+        IJobScheduleStore schedules,
+        KubeJobDashboardOptions options)
     {
-        private readonly IKubeJobRepository _repository;
+        _dashboard = dashboard;
+        _queries = queries;
+        _submissions = submissions;
+        _schedules = schedules;
+        _options = options;
+    }
 
-        public DashboardController(IKubeJobRepository repository)
+    [HttpGet("")]
+    public async Task<IActionResult> Index(CancellationToken cancellationToken)
+    {
+        var overview = await _dashboard.GetOverviewAsync(15, cancellationToken);
+        return View(
+            "~/Views/Dashboard/Index.cshtml",
+            new DashboardIndexViewModel(overview));
+    }
+
+    [HttpGet("runs")]
+    public async Task<IActionResult> Runs(
+        int page = 1,
+        int pageSize = 25,
+        JobPhase? phase = null,
+        string? queue = null,
+        string? jobKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        var query = new DashboardRunQuery(page, pageSize, phase, queue, jobKey).Normalize();
+        var runs = await _dashboard.GetRunsAsync(query, cancellationToken);
+        return View(
+            "~/Views/Dashboard/Runs.cshtml",
+            new DashboardRunsViewModel(runs, query));
+    }
+
+    [HttpGet("runs/{id}")]
+    public async Task<IActionResult> Run(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        var run = await _queries.GetRunAsync(id, cancellationToken);
+        if (run is null)
         {
-            _repository = repository;
+            return NotFound();
         }
 
-        [HttpGet("")]
-        public async Task<IActionResult> Index()
-        {
-            var nodes = await _repository.GetAllNodesAsync();
-            var recentRuns = await _repository.GetRecentRunsAsync(100); // Fetch more for better stats
-            var specs = await _repository.GetAllSpecsAsync();
-            
-            ViewBag.ActiveNodesCount = nodes.Count(n => !n.IsOffline);
-            ViewBag.TotalNodesCount = nodes.Count;
-            ViewBag.TotalSpecsCount = specs.Count;
-            
-            // Basic stats from recent runs
-            ViewBag.SuccessCount = recentRuns.Count(r => r.Status == Core.Enums.JobStatus.Succeeded);
-            ViewBag.FailedCount = recentRuns.Count(r => r.Status == Core.Enums.JobStatus.Failed);
-            ViewBag.PendingCount = recentRuns.Count(r => r.Status == Core.Enums.JobStatus.Pending || r.Status == Core.Enums.JobStatus.Running);
+        var attempts = await _queries.GetAttemptsAsync(id, cancellationToken);
+        return View(
+            "~/Views/Dashboard/Run.cshtml",
+            new DashboardRunDetailsViewModel(
+                run,
+                attempts,
+                _options.ShowPayloads,
+                _options.AllowMutatingActions));
+    }
 
-            ViewBag.RecentRuns = recentRuns.Take(15).ToList();
-            
-            return View("~/Views/Dashboard/Index.cshtml");
+    [HttpPost("runs/{id}/cancel")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CancelRun(
+        string id,
+        [FromForm] string? reason,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
         }
 
-        [HttpGet("specs")]
-        public async Task<IActionResult> Specs([FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+        await _submissions.RequestCancelAsync(
+            id,
+            string.IsNullOrWhiteSpace(reason) ? "Canceled from dashboard." : reason.Trim(),
+            cancellationToken);
+        return RedirectToAction(nameof(Run), new { id });
+    }
+
+    [HttpGet("workers")]
+    public async Task<IActionResult> Workers(CancellationToken cancellationToken)
+    {
+        var sessions = await _dashboard.GetWorkerSessionsAsync(cancellationToken);
+        return View(
+            "~/Views/Dashboard/Workers.cshtml",
+            new DashboardWorkersViewModel(sessions, DateTimeOffset.UtcNow));
+    }
+
+    [HttpGet("schedules")]
+    public async Task<IActionResult> Schedules(CancellationToken cancellationToken)
+    {
+        var schedules = await _dashboard.GetSchedulesAsync(cancellationToken);
+        return View(
+            "~/Views/Dashboard/Schedules.cshtml",
+            new DashboardSchedulesViewModel(schedules, _options.AllowMutatingActions));
+    }
+
+    [HttpPost("schedules/{id}/enabled")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetScheduleEnabled(
+        string id,
+        [FromForm] bool enabled,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowMutatingActions)
         {
-            if (page < 1) page = 1;
-            if (pageSize < 1) pageSize = 10;
-            if (pageSize > 100) pageSize = 100;
-
-            var totalCount = await _repository.GetSpecsCountAsync();
-            var totalPages = (int)System.Math.Ceiling(totalCount / (double)pageSize);
-            
-            if (page > totalPages && totalPages > 0) page = totalPages;
-
-            var offset = (page - 1) * pageSize;
-            var specs = await _repository.GetSpecsPagedAsync(pageSize, offset);
-
-            ViewBag.CurrentPage = page;
-            ViewBag.PageSize = pageSize;
-            ViewBag.TotalPages = totalPages;
-            ViewBag.TotalCount = totalCount;
-
-            return View("~/Views/Dashboard/Specs.cshtml", specs);
-        }
-        
-        [HttpPost("specs/{id}/toggle")]
-        [HttpPost("specs/{id}/trigger")]
-        public async Task<IActionResult> TriggerSpec(string id)
-        {
-            var spec = await _repository.GetSpecAsync(id);
-            if (spec == null || spec.IsDisabled) return RedirectToAction(nameof(Specs));
-
-            var batchId = $"manual_{System.DateTime.UtcNow:yyyyMMddHHmmss}_{System.Guid.NewGuid().ToString().Substring(0, 4)}";
-            for (int i = 0; i < spec.TotalShards; i++)
-            {
-                var run = new Core.Domain.JobRun
-                {
-                    Id = System.Guid.NewGuid().ToString().Substring(0, 16),
-                    SpecId = spec.Id,
-                    BatchId = batchId,
-                    ShardIndex = i,
-                    Status = Core.Enums.JobStatus.Pending,
-                    CreatedAt = System.DateTime.UtcNow
-                };
-                await _repository.InsertJobRunAsync(run);
-            }
-            return RedirectToAction(nameof(Runs));
+            return Forbid();
         }
 
-        public async Task<IActionResult> ToggleSpec(string id, [FromForm] bool isDisabled)
+        var schedule = await _schedules.GetAsync(id, cancellationToken);
+        if (schedule is null)
         {
-            await _repository.UpdateSpecStatusAsync(id, isDisabled);
-            return RedirectToAction(nameof(Specs));
+            return NotFound();
         }
 
-        [HttpGet("nodes")]
-        public async Task<IActionResult> Nodes()
+        DateTimeOffset? nextFireAt = null;
+        if (enabled)
         {
-            var nodes = await _repository.GetAllNodesAsync();
-            var sortedNodes = nodes.OrderBy(n => n.IsOffline).ThenByDescending(n => n.LastHeartbeat).ToList();
-            
-            return View("~/Views/Dashboard/Nodes.cshtml", sortedNodes);
+            nextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
+                schedule.CronExpression,
+                schedule.TimeZoneId,
+                DateTimeOffset.UtcNow);
         }
 
-        [HttpPost("nodes/{id}/delete")]
-        public async Task<IActionResult> DeleteNode(string id)
-        {
-            await _repository.DeleteNodeAsync(id);
-            return RedirectToAction(nameof(Nodes));
-        }
-
-        [HttpGet("runs")]
-        public async Task<IActionResult> Runs(int page = 1, int pageSize = 20)
-        {
-            if (page < 1) page = 1;
-            if (pageSize < 1) pageSize = 20;
-            if (pageSize > 100) pageSize = 100;
-            
-            var totalCount = await _repository.GetRunsCountAsync();
-            var totalPages = (int)System.Math.Ceiling(totalCount / (double)pageSize);
-            
-            var runs = await _repository.GetRunsPagedAsync(pageSize, (page - 1) * pageSize);
-            
-            ViewBag.CurrentPage = page;
-            ViewBag.PageSize = pageSize;
-            ViewBag.TotalPages = totalPages;
-            ViewBag.TotalCount = totalCount;
-            
-            return View("~/Views/Dashboard/Runs.cshtml", runs);
-        }
+        await _schedules.SetEnabledAsync(id, enabled, nextFireAt, cancellationToken);
+        return RedirectToAction(nameof(Schedules));
     }
 }
