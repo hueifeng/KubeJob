@@ -3,15 +3,18 @@
 @{
     ViewData["Title"] = "Run Detail";
     var run = Model.Run;
-    string payload;
-    try
+    string? payload = null;
+    if (Model.ShowPayload)
     {
-        using var document = JsonDocument.Parse(run.PayloadJson);
-        payload = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
-    }
-    catch
-    {
-        payload = run.PayloadJson;
+        try
+        {
+            using var document = JsonDocument.Parse(run.PayloadJson);
+            payload = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            payload = run.PayloadJson;
+        }
     }
     var runBadge = run.Phase switch
     {
@@ -32,7 +35,7 @@
     </div>
     <div class="d-flex align-items-center gap-2">
         <span class="badge @runBadge fs-6">@run.Phase</span>
-        @if (run.Phase is JobPhase.Pending or JobPhase.Running)
+        @if (Model.AllowMutatingActions && run.Phase is JobPhase.Pending or JobPhase.Running)
         {
             <form asp-action="CancelRun" asp-route-id="@run.Id" method="post" onsubmit="return confirm('Request cancellation for this logical run?');">
                 <button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-ban me-1"></i>Cancel</button>
@@ -69,8 +72,18 @@
     <div class="col-lg-4">
         <div class="detail-card p-4 h-100">
             <h6 class="fw-bold mb-3">Payload</h6>
-            <div class="small text-muted mb-2">Payloads may contain sensitive application data. Access to the dashboard should be authenticated.</div>
-            <pre class="payload mb-0">@payload</pre>
+            @if (Model.ShowPayload)
+            {
+                <div class="small text-muted mb-2">Payload display is enabled by the host. Treat this data as sensitive.</div>
+                <pre class="payload mb-0">@payload</pre>
+            }
+            else
+            {
+                <div class="alert alert-secondary mb-0">
+                    <i class="fa-solid fa-eye-slash me-2"></i>
+                    Payload display is disabled. Set <code>ShowPayloads = true</code> only for a protected dashboard.
+                </div>
+            }
         </div>
     </div>
 </div>
