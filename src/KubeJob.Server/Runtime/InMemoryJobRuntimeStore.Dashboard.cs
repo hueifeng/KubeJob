@@ -106,6 +106,7 @@ public sealed partial class InMemoryJobRuntimeStore
     }
 
     public ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
+        int limit,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -116,11 +117,13 @@ public sealed partial class InMemoryJobRuntimeStore
                     .OrderBy(session => session.State)
                     .ThenByDescending(session => session.LastHeartbeatAt)
                     .ThenBy(session => session.WorkerId, StringComparer.Ordinal)
+                    .Take(Math.Clamp(limit, 1, 1000))
                     .ToArray());
         }
     }
 
     public ValueTask<IReadOnlyList<JobScheduleRecord>> GetSchedulesAsync(
+        int limit,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -131,6 +134,7 @@ public sealed partial class InMemoryJobRuntimeStore
                     .OrderByDescending(schedule => schedule.Enabled)
                     .ThenBy(schedule => schedule.NextFireAt)
                     .ThenBy(schedule => schedule.Id, StringComparer.Ordinal)
+                    .Take(Math.Clamp(limit, 1, 1000))
                     .Select(CloneSchedule)
                     .ToArray());
         }
