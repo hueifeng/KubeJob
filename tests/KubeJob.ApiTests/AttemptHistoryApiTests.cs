@@ -68,7 +68,7 @@ public sealed class AttemptHistoryApiTests
         json.Should().Contain(claim.AttemptId);
         json.Should().Contain("worker-1");
         json.Should().NotContain(claim.LeaseToken);
-        json.Should().NotContain("leaseToken", StringComparison.OrdinalIgnoreCase);
-        json.Should().NotContain("fencingToken", StringComparison.OrdinalIgnoreCase);
+        json.Contains("leaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+        json.Contains("fencingToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
     }
 }
