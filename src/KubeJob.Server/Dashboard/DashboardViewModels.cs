@@ -17,8 +17,10 @@ public sealed record DashboardRunDetailsViewModel(
 
 public sealed record DashboardWorkersViewModel(
     IReadOnlyList<WorkerSessionRecord> Sessions,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    int MaximumItems);
 
 public sealed record DashboardSchedulesViewModel(
     IReadOnlyList<JobScheduleRecord> Schedules,
-    bool AllowMutatingActions);
+    bool AllowMutatingActions,
+    int MaximumItems);
