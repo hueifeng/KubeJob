@@ -1,4 +1,4 @@
-using KubeJob.Sample.WorkerNode.Jobs;
+using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Worker.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -14,14 +14,15 @@ builder.Services.AddKubeJobWorker(options =>
     options.Queues = new List<string> { "default", "samples" };
     options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
     options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
-    options.Labels["app"] = "sample-worker";
+    options.Labels["app"] = "sample-remote-worker";
 });
 
 var app = builder.Build();
 app.MapGet("/", () => new
 {
-    service = "KubeJob.Sample.WorkerNode",
+    service = "KubeJob.Sample.RemoteWorker",
     runtime = "typed-pull-worker",
     queues = new[] { "default", "samples" }
 });
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.Run();

@@ -29,6 +29,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 .OrderByDescending(run => run.CreatedAt)
                 .ThenByDescending(run => run.Id, StringComparer.Ordinal)
                 .Take(Math.Clamp(recentRunCount, 1, 100))
+                .Select(ToDashboardSummary)
                 .ToArray();
 
             return ValueTask.FromResult(new DashboardOverview(
@@ -57,7 +58,7 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
-    public ValueTask<DashboardPage<JobRunRecord>> GetRunsAsync(
+    public ValueTask<DashboardPage<DashboardRunSummary>> GetRunsAsync(
         DashboardRunQuery query,
         CancellationToken cancellationToken)
     {
@@ -81,7 +82,7 @@ public sealed partial class InMemoryJobRuntimeStore
 
             if (normalized.JobKey is not null)
             {
-                runs = runs.Where(run => run.JobKey.Contains(
+                runs = runs.Where(run => run.JobKey.StartsWith(
                     normalized.JobKey,
                     StringComparison.OrdinalIgnoreCase));
             }
@@ -93,9 +94,10 @@ public sealed partial class InMemoryJobRuntimeStore
             var items = ordered
                 .Skip((normalized.Page - 1) * normalized.PageSize)
                 .Take(normalized.PageSize)
+                .Select(ToDashboardSummary)
                 .ToArray();
 
-            return ValueTask.FromResult(new DashboardPage<JobRunRecord>(
+            return ValueTask.FromResult(new DashboardPage<DashboardRunSummary>(
                 items,
                 ordered.Length,
                 normalized.Page,
@@ -104,6 +106,7 @@ public sealed partial class InMemoryJobRuntimeStore
     }
 
     public ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
+        int limit,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -114,11 +117,13 @@ public sealed partial class InMemoryJobRuntimeStore
                     .OrderBy(session => session.State)
                     .ThenByDescending(session => session.LastHeartbeatAt)
                     .ThenBy(session => session.WorkerId, StringComparer.Ordinal)
+                    .Take(Math.Clamp(limit, 1, 1000))
                     .ToArray());
         }
     }
 
     public ValueTask<IReadOnlyList<JobScheduleRecord>> GetSchedulesAsync(
+        int limit,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -129,10 +134,31 @@ public sealed partial class InMemoryJobRuntimeStore
                     .OrderByDescending(schedule => schedule.Enabled)
                     .ThenBy(schedule => schedule.NextFireAt)
                     .ThenBy(schedule => schedule.Id, StringComparer.Ordinal)
+                    .Take(Math.Clamp(limit, 1, 1000))
                     .Select(CloneSchedule)
                     .ToArray());
         }
     }
+
+    private static DashboardRunSummary ToDashboardSummary(JobRunRecord run) => new()
+    {
+        Id = run.Id,
+        JobKey = run.JobKey,
+        Queue = run.Queue,
+        Priority = run.Priority,
+        Phase = run.Phase,
+        CreatedAt = run.CreatedAt,
+        StartedAt = run.StartedAt,
+        CompletedAt = run.CompletedAt,
+        AttemptCount = run.AttemptCount,
+        MaxAttempts = run.MaxAttempts,
+        ScheduleId = run.ScheduleId,
+        CurrentWorkerId = run.CurrentWorkerId,
+        CurrentSessionId = run.CurrentSessionId,
+        CancelRequested = run.CancelRequested,
+        FailureCode = run.FailureCode,
+        FailureMessage = run.FailureMessage
+    };
 
     private int CountRuns(JobPhase phase) =>
         _runs.Values.Count(run => run.Phase == phase);

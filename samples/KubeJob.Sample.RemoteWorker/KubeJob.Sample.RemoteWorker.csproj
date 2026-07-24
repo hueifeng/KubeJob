@@ -7,8 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\KubeJob\KubeJob.csproj" />
-    <ProjectReference Include="..\KubeJob.Sample.RemoteWorker\KubeJob.Sample.RemoteWorker.csproj" />
+    <ProjectReference Include="..\..\src\KubeJob.Worker\KubeJob.Worker.csproj" />
   </ItemGroup>
 
 </Project>

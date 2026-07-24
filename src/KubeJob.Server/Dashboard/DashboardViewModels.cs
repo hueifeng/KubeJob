@@ -6,7 +6,7 @@ namespace KubeJob.Server.Dashboard;
 public sealed record DashboardIndexViewModel(DashboardOverview Overview);
 
 public sealed record DashboardRunsViewModel(
-    DashboardPage<JobRunRecord> Runs,
+    DashboardPage<DashboardRunSummary> Runs,
     DashboardRunQuery Query);
 
 public sealed record DashboardRunDetailsViewModel(
@@ -17,8 +17,10 @@ public sealed record DashboardRunDetailsViewModel(
 
 public sealed record DashboardWorkersViewModel(
     IReadOnlyList<WorkerSessionRecord> Sessions,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    int MaximumItems);
 
 public sealed record DashboardSchedulesViewModel(
     IReadOnlyList<JobScheduleRecord> Schedules,
-    bool AllowMutatingActions);
+    bool AllowMutatingActions,
+    int MaximumItems);

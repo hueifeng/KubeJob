@@ -5,6 +5,8 @@ namespace KubeJob.Worker.Options;
 /// </summary>
 public sealed class KubeJobWorkerOptions
 {
+    private const int MaximumMetadataItems = 256;
+
     /// <summary>
     /// HTTP endpoint of the KubeJob control plane. Unified hosts replace the
     /// transport and do not make localhost HTTP calls.
@@ -36,7 +38,11 @@ public sealed class KubeJobWorkerOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(5);
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
-    public void ValidateV2() => Validate();
+    /// <summary>
+    /// Maximum failure detail persisted for one Attempt. Logs retain the original
+    /// exception; durable state is bounded to protect storage and Dashboard responses.
+    /// </summary>
+    public int MaximumFailureMessageLength { get; set; } = 32 * 1024;
 
     public void Validate()
     {
@@ -50,14 +56,21 @@ public sealed class KubeJobWorkerOptions
             ? endpoint.AbsoluteUri
             : endpoint.AbsoluteUri + "/";
 
-        if (string.IsNullOrWhiteSpace(WorkerId))
+        WorkerId = WorkerId?.Trim() ?? string.Empty;
+        if (WorkerId.Length is < 1 or > 200)
         {
-            throw new InvalidOperationException("WorkerId is required.");
+            throw new InvalidOperationException("WorkerId must contain between 1 and 200 characters.");
         }
 
-        if (MaxConcurrentJobs < 1)
+        BuildId = string.IsNullOrWhiteSpace(BuildId) ? "unknown" : BuildId.Trim();
+        if (BuildId.Length > 300)
         {
-            throw new InvalidOperationException("MaxConcurrentJobs must be positive.");
+            throw new InvalidOperationException("BuildId cannot exceed 300 characters.");
+        }
+
+        if (MaxConcurrentJobs is < 1 or > 10_000)
+        {
+            throw new InvalidOperationException("MaxConcurrentJobs must be between 1 and 10000.");
         }
 
         if (ClaimBatchSize is < 1 or > 1024)
@@ -65,10 +78,60 @@ public sealed class KubeJobWorkerOptions
             throw new InvalidOperationException("ClaimBatchSize must be between 1 and 1024.");
         }
 
-        if (Queues.Count == 0 || Queues.Any(string.IsNullOrWhiteSpace))
+        if (Queues is null)
+        {
+            throw new InvalidOperationException("Queues cannot be null.");
+        }
+
+        Queues = Queues
+            .Select(queue => queue?.Trim() ?? string.Empty)
+            .Where(queue => queue.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (Queues.Count == 0)
         {
             throw new InvalidOperationException("At least one non-empty queue is required.");
         }
+
+        if (Queues.Count > MaximumMetadataItems)
+        {
+            throw new InvalidOperationException($"A worker cannot register more than {MaximumMetadataItems} queues.");
+        }
+
+        if (Queues.Any(queue => queue.Length > 100))
+        {
+            throw new InvalidOperationException("Queue names cannot exceed 100 characters.");
+        }
+
+        if (Labels is null)
+        {
+            throw new InvalidOperationException("Labels cannot be null.");
+        }
+
+        if (Labels.Count > MaximumMetadataItems)
+        {
+            throw new InvalidOperationException($"A worker cannot register more than {MaximumMetadataItems} labels.");
+        }
+
+        var normalizedLabels = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var label in Labels)
+        {
+            var key = label.Key?.Trim() ?? string.Empty;
+            var value = label.Value ?? string.Empty;
+            if (key.Length is < 1 or > 200 || value.Length > 1000)
+            {
+                throw new InvalidOperationException(
+                    "Label keys must contain 1-200 characters and values cannot exceed 1000 characters.");
+            }
+
+            if (!normalizedLabels.TryAdd(key, value))
+            {
+                throw new InvalidOperationException(
+                    $"Worker labels contain duplicate key '{key}' after normalization.");
+            }
+        }
+
+        Labels = normalizedLabels;
 
         if (EmptyPollDelay <= TimeSpan.Zero)
         {
@@ -88,6 +151,12 @@ public sealed class KubeJobWorkerOptions
         if (DrainTimeout < TimeSpan.Zero)
         {
             throw new InvalidOperationException("DrainTimeout cannot be negative.");
+        }
+
+        if (MaximumFailureMessageLength is < 1024 or > 1024 * 1024)
+        {
+            throw new InvalidOperationException(
+                "MaximumFailureMessageLength must be between 1024 and 1048576 characters.");
         }
     }
 }

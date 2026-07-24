@@ -2,7 +2,7 @@ using KubeJob.Core.Attributes;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Interfaces;
 
-namespace KubeJob.Sample.WorkerNode.Jobs;
+namespace KubeJob.Sample.RemoteWorker.Jobs;
 
 public sealed record SampleDataPayload(string Message, int Steps = 5);
 

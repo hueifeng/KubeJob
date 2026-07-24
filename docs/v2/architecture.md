@@ -80,6 +80,10 @@ the old Session from committing afterward.
 Database state is written before transport acknowledgement. Duplicate delivery
 therefore becomes a harmless lookup of an already terminal Run.
 
+A Worker whose heartbeat is rejected stops claiming, cancels its local Attempts,
+and fails its hosted service so the process supervisor can restart it with a new
+SessionId. It does not continue polling with a fenced identity.
+
 ## Retry and lease recovery
 
 Retryable failure closes the current Attempt and returns the same Run to
@@ -125,15 +129,20 @@ Worker Session state and capacity
 Schedule state and policies
 ```
 
-The in-memory reference store and PostgreSQL provider implement the same query
-contract. The Dashboard is read-only and hides Payload JSON by default. A host
-may bind it to a named ASP.NET Core authorization policy and explicitly enable
-payload or mutation capabilities. LeaseToken and fencing credentials are never
-rendered.
+List pages use payload-free Run projections; full Payload JSON is fetched only
+when an operator explicitly opens one Run detail page and the host has enabled
+payload display. Runs are paginated. Worker Session and Schedule views have
+configurable hard limits. PostgreSQL supplies indexes for the list filters and
+sort order.
 
-## Bounded memory
+The Dashboard has no public CDN dependency, is read-only by default, and hides
+Payload JSON by default. A host may bind it to a named ASP.NET Core authorization
+policy and explicitly enable payload or mutation capabilities. LeaseToken and
+fencing credentials are never rendered.
 
-Worker memory is bounded by:
+## Bounded process memory
+
+Worker process memory is bounded by:
 
 ```text
 MaxConcurrentJobs
@@ -141,10 +150,13 @@ MaxConcurrentJobs
 + owned Attempt dictionary
 + claim/renewal batches
 + handler registry
++ bounded persisted failure details
 ```
 
-No in-memory collection grows with historical jobs. History and payloads remain
-in durable storage.
+Production history and Payloads remain in PostgreSQL and are not accumulated by
+Worker processes. The in-memory provider intentionally retains process-local
+state and is intended for development, tests, and small ephemeral deployments;
+it is not a durable production history store.
 
 ## Deployment modes
 

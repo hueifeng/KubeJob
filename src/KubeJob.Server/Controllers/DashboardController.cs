@@ -87,29 +87,42 @@ public sealed class DashboardController : Controller
             return Forbid();
         }
 
-        await _submissions.RequestCancelAsync(
+        var canceled = await _submissions.RequestCancelAsync(
             id,
             string.IsNullOrWhiteSpace(reason) ? "Canceled from dashboard." : reason.Trim(),
             cancellationToken);
+        if (!canceled)
+        {
+            var existing = await _queries.GetRunAsync(id, cancellationToken);
+            return existing is null
+                ? NotFound()
+                : Conflict("The Run is already terminal and cannot be canceled.");
+        }
+
         return RedirectToAction(nameof(Run), new { id });
     }
 
     [HttpGet("workers")]
     public async Task<IActionResult> Workers(CancellationToken cancellationToken)
     {
-        var sessions = await _dashboard.GetWorkerSessionsAsync(cancellationToken);
+        var limit = _options.GetNormalizedMaximumWorkerSessions();
+        var sessions = await _dashboard.GetWorkerSessionsAsync(limit, cancellationToken);
         return View(
             "~/Views/Dashboard/Workers.cshtml",
-            new DashboardWorkersViewModel(sessions, DateTimeOffset.UtcNow));
+            new DashboardWorkersViewModel(sessions, DateTimeOffset.UtcNow, limit));
     }
 
     [HttpGet("schedules")]
     public async Task<IActionResult> Schedules(CancellationToken cancellationToken)
     {
-        var schedules = await _dashboard.GetSchedulesAsync(cancellationToken);
+        var limit = _options.GetNormalizedMaximumSchedules();
+        var schedules = await _dashboard.GetSchedulesAsync(limit, cancellationToken);
         return View(
             "~/Views/Dashboard/Schedules.cshtml",
-            new DashboardSchedulesViewModel(schedules, _options.AllowMutatingActions));
+            new DashboardSchedulesViewModel(
+                schedules,
+                _options.AllowMutatingActions,
+                limit));
     }
 
     [HttpPost("schedules/{id}/enabled")]
@@ -139,7 +152,16 @@ public sealed class DashboardController : Controller
                 DateTimeOffset.UtcNow);
         }
 
-        await _schedules.SetEnabledAsync(id, enabled, nextFireAt, cancellationToken);
+        var updated = await _schedules.SetEnabledAsync(
+            id,
+            enabled,
+            nextFireAt,
+            cancellationToken);
+        if (!updated)
+        {
+            return Conflict("The Schedule changed concurrently. Refresh and try again.");
+        }
+
         return RedirectToAction(nameof(Schedules));
     }
 }

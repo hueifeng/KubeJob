@@ -15,7 +15,7 @@ public sealed class HttpWorkerRuntimeClient : IWorkerRuntimeClient, IDisposable
     public HttpWorkerRuntimeClient(IOptions<KubeJobWorkerOptions> options)
     {
         var workerOptions = options.Value;
-        workerOptions.ValidateV2();
+        workerOptions.Validate();
         _httpClient = new HttpClient
         {
             BaseAddress = new Uri(workerOptions.ServerEndpoint, UriKind.Absolute),
