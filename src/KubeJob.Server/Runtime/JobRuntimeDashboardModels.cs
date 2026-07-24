@@ -35,6 +35,14 @@ public sealed record DashboardRunQuery(
     }
 }
 
+public sealed record DashboardQueueSummary(
+    string Queue,
+    int PendingRuns,
+    int RunningRuns)
+{
+    public int ActiveRuns => PendingRuns + RunningRuns;
+}
+
 public sealed record DashboardOverview(
     int PendingRuns,
     int RunningRuns,
@@ -49,6 +57,7 @@ public sealed record DashboardOverview(
     int EnabledSchedules,
     int DisabledSchedules,
     int PendingOutboxMessages,
+    IReadOnlyList<DashboardQueueSummary> Queues,
     IReadOnlyList<JobRunRecord> RecentRuns);
 
 public interface IJobRuntimeDashboardStore
