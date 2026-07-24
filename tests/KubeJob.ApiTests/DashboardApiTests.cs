@@ -2,7 +2,9 @@ using System.Net;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using FluentAssertions;
+using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -17,7 +19,7 @@ namespace KubeJob.ApiTests;
 public sealed class DashboardApiTests
 {
     [Fact]
-    public async Task Dashboard_uses_custom_route_and_scoped_authorization_policy()
+    public async Task Dashboard_uses_custom_route_scoped_authorization_and_safe_defaults()
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -48,20 +50,49 @@ public sealed class DashboardApiTests
         app.MapControllers();
         await app.StartAsync();
 
+        var store = app.Services.GetRequiredService<InMemoryJobRuntimeStore>();
+        var run = (await store.SubmitAsync(
+            new SubmitJobCommand(
+                "mail.send",
+                "{\"apiKey\":\"top-secret-value\"}",
+                "mail",
+                0,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                1,
+                60),
+            CancellationToken.None)).Run;
+
         var client = app.GetTestClient();
 
         using var anonymousResponse = await client.GetAsync("/admin/jobs");
         anonymousResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/admin/jobs");
-        request.Headers.Add("X-Test-User", "operator");
-        using var authorizedResponse = await client.SendAsync(request);
-        var html = await authorizedResponse.Content.ReadAsStringAsync();
+        using var overviewRequest = CreateAuthorizedRequest("/admin/jobs");
+        using var overviewResponse = await client.SendAsync(overviewRequest);
+        var overviewHtml = await overviewResponse.Content.ReadAsStringAsync();
 
-        authorizedResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("Runtime Overview");
-        html.Should().Contain("Runs &amp; Attempts");
-        html.Should().NotContain("LeaseToken", StringComparison.OrdinalIgnoreCase);
+        overviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        overviewHtml.Should().Contain("Runtime Overview");
+        overviewHtml.Should().Contain("Runs &amp; Attempts");
+        overviewHtml.Should().NotContain("LeaseToken", StringComparison.OrdinalIgnoreCase);
+
+        using var detailRequest = CreateAuthorizedRequest($"/admin/jobs/runs/{run.Id}");
+        using var detailResponse = await client.SendAsync(detailRequest);
+        var detailHtml = await detailResponse.Content.ReadAsStringAsync();
+
+        detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        detailHtml.Should().Contain("Payload display is disabled");
+        detailHtml.Should().NotContain("top-secret-value");
+        detailHtml.Should().NotContain(">Cancel<");
+    }
+
+    private static HttpRequestMessage CreateAuthorizedRequest(string uri)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Add("X-Test-User", "operator");
+        return request;
     }
 
     private sealed class HeaderAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
