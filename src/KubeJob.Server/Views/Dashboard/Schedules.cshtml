@@ -4,19 +4,27 @@
 }
 <meta http-equiv="refresh" content="30">
 
-<div class="section-header">
-    <h5 class="mb-1 fw-bold">Independent schedules</h5>
-    <div class="small text-muted">Schedules own cron, time zone, misfire, and concurrency policies. Handlers only own execution logic.</div>
+<div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
+    <div>
+        <h5 class="mb-1 fw-bold">Independent schedules</h5>
+        <div class="small text-muted">Schedules own cron, time zone, misfire, and concurrency policies. Handlers only own execution logic.</div>
+    </div>
+    @if (!Model.AllowMutatingActions)
+    {
+        <span class="badge bg-secondary-subtle text-secondary border px-3 py-2 rounded-pill">
+            <i class="fa-solid fa-lock me-1"></i>Read-only
+        </span>
+    }
 </div>
 
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Schedule</th><th>Job / queue</th><th>Cron</th><th>Policies</th><th>Next / last fire</th><th>State</th><th class="text-end">Action</th></tr></thead>
+            <thead><tr><th>Schedule</th><th>Job / queue</th><th>Cron</th><th>Policies</th><th>Next / last fire</th><th>State</th>@if (Model.AllowMutatingActions){<th class="text-end">Action</th>}</tr></thead>
             <tbody>
             @if (Model.Schedules.Count == 0)
             {
-                <tr><td colspan="7" class="text-center text-muted py-5">No schedules have been created.</td></tr>
+                <tr><td colspan="@(Model.AllowMutatingActions ? 7 : 6)" class="text-center text-muted py-5">No schedules have been created.</td></tr>
             }
             else
             {
@@ -50,14 +58,17 @@
                                 <div class="small text-primary mt-1"><i class="fa-solid fa-lock me-1"></i>reconciling until @schedule.ClaimUntil!.Value.ToLocalTime().ToString("HH:mm:ss")</div>
                             }
                         </td>
-                        <td class="text-end">
-                            <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post">
-                                <input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
-                                <button class="btn btn-sm @(schedule.Enabled ? "btn-outline-warning" : "btn-outline-success")">
-                                    <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1"></i>@(schedule.Enabled ? "Disable" : "Enable")
-                                </button>
-                            </form>
-                        </td>
+                        @if (Model.AllowMutatingActions)
+                        {
+                            <td class="text-end">
+                                <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post">
+                                    <input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
+                                    <button class="btn btn-sm @(schedule.Enabled ? "btn-outline-warning" : "btn-outline-success")">
+                                        <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1"></i>@(schedule.Enabled ? "Disable" : "Enable")
+                                    </button>
+                                </form>
+                            </td>
+                        }
                     </tr>
                 }
             }
