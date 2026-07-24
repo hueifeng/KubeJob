@@ -95,8 +95,10 @@ public interface IJobRuntimeDashboardStore
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
+        int limit,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<JobScheduleRecord>> GetSchedulesAsync(
+        int limit,
         CancellationToken cancellationToken);
 }
