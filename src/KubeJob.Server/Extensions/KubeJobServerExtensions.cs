@@ -4,6 +4,7 @@ using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
+using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -42,14 +43,25 @@ public static class KubeJobServerExtensions
 
     public static IServiceCollection AddKubeJobDashboard(
         this IServiceCollection services,
-        string routePrefix = "kubejob")
+        Action<KubeJobDashboardOptions>? configure = null)
     {
-        services.AddControllersWithViews(options =>
+        var options = new KubeJobDashboardOptions();
+        configure?.Invoke(options);
+
+        services.AddAuthorization();
+        services.AddControllersWithViews(mvc =>
         {
-            options.Conventions.Add(new KubeJobDashboardRouteConvention(routePrefix));
+            mvc.Conventions.Add(new KubeJobDashboardRouteConvention(
+                options.GetNormalizedRoutePrefix(),
+                options.GetNormalizedAuthorizationPolicy()));
         });
         return services;
     }
+
+    public static IServiceCollection AddKubeJobDashboard(
+        this IServiceCollection services,
+        string routePrefix)
+        => services.AddKubeJobDashboard(options => options.RoutePrefix = routePrefix);
 
     public static void InitializeKubeJobDatabase(this IApplicationBuilder app)
     {
@@ -62,12 +74,18 @@ public static class KubeJobServerExtensions
 public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
 {
     private readonly string _routePrefix;
+    private readonly string? _authorizationPolicy;
 
-    public KubeJobDashboardRouteConvention(string routePrefix)
+    public KubeJobDashboardRouteConvention(
+        string routePrefix,
+        string? authorizationPolicy = null)
     {
         _routePrefix = string.IsNullOrWhiteSpace(routePrefix)
             ? "kubejob"
             : routePrefix.Trim('/');
+        _authorizationPolicy = string.IsNullOrWhiteSpace(authorizationPolicy)
+            ? null
+            : authorizationPolicy.Trim();
     }
 
     public void Apply(ControllerModel controller)
@@ -84,6 +102,11 @@ public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
                 : AttributeRouteModel.CombineAttributeRouteModel(
                     new AttributeRouteModel { Template = _routePrefix },
                     selector.AttributeRouteModel);
+        }
+
+        if (_authorizationPolicy is not null)
+        {
+            controller.Filters.Add(new AuthorizeFilter(_authorizationPolicy));
         }
     }
 }
