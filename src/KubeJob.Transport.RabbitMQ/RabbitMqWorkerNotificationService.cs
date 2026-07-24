@@ -25,7 +25,7 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
         _signal = signal;
         _logger = logger;
         _rabbitMq.Validate();
-        _worker.ValidateV2();
+        _worker.Validate();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -74,7 +74,7 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
             autoDelete: true,
             arguments: null);
 
-        foreach (var queue in _worker.Queues.Distinct(StringComparer.Ordinal))
+        foreach (var queue in _worker.Queues)
         {
             channel.QueueBind(
                 queue: declared.QueueName,
