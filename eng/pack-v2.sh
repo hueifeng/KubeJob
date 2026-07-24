@@ -7,8 +7,9 @@ output="${PACKAGE_OUTPUT:-artifacts/packages}"
 
 mkdir -p "$output"
 
+# KubeJob.Generators is an implementation project. Its assembly is embedded in
+# KubeJob.Core under analyzers/dotnet/cs and is validated by package consumers.
 projects=(
-  "src/KubeJob.Generators/KubeJob.Generators.csproj"
   "src/KubeJob.Core/KubeJob.Core.csproj"
   "src/KubeJob.Client/KubeJob.Client.csproj"
   "src/KubeJob.Server/KubeJob.Server.csproj"
