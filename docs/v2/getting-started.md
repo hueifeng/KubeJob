@@ -1,9 +1,10 @@
-# KubeJob V2 Getting Started
+# KubeJob Getting Started
 
-KubeJob V2 separates the public job API from the distributed runtime. Existing
-legacy jobs remain supported while applications migrate one handler at a time.
+KubeJob is a V2-only typed distributed job runtime. Applications define typed
+handlers, submit logical Runs, and optionally create independent cron Schedules.
+Workers, Attempts, leases, fencing, and Outbox delivery remain runtime concerns.
 
-## 1. Define a payload and typed handler
+## 1. Define a typed handler
 
 ```csharp
 using KubeJob.Core.Attributes;
@@ -20,10 +21,7 @@ public sealed class SendEmailJob : IKubeJob<SendEmail>
 {
     private readonly IEmailSender _sender;
 
-    public SendEmailJob(IEmailSender sender)
-    {
-        _sender = sender;
-    }
+    public SendEmailJob(IEmailSender sender) => _sender = sender;
 
     public ValueTask ExecuteAsync(
         SendEmail payload,
@@ -33,16 +31,15 @@ public sealed class SendEmailJob : IKubeJob<SendEmail>
 }
 ```
 
-The source generator emits a stable, strongly typed key in the handler's
-namespace:
+The source generator emits a stable strongly typed key:
 
 ```csharp
 Jobs.SendEmail // JobKey<SendEmail>, value "mail.send"
 ```
 
-The execution context is read-only and does not expose `IServiceProvider`, a
-database connection, repository, lease token, or fencing token. Business
-dependencies use constructor injection.
+`[KubeJob]` declares only the stable handler key. Handler dependencies use
+constructor injection. `JobExecutionContext` does not expose a service locator,
+storage connection, repository, lease token, or fencing token.
 
 ## 2. Unified application
 
@@ -56,10 +53,13 @@ using KubeJob.Worker.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+
 builder.Services.AddKubeJob(
-    server => server.UsePostgreSql(
+    configureServer: server => server.UsePostgreSql(
         builder.Configuration.GetConnectionString("KubeJob")!),
-    worker =>
+    configureWorker: worker =>
     {
         worker.WorkerId = Environment.MachineName;
         worker.MaxConcurrentJobs = 16;
@@ -67,89 +67,47 @@ builder.Services.AddKubeJob(
         worker.BuildId = "mailer-2026.07";
     });
 
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>("mail.send");
-builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
-
 var app = builder.Build();
 app.InitializeKubeJobDatabase();
 app.MapControllers();
 app.Run();
 ```
 
-`AddKubeJob` selects the in-process worker transport. Submission, claim,
-Attempt, lease, retry, cancellation, and fencing semantics remain identical to
-a distributed deployment.
+Unified hosting uses the in-process transport but preserves the same Run,
+Attempt, lease, retry, cancellation, and fencing semantics as remote workers.
 
-## 3. Submit a job
+## 3. Submit and query a job
 
 ```csharp
-public sealed class UsersController : ControllerBase
-{
-    private readonly IJobClient _jobs;
-
-    public UsersController(IJobClient jobs)
+var handle = await jobs.EnqueueAsync(
+    Jobs.SendEmail,
+    new SendEmail("user@example.com", "Welcome", "Hello"),
+    new JobEnqueueOptions
     {
-        _jobs = jobs;
-    }
+        Queue = "mail",
+        IdempotencyKey = $"welcome:{userId}",
+        MaxAttempts = 5,
+        Timeout = TimeSpan.FromMinutes(2)
+    },
+    cancellationToken);
 
-    [HttpPost("{userId}/welcome")]
-    public async Task<IActionResult> Welcome(
-        string userId,
-        CancellationToken cancellationToken)
-    {
-        var handle = await _jobs.EnqueueAsync(
-            Jobs.SendEmail,
-            new SendEmail(
-                "user@example.com",
-                "Welcome",
-                "Welcome to the service."),
-            new JobEnqueueOptions
-            {
-                Queue = "mail",
-                IdempotencyKey = $"welcome:{userId}",
-                MaxAttempts = 5,
-                Timeout = TimeSpan.FromMinutes(2)
-            },
-            cancellationToken);
-
-        return Accepted(new { handle.JobId });
-    }
-}
+var status = await jobs.GetStatusAsync(handle.JobId, cancellationToken);
 ```
 
 An idempotency key may be reused only for the same JobKey and semantically equal
-JSON payload. A different job or payload produces
+JSON payload. Reusing it with another job or payload throws
 `IdempotencyConflictException`; the HTTP API returns `409 Conflict`.
 
-## 4. Query and cancel
+Cancellation is cooperative:
 
 ```csharp
-var status = await jobs.GetStatusAsync(handle.JobId, cancellationToken);
-
-if (status?.Phase == JobPhase.Running)
-{
-    Console.WriteLine($"Worker: {status.WorkerId}");
-    Console.WriteLine($"Attempt: {status.Attempt}");
-}
-
 await jobs.CancelAsync(
     handle.JobId,
-    reason: "The user canceled the export",
+    "The user canceled the export",
     cancellationToken);
 ```
 
-The control-plane API also exposes:
-
-```text
-GET  /api/kubejob/jobs/{runId}
-GET  /api/kubejob/jobs/{runId}/attempts
-POST /api/kubejob/jobs/{runId}/cancel
-```
-
-Attempt history is the authoritative answer to which Worker Session executed a
-job. A retry may run on a different worker.
-
-## 5. Independent control plane and worker
+## 4. Distributed control plane and workers
 
 Control plane:
 
@@ -161,7 +119,8 @@ builder.Services.AddKubeJobServer(options =>
 Worker:
 
 ```csharp
-builder.Services.AddKubeJobWorkerRuntime(options =>
+builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+builder.Services.AddKubeJobWorker(options =>
 {
     options.ServerEndpoint = "https://jobs.internal";
     options.WorkerId = Environment.MachineName;
@@ -169,23 +128,31 @@ builder.Services.AddKubeJobWorkerRuntime(options =>
     options.Queues.Add("mail");
     options.BuildId = "mailer-2026.07";
 });
-
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>("mail.send");
 ```
 
-The worker pulls only when it has free slots. The server verifies capacity from
-active Attempts and does not trust a worker's reported slot count by itself.
+Workers pull only when they have free slots. The server validates each claim
+against the registered Worker Session queues and capabilities and recalculates
+capacity from active Attempts. PostgreSQL uses `FOR UPDATE SKIP LOCKED` to
+create one current Attempt and lease atomically.
 
-## 6. Cron schedules
+## 5. State transitions
 
-Schedules are independent resources; cron configuration is not stored on the
-handler attribute.
+```text
+Submission transaction: Run(Pending) + Outbox
+Claim transaction: create Attempt/lease, Run -> Running
+Success transaction: Attempt/Run -> Succeeded
+Retryable failure: close Attempt, Run -> Pending, write another Outbox entry
+Lease expiry: Attempt -> LeaseLost, Run -> Pending or Dead
+```
+
+MQ publication and consumption are not job states. PostgreSQL remains the source
+of truth.
+
+## 6. Independent schedules
+
+Cron configuration belongs to a Schedule resource, not the handler attribute:
 
 ```csharp
-public sealed record GenerateReport(string Kind);
-
-var schedules = serviceProvider.GetRequiredService<IJobScheduleClient>();
-
 await schedules.UpsertCronAsync(
     "daily-report",
     Jobs.GenerateReport,
@@ -202,54 +169,60 @@ await schedules.UpsertCronAsync(
     });
 ```
 
-The schedule reconciler uses a recoverable claim lease. In PostgreSQL, advancing
-`NextFireAt`, creating the logical Run, and writing the Outbox event occur in one
-transaction. Every occurrence has a deterministic identity.
+Multiple control-plane replicas use expiring Schedule claims and optimistic
+versions. Advancing `NextFireAt`, creating the occurrence Run, and writing its
+Outbox entry happen in one transaction.
 
-## 7. Delivery guarantees
+## 7. Dashboard
 
-KubeJob provides **at-least-once execution**. A worker process can finish an
-external side effect and fail before reporting success, so handlers that call
-external systems should use domain idempotency or an application outbox where
-necessary.
+The embedded Dashboard is V2-native and displays Overview, queue backlog, Runs,
+Attempt timelines, Worker Sessions, and Schedules.
 
-KubeJob prevents stale workers from changing current state by validating all of
-these values:
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("KubeJobDashboard", policy =>
+        policy.RequireRole("KubeJobOperator"));
+});
 
-```text
-RunId
-AttemptId
-AttemptNumber
-WorkerId
-SessionId
-SessionEpoch
-LeaseToken
-CurrentAttemptId
-LeaseExpiresAt
+builder.Services.AddKubeJobDashboard(options =>
+{
+    options.RoutePrefix = "admin/jobs";
+    options.AuthorizationPolicy = "KubeJobDashboard";
+    options.ShowPayloads = false;
+    options.AllowMutatingActions = false;
+});
+
+var app = builder.Build();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
 ```
 
-A lease-expired or stale-session completion is rejected even if the lease
-reconciler has not processed it yet.
+The Dashboard is read-only by default. Payloads are hidden by default. Set
+`AllowMutatingActions` only when operators should be able to cancel Runs and
+enable or disable Schedules. Lease and fencing credentials are never rendered.
 
-## 8. MQ integration boundary
+## 8. RabbitMQ notification acceleration
 
-PostgreSQL remains the source of truth. Submission stores the Run and Outbox in
-one transaction. `IWorkAvailableNotifier` is the extension point for RabbitMQ,
-NATS JetStream, Azure Service Bus, or another notification system.
+```csharp
+builder.Services.UseRabbitMqKubeJobNotifications(options =>
+{
+    options.ConnectionString = "amqp://kubejob:secret@rabbitmq:5672/";
+});
+```
 
-An MQ notification is only a wake-up hint. Workers still claim from the state
-store, and duplicate or missing notifications do not create a second valid
-Attempt. The Outbox publishing claim is recoverable after publisher crashes.
+Remote workers can add `AddRabbitMqKubeJobWorkerNotifications` with the same
+broker settings. Notifications are only queue-specific wake-up hints. Workers
+still claim from PostgreSQL, so duplicate or missing messages cannot create
+another valid Attempt.
 
-## 9. Migration from the legacy runtime
+## 9. Delivery guarantee
 
-1. Keep existing non-generic `IKubeJob` handlers running.
-2. Convert one handler to `IKubeJob<TPayload>`.
-3. Register it with `AddKubeJobHandler<TJob, TPayload>`.
-4. Submit through `IJobClient` and the generated `Jobs.*` key.
-5. Enable the V2 worker runtime for the queues migrated to typed handlers.
-6. Move cron definitions from `[KubeJob]` attributes to `IJobScheduleClient`.
-7. Retire legacy JobSpecs only after their active runs and schedules are drained.
+KubeJob explicitly provides **at-least-once execution**. A worker can finish an
+external side effect and crash before reporting success. Handlers that call
+payment, email, or other external systems should use domain idempotency or an
+application Outbox.
 
-The generator intentionally ignores legacy non-generic handlers, so migration
-does not require an all-at-once rewrite.
+The previous non-generic handler API, push dispatcher, JobSpec model, WorkerNode
+model, legacy tables, and legacy Dashboard are not part of this runtime.
