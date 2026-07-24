@@ -48,6 +48,7 @@ public static class KubeJobServerExtensions
         var options = new KubeJobDashboardOptions();
         configure?.Invoke(options);
 
+        services.AddSingleton(options);
         services.AddAuthorization();
         services.AddControllersWithViews(mvc =>
         {
