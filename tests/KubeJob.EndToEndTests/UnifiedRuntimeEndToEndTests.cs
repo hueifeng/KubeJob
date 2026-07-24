@@ -8,6 +8,7 @@ using KubeJob.Server.Extensions;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Xunit;
 
 namespace KubeJob.EndToEndTests;
 
