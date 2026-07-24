@@ -6,7 +6,7 @@ namespace KubeJob.Server.Dashboard;
 public sealed record DashboardIndexViewModel(DashboardOverview Overview);
 
 public sealed record DashboardRunsViewModel(
-    DashboardPage<JobRunRecord> Runs,
+    DashboardPage<DashboardRunSummary> Runs,
     DashboardRunQuery Query);
 
 public sealed record DashboardRunDetailsViewModel(
