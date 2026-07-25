@@ -10,20 +10,17 @@ namespace KubeJob.Server.Controllers;
 public sealed class DashboardController : Controller
 {
     private readonly IJobRuntimeDashboardStore _dashboard;
-    private readonly IJobQueryStore _queries;
     private readonly IJobSubmissionStore _submissions;
     private readonly IJobScheduleStore _schedules;
     private readonly KubeJobDashboardOptions _options;
 
     public DashboardController(
         IJobRuntimeDashboardStore dashboard,
-        IJobQueryStore queries,
         IJobSubmissionStore submissions,
         IJobScheduleStore schedules,
         KubeJobDashboardOptions options)
     {
         _dashboard = dashboard;
-        _queries = queries;
         _submissions = submissions;
         _schedules = schedules;
         _options = options;
@@ -59,13 +56,16 @@ public sealed class DashboardController : Controller
         string id,
         CancellationToken cancellationToken)
     {
-        var run = await _queries.GetRunAsync(id, cancellationToken);
+        var run = await _dashboard.GetRunDetailsAsync(
+            id,
+            _options.ShowPayloads,
+            cancellationToken);
         if (run is null)
         {
             return NotFound();
         }
 
-        var attempts = await _queries.GetAttemptsAsync(id, cancellationToken);
+        var attempts = await _dashboard.GetAttemptSummariesAsync(id, cancellationToken);
         return View(
             "~/Views/Dashboard/Run.cshtml",
             new DashboardRunDetailsViewModel(
@@ -93,7 +93,10 @@ public sealed class DashboardController : Controller
             cancellationToken);
         if (!canceled)
         {
-            var existing = await _queries.GetRunAsync(id, cancellationToken);
+            var existing = await _dashboard.GetRunDetailsAsync(
+                id,
+                includePayload: false,
+                cancellationToken);
             return existing is null
                 ? NotFound()
                 : Conflict("The Run is already terminal and cannot be canceled.");
