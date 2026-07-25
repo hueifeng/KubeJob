@@ -12,33 +12,46 @@ public sealed partial class InMemoryJobRuntimeStore
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
+            var observedAt = DateTimeOffset.UtcNow;
+            var activityWindowStart = observedAt.AddHours(-1);
+            var runs = _runs.Values.ToArray();
             var sessions = _sessions.Values.ToArray();
             var schedules = _schedules.Values.ToArray();
-            var queues = _runs.Values
+            var queues = runs
                 .Where(run => run.Phase is JobPhase.Pending or JobPhase.Running)
                 .GroupBy(run => run.Queue, StringComparer.Ordinal)
                 .Select(group => new DashboardQueueSummary(
                     group.Key,
                     group.Count(run => run.Phase == JobPhase.Pending),
-                    group.Count(run => run.Phase == JobPhase.Running)))
+                    group.Count(run => run.Phase == JobPhase.Running),
+                    group
+                        .Where(run => run.Phase == JobPhase.Pending && run.AvailableAt <= observedAt)
+                        .Select(run => (DateTimeOffset?)run.AvailableAt)
+                        .Min()))
                 .OrderByDescending(queue => queue.ActiveRuns)
                 .ThenBy(queue => queue.Queue, StringComparer.Ordinal)
                 .Take(12)
                 .ToArray();
-            var recent = _runs.Values
+            var recent = runs
                 .OrderByDescending(run => run.CreatedAt)
                 .ThenByDescending(run => run.Id, StringComparer.Ordinal)
                 .Take(Math.Clamp(recentRunCount, 1, 100))
                 .Select(ToDashboardSummary)
                 .ToArray();
+            var lastHourRuns = runs
+                .Where(run => run.CompletedAt is { } completedAt
+                              && completedAt >= activityWindowStart
+                              && completedAt <= observedAt)
+                .ToArray();
 
             return ValueTask.FromResult(new DashboardOverview(
-                PendingRuns: CountRuns(JobPhase.Pending),
-                RunningRuns: CountRuns(JobPhase.Running),
-                SucceededRuns: CountRuns(JobPhase.Succeeded),
-                FailedRuns: CountRuns(JobPhase.Failed),
-                CanceledRuns: CountRuns(JobPhase.Canceled),
-                DeadRuns: CountRuns(JobPhase.Dead),
+                ObservedAt: observedAt,
+                PendingRuns: runs.Count(run => run.Phase == JobPhase.Pending),
+                RunningRuns: runs.Count(run => run.Phase == JobPhase.Running),
+                SucceededRuns: runs.Count(run => run.Phase == JobPhase.Succeeded),
+                FailedRuns: runs.Count(run => run.Phase == JobPhase.Failed),
+                CanceledRuns: runs.Count(run => run.Phase == JobPhase.Canceled),
+                DeadRuns: runs.Count(run => run.Phase == JobPhase.Dead),
                 ReadyWorkers: sessions.Count(session => session.State == WorkerSessionState.Ready),
                 DrainingWorkers: sessions.Count(session => session.State == WorkerSessionState.Draining),
                 TotalWorkerCapacity: sessions
@@ -53,6 +66,11 @@ public sealed partial class InMemoryJobRuntimeStore
                     OutboxDeliveryState.Pending or
                     OutboxDeliveryState.Publishing or
                     OutboxDeliveryState.Failed),
+                LastHour: new DashboardActivitySummary(
+                    lastHourRuns.Count(run => run.Phase == JobPhase.Succeeded),
+                    lastHourRuns.Count(run => run.Phase == JobPhase.Failed),
+                    lastHourRuns.Count(run => run.Phase == JobPhase.Canceled),
+                    lastHourRuns.Count(run => run.Phase == JobPhase.Dead)),
                 Queues: queues,
                 RecentRuns: recent));
         }
@@ -236,7 +254,4 @@ public sealed partial class InMemoryJobRuntimeStore
         FailureCode = attempt.FailureCode,
         FailureMessage = attempt.FailureMessage
     };
-
-    private int CountRuns(JobPhase phase) =>
-        _runs.Values.Count(run => run.Phase == phase);
 }
