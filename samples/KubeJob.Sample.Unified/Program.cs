@@ -1,13 +1,25 @@
 using KubeJob;
 using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Server.Extensions;
+using KubeJob.Storage.PostgreSQL.Extensions;
 using KubeJob.Worker.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
+var postgresConnectionString = builder.Configuration.GetConnectionString("KubeJob");
 
 builder.Services.AddKubeJobHandler<SampleDataJob, SampleDataPayload>();
 builder.Services.AddKubeJob(
-    configureServer: options => options.UseInMemory(),
+    configureServer: options =>
+    {
+        if (string.IsNullOrWhiteSpace(postgresConnectionString))
+        {
+            options.UseInMemory();
+        }
+        else
+        {
+            options.UsePostgreSql(postgresConnectionString);
+        }
+    },
     configureWorker: options =>
     {
         options.WorkerId = "unified-sample";
@@ -20,6 +32,11 @@ builder.Services.AddKubeJob(
 builder.Services.AddKubeJobDashboard(routePrefix: "admin/jobs");
 
 var app = builder.Build();
+if (!string.IsNullOrWhiteSpace(postgresConnectionString))
+{
+    app.InitializeKubeJobDatabase();
+}
+
 app.UseStaticFiles();
 app.UseRouting();
 app.MapControllers();
