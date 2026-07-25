@@ -79,7 +79,9 @@ public sealed class DashboardApiTests
         var html = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("Create recurring job");
+        html.Should().Contain("New recurring job");
+        html.Should().Contain("<dialog");
+        html.Should().Contain("data-open=\"false\"");
         html.Should().Contain("Create Schedule");
         html.Should().Contain("name=\"CreateForm.Id\"");
         html.Should().Contain("name=\"CreateForm.PayloadJson\"");

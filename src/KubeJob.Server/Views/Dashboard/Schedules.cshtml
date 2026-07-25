@@ -4,6 +4,32 @@
     ViewData["Title"] = "Schedules";
 }
 <meta http-equiv="refresh" content="30">
+@if (Model.AllowMutatingActions)
+{
+    <style>
+        .schedule-dialog {
+            width: min(780px, calc(100vw - 32px));
+            max-height: calc(100vh - 32px);
+            padding: 0;
+            border: 1px solid var(--border-strong);
+            border-radius: 8px;
+            box-shadow: 0 18px 60px rgba(0, 0, 0, .22);
+        }
+        .schedule-dialog::backdrop { background: rgba(15, 23, 42, .42); }
+        .schedule-dialog-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 18px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+        .schedule-dialog-body { max-height: calc(100vh - 190px); overflow-y: auto; padding: 20px; }
+        .schedule-dialog-close { min-width: 32px; padding: 4px 8px; font-size: 18px; line-height: 1; }
+        .schedule-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+        .schedule-help { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    </style>
+}
 
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
@@ -13,24 +39,35 @@
             Showing up to @Model.MaximumItems schedules.
         </div>
     </div>
-    @if (!Model.AllowMutatingActions)
-    {
-        <span class="badge bg-secondary-subtle text-secondary border px-3 py-2 rounded-pill">
-            <i class="fa-solid fa-lock me-1" aria-hidden="true"></i>Viewing only
-        </span>
-    }
+    <div class="d-flex align-items-center gap-2">
+        @if (Model.AllowMutatingActions)
+        {
+            <button type="button" class="btn btn-primary" id="open-create-schedule">
+                <i class="fa-solid fa-plus me-1" aria-hidden="true"></i>New recurring job
+            </button>
+        }
+        else
+        {
+            <span class="badge bg-secondary-subtle text-secondary border px-3 py-2 rounded-pill">
+                <i class="fa-solid fa-lock me-1" aria-hidden="true"></i>Viewing only
+            </span>
+        }
+    </div>
 </div>
 
 @if (Model.AllowMutatingActions)
 {
-    <div class="table-card mb-4">
-        <div class="p-4 border-bottom">
-            <h6 class="mb-1 fw-bold">Create recurring job</h6>
-            <div class="small text-muted">
-                The Job key must match a registered handler. Payload must be valid JSON. Cron uses the standard five-field format; <code>* * * * *</code> runs once per minute.
+    <dialog id="create-schedule-dialog" class="schedule-dialog" data-open="@(Model.ShowCreateForm ? "true" : "false")" aria-labelledby="create-schedule-title">
+        <div class="schedule-dialog-header">
+            <div>
+                <h5 id="create-schedule-title" class="mb-1 fw-bold">New recurring job</h5>
+                <div class="schedule-help">
+                    Create a Schedule that emits a new Run when its Cron expression is due. The Job key identifies the registered handler; it is not a Run ID.
+                </div>
             </div>
+            <button type="button" class="btn btn-outline-secondary schedule-dialog-close" aria-label="Close">×</button>
         </div>
-        <form asp-action="CreateSchedule" method="post" class="p-4">
+        <form asp-action="CreateSchedule" method="post" class="schedule-dialog-body">
             @Html.AntiForgeryToken()
             <div asp-validation-summary="ModelOnly" class="text-danger small mb-3"></div>
             <div class="row g-3">
@@ -41,7 +78,8 @@
                 </div>
                 <div class="col-md-4">
                     <label asp-for="CreateForm.JobKey" class="form-label">Job key</label>
-                    <input asp-for="CreateForm.JobKey" class="form-control" placeholder="demo.print" />
+                    <input asp-for="CreateForm.JobKey" class="form-control" placeholder="sample.data" />
+                    <div class="schedule-help mt-1">例如本示例是 <code>sample.data</code> 或 <code>sample.dashboard-demo</code>；不要填 Run ID。</div>
                     <span asp-validation-for="CreateForm.JobKey" class="text-danger small"></span>
                 </div>
                 <div class="col-md-4">
@@ -100,16 +138,33 @@
                 <div class="col-12">
                     <label asp-for="CreateForm.PayloadJson" class="form-label">Payload JSON</label>
                     <textarea asp-for="CreateForm.PayloadJson" class="form-control mono" rows="4"></textarea>
+                    <div class="schedule-help mt-1">Payload must match the contract expected by the selected Job key.</div>
                     <span asp-validation-for="CreateForm.PayloadJson" class="text-danger small"></span>
                 </div>
-                <div class="col-12 d-flex justify-content-end">
+                <div class="col-12 schedule-dialog-footer">
+                    <button type="button" class="btn btn-outline-secondary schedule-dialog-close">Cancel</button>
                     <button type="submit" class="btn btn-primary">
                         <i class="fa-solid fa-plus me-1" aria-hidden="true"></i>Create Schedule
                     </button>
                 </div>
             </div>
         </form>
-    </div>
+    </dialog>
+    <script>
+        (() => {
+            const dialog = document.getElementById('create-schedule-dialog');
+            const openButton = document.getElementById('open-create-schedule');
+            if (!dialog || !openButton) return;
+            openButton.addEventListener('click', () => dialog.showModal());
+            dialog.querySelectorAll('.schedule-dialog-close').forEach(button => {
+                button.addEventListener('click', () => dialog.close());
+            });
+            dialog.addEventListener('click', event => {
+                if (event.target === dialog) dialog.close();
+            });
+            if (dialog.dataset.open === 'true') dialog.showModal();
+        })();
+    </script>
 }
 
 <div class="table-card">
@@ -122,7 +177,7 @@
                 <tr>
                     <td colspan="@(Model.AllowMutatingActions ? 7 : 6)" class="text-center text-muted py-5">
                         <div class="fw-semibold text-dark mb-1">No recurring jobs have been configured.</div>
-                        <div>Use the form above or create a Schedule through <code>IJobScheduleClient</code>.</div>
+                        <div>Use <strong>New recurring job</strong> or create a Schedule through <code>IJobScheduleClient</code>.</div>
                     </td>
                 </tr>
             }

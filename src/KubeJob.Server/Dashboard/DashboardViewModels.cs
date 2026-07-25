@@ -172,7 +172,8 @@ public sealed record DashboardSchedulesViewModel(
     IReadOnlyList<JobScheduleRecord> Schedules,
     bool AllowMutatingActions,
     int MaximumItems,
-    DashboardScheduleCreateForm CreateForm);
+    DashboardScheduleCreateForm CreateForm,
+    bool ShowCreateForm);
 
 public sealed class DashboardScheduleCreateForm
 {

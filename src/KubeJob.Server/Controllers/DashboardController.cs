@@ -170,7 +170,8 @@ public sealed class DashboardController : Controller
                 schedules,
                 _options.AllowMutatingActions,
                 limit,
-                new DashboardScheduleCreateForm()));
+                new DashboardScheduleCreateForm(),
+                ShowCreateForm: false));
     }
 
     [HttpPost("schedules/create")]
@@ -232,7 +233,8 @@ public sealed class DashboardController : Controller
                     schedules,
                     _options.AllowMutatingActions,
                     limit,
-                    form));
+                    form,
+                    ShowCreateForm: true));
         }
 
         var now = DateTimeOffset.UtcNow;
