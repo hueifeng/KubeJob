@@ -144,6 +144,96 @@ public sealed class WorkerAndDashboardHardeningTests
         sessions.Should().HaveCount(2);
     }
 
+    [Fact]
+    public async Task Dashboard_overview_reports_oldest_ready_run_and_recent_activity()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var completedAvailableAt = DateTimeOffset.UtcNow.AddMinutes(-15);
+        await store.SubmitAsync(
+            new SubmitJobCommand(
+                "mail.send",
+                "{}",
+                "default",
+                0,
+                completedAvailableAt,
+                null,
+                null,
+                1,
+                60),
+            CancellationToken.None);
+        var session = await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "worker-dashboard",
+                "session-dashboard",
+                "test",
+                "localhost",
+                1,
+                new[] { "default" },
+                new[] { "mail.send" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        var claim = (await store.ClaimAsync(
+            new ClaimJobsRequest(
+                session.WorkerId,
+                session.SessionId,
+                session.Epoch,
+                1,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        var completion = await store.CompleteAsync(
+            new CompleteAttemptRequest(
+                session.WorkerId,
+                session.SessionId,
+                session.Epoch,
+                claim.RunId,
+                claim.AttemptId,
+                claim.AttemptNumber,
+                claim.LeaseToken,
+                JobAttemptOutcome.Succeeded),
+            TimeSpan.Zero,
+            CancellationToken.None);
+
+        var oldestReadyAt = DateTimeOffset.UtcNow.AddMinutes(-8);
+        await store.SubmitAsync(
+            new SubmitJobCommand(
+                "mail.send",
+                "{}",
+                "slow",
+                0,
+                oldestReadyAt,
+                null,
+                null,
+                1,
+                60),
+            CancellationToken.None);
+        await store.SubmitAsync(
+            new SubmitJobCommand(
+                "mail.send",
+                "{}",
+                "slow",
+                0,
+                DateTimeOffset.UtcNow.AddMinutes(10),
+                null,
+                null,
+                1,
+                60),
+            CancellationToken.None);
+
+        var overview = await store.GetOverviewAsync(10, CancellationToken.None);
+        var slowQueue = overview.Queues.Single(queue => queue.Queue == "slow");
+
+        completion.Accepted.Should().BeTrue();
+        overview.LastHour.SucceededRuns.Should().Be(1);
+        overview.LastHour.UnsuccessfulRuns.Should().Be(0);
+        slowQueue.PendingRuns.Should().Be(2);
+        slowQueue.RunningRuns.Should().Be(0);
+        slowQueue.OldestReadyAt.Should().BeCloseTo(oldestReadyAt, TimeSpan.FromMilliseconds(1));
+        overview.ObservedAt.Should().BeAfter(oldestReadyAt);
+    }
+
     private sealed class NoopInvoker : IJobHandlerInvoker
     {
         public string JobKey => "test.job";

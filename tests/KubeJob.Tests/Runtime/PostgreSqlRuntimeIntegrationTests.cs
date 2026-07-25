@@ -204,29 +204,53 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Dashboard_overview_groups_active_runs_by_queue()
+    public async Task Dashboard_overview_reports_ready_age_and_recent_activity()
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(queue: "mail"), CancellationToken.None);
-        await store.SubmitAsync(NewSubmission(queue: "reports"), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(), CancellationToken.None);
+        var worker = await RegisterAsync(store, "dashboard-worker", "dashboard-session");
+        var completedClaim = (await store.ClaimAsync(
+            Claim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        var completion = await store.CompleteAsync(
+            Completion(worker, completedClaim, JobAttemptOutcome.Succeeded),
+            TimeSpan.Zero,
+            CancellationToken.None);
+
+        var readyAt = DateTimeOffset.UtcNow.AddMinutes(-7);
+        await store.SubmitAsync(
+            NewSubmission(queue: "dashboard-mail", availableAt: readyAt),
+            CancellationToken.None);
+        await store.SubmitAsync(
+            NewSubmission(
+                queue: "dashboard-future",
+                availableAt: DateTimeOffset.UtcNow.AddMinutes(10)),
+            CancellationToken.None);
 
         var overview = await store.GetOverviewAsync(10, CancellationToken.None);
+        var readyQueue = overview.Queues.Single(queue => queue.Queue == "dashboard-mail");
+        var futureQueue = overview.Queues.Single(queue => queue.Queue == "dashboard-future");
 
-        overview.Queues.Should().ContainEquivalentOf(
-            new DashboardQueueSummary("mail", PendingRuns: 1, RunningRuns: 0));
-        overview.Queues.Should().ContainEquivalentOf(
-            new DashboardQueueSummary("reports", PendingRuns: 1, RunningRuns: 0));
+        completion.Accepted.Should().BeTrue();
+        overview.LastHour.SucceededRuns.Should().BeGreaterThanOrEqualTo(1);
+        readyQueue.PendingRuns.Should().Be(1);
+        readyQueue.OldestReadyAt.Should().BeCloseTo(readyAt, TimeSpan.FromMilliseconds(1));
+        futureQueue.OldestReadyAt.Should().BeNull();
+        overview.ObservedAt.Should().BeAfter(readyAt);
     }
 
     private static SubmitJobCommand NewSubmission(
         string? idempotencyKey = null,
-        string queue = "default") => new(
+        string queue = "default",
+        DateTimeOffset? availableAt = null) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         queue,
         0,
-        DateTimeOffset.UtcNow,
+        availableAt ?? DateTimeOffset.UtcNow,
         idempotencyKey,
         null,
         3,

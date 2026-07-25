@@ -1,0 +1,53 @@
+name: Dashboard Validation
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      KUBEJOB_TEST_POSTGRES: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore solution
+        run: dotnet restore KubeJob.sln
+
+      - name: Build solution and Razor views
+        run: dotnet build KubeJob.sln --configuration Release --no-restore
+
+      - name: Run dashboard API tests
+        run: dotnet test tests/KubeJob.ApiTests/KubeJob.ApiTests.csproj --configuration Release --no-build
+
+      - name: Run runtime and PostgreSQL tests
+        run: dotnet test tests/KubeJob.Tests/KubeJob.Tests.csproj --configuration Release --no-build

@@ -2,40 +2,180 @@
 @{
     ViewData["Title"] = "Runtime Overview";
     var overview = Model.Overview;
+    var activeRuns = overview.PendingRuns + overview.RunningRuns;
+    var oldestReadyAt = overview.Queues
+        .Where(queue => queue.OldestReadyAt is not null)
+        .Select(queue => queue.OldestReadyAt)
+        .OrderBy(value => value)
+        .FirstOrDefault();
+    TimeSpan? oldestReadyAge = oldestReadyAt is null
+        ? null
+        : overview.ObservedAt - oldestReadyAt.Value;
+
+    string summaryTone;
+    string summaryIcon;
+    string summaryTitle;
+    string summaryDetail;
+    string? summaryAction;
+    string? summaryActionRoute;
+
+    if (overview.PendingRuns > 0 && overview.ReadyWorkers == 0)
+    {
+        summaryTone = "danger";
+        summaryIcon = "!";
+        summaryTitle = "Jobs are waiting, but no worker is ready.";
+        summaryDetail = "Start or restore a worker that listens to the affected queue before the backlog grows.";
+        summaryAction = "Check workers";
+        summaryActionRoute = "Workers";
+    }
+    else if (oldestReadyAge >= TimeSpan.FromMinutes(5))
+    {
+        summaryTone = "warning";
+        summaryIcon = "◷";
+        summaryTitle = $"The oldest ready job has waited {FormatAge(oldestReadyAge.Value)}.";
+        summaryDetail = "Check whether workers cover that queue and still have available execution slots.";
+        summaryAction = "Check workers";
+        summaryActionRoute = "Workers";
+    }
+    else if (overview.LastHour.UnsuccessfulRuns > 0)
+    {
+        summaryTone = "warning";
+        summaryIcon = "!";
+        summaryTitle = $"{overview.LastHour.UnsuccessfulRuns} job(s) failed or exhausted retries in the last hour.";
+        summaryDetail = "Open the job list to inspect the latest error and complete Attempt history.";
+        summaryAction = "Review jobs";
+        summaryActionRoute = "Runs";
+    }
+    else if (activeRuns > 0)
+    {
+        summaryTone = "success";
+        summaryIcon = "✓";
+        summaryTitle = "Jobs are moving through the runtime.";
+        summaryDetail = $"{overview.PendingRuns} waiting, {overview.RunningRuns} running, and {overview.AvailableWorkerSlots} worker slot(s) currently available.";
+        summaryAction = "View jobs";
+        summaryActionRoute = "Runs";
+    }
+    else
+    {
+        summaryTone = "neutral";
+        summaryIcon = "—";
+        summaryTitle = "No jobs are currently waiting or running.";
+        summaryDetail = "The runtime is idle. New jobs will appear here after your application submits them.";
+        summaryAction = null;
+        summaryActionRoute = null;
+    }
+
+    static string FormatAge(TimeSpan value)
+    {
+        var age = value < TimeSpan.Zero ? TimeSpan.Zero : value;
+        if (age.TotalDays >= 1)
+        {
+            return $"{(int)age.TotalDays}d {age.Hours}h";
+        }
+
+        if (age.TotalHours >= 1)
+        {
+            return $"{(int)age.TotalHours}h {age.Minutes}m";
+        }
+
+        if (age.TotalMinutes >= 1)
+        {
+            return $"{(int)age.TotalMinutes}m {age.Seconds}s";
+        }
+
+        return $"{Math.Floor(age.TotalSeconds):0}s";
+    }
 }
 <meta http-equiv="refresh" content="20">
 
+<style>
+    .overview-summary {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 18px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-left-width: 4px;
+        border-radius: 6px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+    }
+    .overview-summary.success { border-left-color: var(--success); background: #fbfefb; }
+    .overview-summary.warning { border-left-color: #d18b00; background: #fffdf7; }
+    .overview-summary.danger { border-left-color: var(--danger); background: #fffafb; }
+    .overview-summary.neutral { border-left-color: var(--secondary); }
+    .overview-summary-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--border-strong);
+        border-radius: 50%;
+        background: white;
+        font-size: 15px;
+        font-weight: 700;
+    }
+    .overview-summary-title { font-size: 15px; font-weight: 650; }
+    .overview-summary-detail { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .metric-explainer { margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .term-help { color: var(--muted); font-size: 12px; }
+    .term-help strong { color: var(--text); }
+    @@media (max-width: 760px) {
+        .overview-summary { grid-template-columns: auto minmax(0, 1fr); }
+        .overview-summary .btn { grid-column: 1 / -1; width: 100%; }
+    }
+</style>
+
+<section class="overview-summary @summaryTone" aria-label="Operational summary">
+    <div class="overview-summary-icon" aria-hidden="true">@summaryIcon</div>
+    <div>
+        <div class="overview-summary-title">@summaryTitle</div>
+        <div class="overview-summary-detail">@summaryDetail</div>
+    </div>
+    @if (summaryAction is not null && summaryActionRoute is not null)
+    {
+        <a asp-action="@summaryActionRoute" class="btn btn-sm btn-outline-primary">@summaryAction</a>
+    }
+</section>
+
 <div class="metric-grid">
     <section class="metric-card">
-        <div class="metric-head"><span>Active runs</span><span class="metric-glyph">↗</span></div>
-        <div class="metric-value">@(overview.PendingRuns + overview.RunningRuns)</div>
+        <div class="metric-head"><span>Jobs in progress</span><span class="metric-glyph" aria-hidden="true">↗</span></div>
+        <div class="metric-value">@activeRuns</div>
         <div class="metric-detail">
-            <span><strong>@overview.PendingRuns</strong> pending</span>
+            <span><strong>@overview.PendingRuns</strong> waiting</span>
             <span><strong>@overview.RunningRuns</strong> running</span>
         </div>
+        <div class="metric-explainer">Waiting jobs are Runs that have not started yet; running jobs currently have an active Attempt.</div>
     </section>
     <section class="metric-card">
-        <div class="metric-head"><span>Worker capacity</span><span class="metric-glyph">▤</span></div>
-        <div class="metric-value">@overview.AvailableWorkerSlots<small>/ @overview.TotalWorkerCapacity</small></div>
+        <div class="metric-head"><span>Worker slots available</span><span class="metric-glyph" aria-hidden="true">▤</span></div>
+        <div class="metric-value">@overview.AvailableWorkerSlots<small>of @overview.TotalWorkerCapacity</small></div>
         <div class="metric-detail">
-            <span><strong>@overview.ReadyWorkers</strong> ready</span>
+            <span><strong>@overview.ReadyWorkers</strong> ready workers</span>
             <span><strong>@overview.DrainingWorkers</strong> draining</span>
         </div>
+        <div class="metric-explainer">A slot is one job a worker can start without exceeding its configured concurrency.</div>
     </section>
     <section class="metric-card">
-        <div class="metric-head"><span>Schedules</span><span class="metric-glyph">□</span></div>
-        <div class="metric-value">@overview.EnabledSchedules</div>
+        <div class="metric-head"><span>Completed in the last hour</span><span class="metric-glyph" aria-hidden="true">✓</span></div>
+        <div class="metric-value">@overview.LastHour.CompletedRuns</div>
         <div class="metric-detail">
-            <span><strong>@overview.DisabledSchedules</strong> disabled</span>
+            <span><strong class="text-success">@overview.LastHour.SucceededRuns</strong> succeeded</span>
+            <span><strong>@overview.LastHour.CanceledRuns</strong> canceled</span>
         </div>
+        <div class="metric-explainer">A recent activity window is more useful for current operations than an all-time total.</div>
     </section>
     <section class="metric-card">
-        <div class="metric-head"><span>Terminal failures</span><span class="metric-glyph">!</span></div>
-        <div class="metric-value">@(overview.FailedRuns + overview.DeadRuns)</div>
+        <div class="metric-head"><span>Needs review in the last hour</span><span class="metric-glyph" aria-hidden="true">!</span></div>
+        <div class="metric-value @(overview.LastHour.UnsuccessfulRuns > 0 ? "text-danger" : "")">@overview.LastHour.UnsuccessfulRuns</div>
         <div class="metric-detail">
-            <span><strong>@overview.FailedRuns</strong> failed</span>
-            <span><strong>@overview.DeadRuns</strong> dead</span>
+            <span><strong>@overview.LastHour.FailedRuns</strong> failed</span>
+            <span><strong>@overview.LastHour.DeadRuns</strong> no retries left</span>
         </div>
+        <div class="metric-explainer">Failed jobs stopped with an error; Dead jobs used all configured Attempts.</div>
     </section>
 </div>
 
@@ -44,17 +184,17 @@
         <div class="panel-header">
             <div>
                 <h5>Queue backlog</h5>
-                <div class="panel-subtitle">Active logical runs grouped by submission queue.</div>
+                <div class="panel-subtitle">Shows where work is waiting and how long the oldest claimable job has waited.</div>
             </div>
-            <a asp-action="Runs" class="btn btn-sm btn-outline-primary">Open runs</a>
+            <a asp-action="Runs" class="btn btn-sm btn-outline-primary">Open jobs</a>
         </div>
         <div class="table-responsive">
             <table class="table mb-0">
-                <thead><tr><th>Queue</th><th>Pending</th><th>Running</th><th class="text-end">Active</th></tr></thead>
+                <thead><tr><th>Queue</th><th>Waiting</th><th>Running</th><th>Oldest wait</th><th class="text-end">Active jobs</th></tr></thead>
                 <tbody>
                 @if (overview.Queues.Count == 0)
                 {
-                    <tr><td colspan="4" class="text-center text-muted py-5">No active queue backlog.</td></tr>
+                    <tr><td colspan="5" class="text-center text-muted py-5">No queues currently have waiting or running jobs.</td></tr>
                 }
                 else
                 {
@@ -64,6 +204,18 @@
                             <td><a asp-action="Runs" asp-route-queue="@queue.Queue" class="fw-semibold text-decoration-none">@queue.Queue</a></td>
                             <td><span class="badge bg-warning-subtle text-warning-emphasis">@queue.PendingRuns</span></td>
                             <td><span class="badge bg-primary-subtle text-primary">@queue.RunningRuns</span></td>
+                            <td class="small">
+                                @if (queue.OldestReadyAt is null)
+                                {
+                                    <span class="text-muted" title="No waiting job in this queue is ready to run yet.">Not ready yet</span>
+                                }
+                                else
+                                {
+                                    var age = overview.ObservedAt - queue.OldestReadyAt.Value;
+                                    <span class="@(age >= TimeSpan.FromMinutes(5) ? "text-danger fw-semibold" : "text-muted")"
+                                          title="Ready since @queue.OldestReadyAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")">@FormatAge(age)</span>
+                                }
+                            </td>
                             <td class="text-end fw-bold">@queue.ActiveRuns</td>
                         </tr>
                     }
@@ -76,16 +228,16 @@
     <section class="panel">
         <div class="panel-header">
             <div>
-                <h5>Runtime signals</h5>
-                <div class="panel-subtitle">Current operational totals.</div>
+                <h5>System details</h5>
+                <div class="panel-subtitle">Snapshot taken at @overview.ObservedAt.ToLocalTime().ToString("HH:mm:ss zzz").</div>
             </div>
         </div>
         <ul class="signal-list">
-            <li class="signal-item"><span class="signal-label">Outbox pending</span><span class="signal-value">@overview.PendingOutboxMessages</span></li>
-            <li class="signal-item"><span class="signal-label">Succeeded runs</span><span class="signal-value text-success">@overview.SucceededRuns</span></li>
-            <li class="signal-item"><span class="signal-label">Canceled runs</span><span class="signal-value">@overview.CanceledRuns</span></li>
-            <li class="signal-item"><span class="signal-label">Ready workers</span><span class="signal-value">@overview.ReadyWorkers</span></li>
-            <li class="signal-item"><span class="signal-label">Total terminal</span><span class="signal-value">@(overview.SucceededRuns + overview.FailedRuns + overview.CanceledRuns + overview.DeadRuns)</span></li>
+            <li class="signal-item"><span class="signal-label" title="Notifications waiting to be published or retried. Jobs still remain stored in PostgreSQL.">Outbox messages waiting</span><span class="signal-value">@overview.PendingOutboxMessages</span></li>
+            <li class="signal-item"><span class="signal-label">Schedules enabled</span><span class="signal-value">@overview.EnabledSchedules</span></li>
+            <li class="signal-item"><span class="signal-label">Schedules disabled</span><span class="signal-value">@overview.DisabledSchedules</span></li>
+            <li class="signal-item"><span class="signal-label">All-time succeeded</span><span class="signal-value text-success">@overview.SucceededRuns</span></li>
+            <li class="signal-item"><span class="signal-label">All-time failed / no retries left</span><span class="signal-value @(overview.FailedRuns + overview.DeadRuns > 0 ? "text-danger" : "")">@(overview.FailedRuns + overview.DeadRuns)</span></li>
         </ul>
     </section>
 </div>
@@ -93,18 +245,18 @@
 <section class="panel">
     <div class="panel-header">
         <div>
-            <h5>Recent runs</h5>
-            <div class="panel-subtitle">Retries remain grouped under the same logical run.</div>
+            <h5>Recent jobs</h5>
+            <div class="panel-subtitle"><strong>Run</strong> means one logical job. A retry creates another <strong>Attempt</strong> under the same Run.</div>
         </div>
-        <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View all</a>
+        <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View all jobs</a>
     </div>
     <div class="table-responsive">
         <table class="table mb-0">
-            <thead><tr><th>Run</th><th>Job</th><th>Queue</th><th>Phase</th><th>Attempts</th><th>Created</th></tr></thead>
+            <thead><tr><th>Job run</th><th>Job type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Submitted</th></tr></thead>
             <tbody>
             @if (overview.RecentRuns.Count == 0)
             {
-                <tr><td colspan="6" class="text-center text-muted py-5">No runs have been submitted.</td></tr>
+                <tr><td colspan="6" class="text-center text-muted py-5">No jobs have been submitted yet. Submit one from your application and it will appear here.</td></tr>
             }
             else
             {
@@ -119,12 +271,22 @@
                         JobPhase.Dead => "bg-dark-subtle text-dark",
                         _ => "bg-danger-subtle text-danger"
                     };
+                    var statusText = run.Phase switch
+                    {
+                        JobPhase.Pending => "Waiting",
+                        JobPhase.Running => "Running",
+                        JobPhase.Succeeded => "Succeeded",
+                        JobPhase.Failed => "Failed",
+                        JobPhase.Canceled => "Canceled",
+                        JobPhase.Dead => "No retries left",
+                        _ => run.Phase.ToString()
+                    };
                     <tr>
-                        <td><a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none">@run.Id[..Math.Min(10, run.Id.Length)]</a></td>
+                        <td><a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none" title="Open Run @run.Id">@run.Id[..Math.Min(10, run.Id.Length)]</a></td>
                         <td class="fw-semibold">@run.JobKey</td>
                         <td><span class="badge bg-light text-dark border">@run.Queue</span></td>
-                        <td><span class="badge @badge">@run.Phase</span></td>
-                        <td>@run.AttemptCount / @run.MaxAttempts</td>
+                        <td><span class="badge @badge" title="KubeJob phase: @run.Phase">@statusText</span></td>
+                        <td title="Attempts used / maximum Attempts">@run.AttemptCount / @run.MaxAttempts</td>
                         <td class="text-muted small">@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
                     </tr>
                 }

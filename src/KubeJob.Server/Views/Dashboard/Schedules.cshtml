@@ -1,3 +1,4 @@
+@using KubeJob.Core.Scheduling
 @model DashboardSchedulesViewModel
 @{
     ViewData["Title"] = "Schedules";
@@ -6,13 +7,16 @@
 
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-        <h5 class="mb-1 fw-bold">Independent schedules</h5>
-        <div class="small text-muted">Schedules own cron, time zone, misfire, and concurrency policies. Showing up to @Model.MaximumItems schedules.</div>
+        <h5 class="mb-1 fw-bold">Recurring jobs</h5>
+        <div class="small text-muted">
+            A Schedule creates a new job Run whenever its cron expression is due. Time zone, missed-run behavior, retries, and overlap rules belong to the Schedule.
+            Showing up to @Model.MaximumItems schedules.
+        </div>
     </div>
     @if (!Model.AllowMutatingActions)
     {
         <span class="badge bg-secondary-subtle text-secondary border px-3 py-2 rounded-pill">
-            <i class="fa-solid fa-lock me-1"></i>Read-only
+            <i class="fa-solid fa-lock me-1" aria-hidden="true"></i>Viewing only
         </span>
     }
 </div>
@@ -20,29 +24,59 @@
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Schedule</th><th>Job / queue</th><th>Cron</th><th>Policies</th><th>Next / last fire</th><th>State</th>@if (Model.AllowMutatingActions){<th class="text-end">Action</th>}</tr></thead>
+            <thead><tr><th>Schedule</th><th>Job type / queue</th><th>When it runs</th><th>Missed runs / overlap</th><th>Next / previous run</th><th>Status</th>@if (Model.AllowMutatingActions){<th class="text-end">Action</th>}</tr></thead>
             <tbody>
             @if (Model.Schedules.Count == 0)
             {
-                <tr><td colspan="@(Model.AllowMutatingActions ? 7 : 6)" class="text-center text-muted py-5">No schedules have been created.</td></tr>
+                <tr>
+                    <td colspan="@(Model.AllowMutatingActions ? 7 : 6)" class="text-center text-muted py-5">
+                        <div class="fw-semibold text-dark mb-1">No recurring jobs have been configured.</div>
+                        <div>Create a Schedule through <code>IJobScheduleClient</code>; it will appear here after it is stored.</div>
+                    </td>
+                </tr>
             }
             else
             {
                 @foreach (var schedule in Model.Schedules)
                 {
                     var claimActive = schedule.ClaimUntil is not null && schedule.ClaimUntil > DateTimeOffset.UtcNow;
+                    var misfireText = schedule.MisfirePolicy switch
+                    {
+                        MisfirePolicy.FireOnce => "Run once after downtime",
+                        MisfirePolicy.SkipMissed => "Skip missed times",
+                        _ => schedule.MisfirePolicy.ToString()
+                    };
+                    var concurrencyText = schedule.ConcurrencyPolicy switch
+                    {
+                        ScheduleConcurrencyPolicy.Allow => "Allow overlapping runs",
+                        ScheduleConcurrencyPolicy.SkipIfRunning => "Skip while previous run is active",
+                        _ => schedule.ConcurrencyPolicy.ToString()
+                    };
                     <tr>
-                        <td><div class="fw-bold">@schedule.Id</div><div class="small text-muted">version @schedule.Version</div></td>
-                        <td><div class="fw-semibold">@schedule.JobKey</div><span class="badge bg-light text-dark border">@schedule.Queue</span> <span class="small text-muted">priority @schedule.Priority</span></td>
-                        <td><div class="mono">@schedule.CronExpression</div><div class="small text-muted">@schedule.TimeZoneId</div></td>
                         <td>
-                            <div><span class="badge bg-info-subtle text-info-emphasis">@schedule.MisfirePolicy</span></div>
-                            <div class="mt-1"><span class="badge bg-primary-subtle text-primary">@schedule.ConcurrencyPolicy</span></div>
-                            <div class="small text-muted mt-1">@schedule.MaxAttempts attempts · @schedule.TimeoutSeconds s timeout</div>
+                            <div class="fw-bold">@schedule.Id</div>
+                            <div class="small text-muted" title="Optimistic concurrency version">configuration version @schedule.Version</div>
+                        </td>
+                        <td>
+                            <div class="fw-semibold">@schedule.JobKey</div>
+                            <span class="badge bg-light text-dark border">@schedule.Queue</span>
+                            @if (schedule.Priority != 0)
+                            {
+                                <span class="small text-muted">priority @schedule.Priority</span>
+                            }
+                        </td>
+                        <td>
+                            <div class="mono" title="Cron expression">@schedule.CronExpression</div>
+                            <div class="small text-muted">Time zone: @schedule.TimeZoneId</div>
+                        </td>
+                        <td>
+                            <div><span class="badge bg-info-subtle text-info-emphasis" title="KubeJob policy: @schedule.MisfirePolicy">@misfireText</span></div>
+                            <div class="mt-1"><span class="badge bg-primary-subtle text-primary" title="KubeJob policy: @schedule.ConcurrencyPolicy">@concurrencyText</span></div>
+                            <div class="small text-muted mt-1">Up to @schedule.MaxAttempts attempt(s) · @schedule.TimeoutSeconds-second timeout</div>
                         </td>
                         <td class="small">
-                            <div><i class="fa-solid fa-forward-step text-primary me-1"></i>@schedule.NextFireAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
-                            <div class="text-muted mt-1"><i class="fa-solid fa-clock-rotate-left me-1"></i>@(schedule.LastFireAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</div>
+                            <div><i class="fa-solid fa-forward-step text-primary me-1" aria-hidden="true"></i><strong>Next:</strong> @schedule.NextFireAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                            <div class="text-muted mt-1"><i class="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i><strong>Previous:</strong> @(schedule.LastFireAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "Never run")</div>
                         </td>
                         <td>
                             @if (schedule.Enabled)
@@ -51,20 +85,20 @@
                             }
                             else
                             {
-                                <span class="badge bg-secondary-subtle text-secondary">Disabled</span>
+                                <span class="badge bg-secondary-subtle text-secondary">Paused</span>
                             }
                             @if (claimActive)
                             {
-                                <div class="small text-primary mt-1"><i class="fa-solid fa-lock me-1"></i>reconciling until @schedule.ClaimUntil!.Value.ToLocalTime().ToString("HH:mm:ss")</div>
+                                <div class="small text-primary mt-1" title="A control-plane instance temporarily owns schedule reconciliation."><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>Creating due run</div>
                             }
                         </td>
                         @if (Model.AllowMutatingActions)
                         {
                             <td class="text-end">
-                                <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post">
+                                <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post" onsubmit="return confirm('@(schedule.Enabled ? "Pause this schedule? No new runs will be created until it is resumed." : "Resume this schedule?")');">
                                     <input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
                                     <button class="btn btn-sm @(schedule.Enabled ? "btn-outline-warning" : "btn-outline-success")">
-                                        <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1"></i>@(schedule.Enabled ? "Disable" : "Enable")
+                                        <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1" aria-hidden="true"></i>@(schedule.Enabled ? "Pause" : "Resume")
                                     </button>
                                 </form>
                             </td>

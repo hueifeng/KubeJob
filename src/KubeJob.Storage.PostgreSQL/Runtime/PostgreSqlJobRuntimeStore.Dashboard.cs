@@ -34,12 +34,25 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         using var grid = await connection.QueryMultipleAsync(new CommandDefinition($"""
             SELECT
+                statement_timestamp() AS ObservedAt,
                 COUNT(*) FILTER (WHERE Phase = @Pending)::int AS PendingRuns,
                 COUNT(*) FILTER (WHERE Phase = @Running)::int AS RunningRuns,
                 COUNT(*) FILTER (WHERE Phase = @Succeeded)::int AS SucceededRuns,
                 COUNT(*) FILTER (WHERE Phase = @Failed)::int AS FailedRuns,
                 COUNT(*) FILTER (WHERE Phase = @Canceled)::int AS CanceledRuns,
-                COUNT(*) FILTER (WHERE Phase = @Dead)::int AS DeadRuns
+                COUNT(*) FILTER (WHERE Phase = @Dead)::int AS DeadRuns,
+                COUNT(*) FILTER (
+                    WHERE Phase = @Succeeded
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS SucceededRunsLastHour,
+                COUNT(*) FILTER (
+                    WHERE Phase = @Failed
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS FailedRunsLastHour,
+                COUNT(*) FILTER (
+                    WHERE Phase = @Canceled
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS CanceledRunsLastHour,
+                COUNT(*) FILTER (
+                    WHERE Phase = @Dead
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS DeadRunsLastHour
             FROM Kj2_JobRuns;
 
             SELECT
@@ -60,7 +73,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
             SELECT Queue,
                    COUNT(*) FILTER (WHERE Phase = @Pending)::int AS PendingRuns,
-                   COUNT(*) FILTER (WHERE Phase = @Running)::int AS RunningRuns
+                   COUNT(*) FILTER (WHERE Phase = @Running)::int AS RunningRuns,
+                   MIN(AvailableAt) FILTER (
+                       WHERE Phase = @Pending
+                         AND AvailableAt <= statement_timestamp()) AS OldestReadyAt
             FROM Kj2_JobRuns
             WHERE Phase IN (@Pending, @Running)
             GROUP BY Queue
@@ -97,11 +113,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
             .Select(row => new DashboardQueueSummary(
                 row.Queue,
                 row.PendingRuns,
-                row.RunningRuns))
+                row.RunningRuns,
+                row.OldestReadyAt))
             .ToArray();
         var recent = (await grid.ReadAsync<DashboardRunSummary>()).ToArray();
 
         return new DashboardOverview(
+            runs.ObservedAt,
             runs.PendingRuns,
             runs.RunningRuns,
             runs.SucceededRuns,
@@ -115,6 +133,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
             schedules.EnabledSchedules,
             schedules.DisabledSchedules,
             outbox,
+            new DashboardActivitySummary(
+                runs.SucceededRunsLastHour,
+                runs.FailedRunsLastHour,
+                runs.CanceledRunsLastHour,
+                runs.DeadRunsLastHour),
             queues,
             recent);
     }
@@ -287,12 +310,17 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     private sealed class RunCountsRow
     {
+        public DateTimeOffset ObservedAt { get; set; }
         public int PendingRuns { get; set; }
         public int RunningRuns { get; set; }
         public int SucceededRuns { get; set; }
         public int FailedRuns { get; set; }
         public int CanceledRuns { get; set; }
         public int DeadRuns { get; set; }
+        public int SucceededRunsLastHour { get; set; }
+        public int FailedRunsLastHour { get; set; }
+        public int CanceledRunsLastHour { get; set; }
+        public int DeadRunsLastHour { get; set; }
     }
 
     private sealed class WorkerCountsRow
@@ -314,6 +342,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public string Queue { get; set; } = string.Empty;
         public int PendingRuns { get; set; }
         public int RunningRuns { get; set; }
+        public DateTimeOffset? OldestReadyAt { get; set; }
     }
 
     private sealed class WorkerDashboardRow

@@ -79,6 +79,10 @@ public sealed class DashboardApiTests
         overviewHtml.Should().Contain("Read-only dashboard");
         overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
         overviewHtml.Should().Contain("aria-current=\"page\"");
+        overviewHtml.Should().Contain("Jobs are waiting, but no worker is ready.");
+        overviewHtml.Should().Contain("Check workers");
+        overviewHtml.Should().Contain("Jobs in progress");
+        overviewHtml.Should().Contain("Run</strong> means one logical job");
         overviewHtml.Should().NotContain("Control plane online");
         overviewHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
         overviewHtml.Should().NotContain("cdn.jsdelivr.net");
@@ -89,10 +93,12 @@ public sealed class DashboardApiTests
         var detailHtml = await detailResponse.Content.ReadAsStringAsync();
 
         detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        detailHtml.Should().Contain("Job Details");
+        detailHtml.Should().Contain("A Run is one logical job");
         detailHtml.Should().Contain("Payload display is disabled");
         detailHtml.Should().NotContain("top-secret-value");
         detailHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
-        detailHtml.Should().NotContain(">Cancel<");
+        detailHtml.Should().NotContain("Request cancellation");
     }
 
     private static HttpRequestMessage CreateAuthorizedRequest(string uri)
