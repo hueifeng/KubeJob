@@ -33,11 +33,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         using var grid = await connection.QueryMultipleAsync(new CommandDefinition($"""
-            WITH bounds AS (
-                SELECT clock_timestamp() AS ObservedAt
-            )
             SELECT
-                bounds.ObservedAt,
+                statement_timestamp() AS ObservedAt,
                 COUNT(*) FILTER (WHERE Phase = @Pending)::int AS PendingRuns,
                 COUNT(*) FILTER (WHERE Phase = @Running)::int AS RunningRuns,
                 COUNT(*) FILTER (WHERE Phase = @Succeeded)::int AS SucceededRuns,
@@ -46,19 +43,17 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 COUNT(*) FILTER (WHERE Phase = @Dead)::int AS DeadRuns,
                 COUNT(*) FILTER (
                     WHERE Phase = @Succeeded
-                      AND CompletedAt >= bounds.ObservedAt - INTERVAL '1 hour')::int AS SucceededRunsLastHour,
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS SucceededRunsLastHour,
                 COUNT(*) FILTER (
                     WHERE Phase = @Failed
-                      AND CompletedAt >= bounds.ObservedAt - INTERVAL '1 hour')::int AS FailedRunsLastHour,
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS FailedRunsLastHour,
                 COUNT(*) FILTER (
                     WHERE Phase = @Canceled
-                      AND CompletedAt >= bounds.ObservedAt - INTERVAL '1 hour')::int AS CanceledRunsLastHour,
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS CanceledRunsLastHour,
                 COUNT(*) FILTER (
                     WHERE Phase = @Dead
-                      AND CompletedAt >= bounds.ObservedAt - INTERVAL '1 hour')::int AS DeadRunsLastHour
-            FROM Kj2_JobRuns
-            CROSS JOIN bounds
-            GROUP BY bounds.ObservedAt;
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS DeadRunsLastHour
+            FROM Kj2_JobRuns;
 
             SELECT
                 COUNT(*) FILTER (WHERE State = @Ready)::int AS ReadyWorkers,
