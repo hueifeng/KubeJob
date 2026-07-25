@@ -1,45 +1,64 @@
 @model DashboardRunsViewModel
 @{
-    ViewData["Title"] = "Runs & Attempts";
+    ViewData["Title"] = "Jobs";
     var results = Model.Runs;
     var query = Model.Query;
+    var hasFilters = query.Phase is not null
+                     || !string.IsNullOrWhiteSpace(query.Queue)
+                     || !string.IsNullOrWhiteSpace(query.JobKey);
 }
 <meta http-equiv="refresh" content="30">
 
 <div class="section-header">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div>
-            <h5 class="mb-1 fw-bold">Logical job runs</h5>
-            <div class="small text-muted">Filter by phase, queue, or stable job-key prefix. Open a Run to inspect its Attempts.</div>
+            <h5 class="mb-1 fw-bold">Jobs and execution attempts</h5>
+            <div class="small text-muted">
+                Each submitted job is one <strong>Run</strong>. A retry creates another <strong>Attempt</strong> under that same Run.
+            </div>
         </div>
-        <form method="get" class="row g-2 align-items-end">
+        <form method="get" class="row g-2 align-items-end" aria-label="Filter jobs">
             <div class="col-auto">
-                <label class="form-label small mb-1">Phase</label>
-                <select name="phase" class="form-select form-select-sm">
-                    <option value="">All</option>
+                <label class="form-label small mb-1">Status</label>
+                <select name="phase" class="form-select form-select-sm" title="The underlying KubeJob Run phase">
+                    <option value="">All statuses</option>
                     @foreach (var phase in Enum.GetValues<JobPhase>())
                     {
+                        var label = phase switch
+                        {
+                            JobPhase.Pending => "Waiting",
+                            JobPhase.Running => "Running",
+                            JobPhase.Succeeded => "Succeeded",
+                            JobPhase.Failed => "Failed",
+                            JobPhase.Canceled => "Canceled",
+                            JobPhase.Dead => "No retries left",
+                            _ => phase.ToString()
+                        };
                         if (query.Phase == phase)
                         {
-                            <option value="@phase" selected>@phase</option>
+                            <option value="@phase" selected>@label</option>
                         }
                         else
                         {
-                            <option value="@phase">@phase</option>
+                            <option value="@phase">@label</option>
                         }
                     }
                 </select>
             </div>
             <div class="col-auto">
                 <label class="form-label small mb-1">Queue</label>
-                <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="default" />
+                <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="for example: default" />
             </div>
             <div class="col-auto">
-                <label class="form-label small mb-1">Job key prefix</label>
-                <input name="jobKey" value="@query.JobKey" class="form-control form-control-sm" placeholder="mail." />
+                <label class="form-label small mb-1">Job key starts with</label>
+                <input name="jobKey" value="@query.JobKey" class="form-control form-control-sm" placeholder="for example: mail." />
             </div>
             <input type="hidden" name="pageSize" value="@query.PageSize" />
-            <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1"></i>Apply</button></div>
+            <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1" aria-hidden="true"></i>Apply filters</button></div>
+            @if (hasFilters)
+            {
+                <div class="col-auto"><a asp-action="Runs" asp-route-pageSize="@query.PageSize" class="btn btn-sm btn-outline-secondary">Clear</a></div>
+            }
         </form>
     </div>
 </div>
@@ -47,11 +66,24 @@
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Run</th><th>Job / Queue</th><th>Phase</th><th>Worker</th><th>Attempts</th><th>Timing</th><th>Failure</th></tr></thead>
+            <thead><tr><th>Job run</th><th>Job type / queue</th><th>Status</th><th>Assigned worker</th><th>Attempts</th><th>Submitted / duration</th><th>Last error</th></tr></thead>
             <tbody>
             @if (results.Items.Count == 0)
             {
-                <tr><td colspan="7" class="text-center text-muted py-5">No runs match the current filters.</td></tr>
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-5">
+                        @if (hasFilters)
+                        {
+                            <div class="fw-semibold text-dark mb-1">No jobs match these filters.</div>
+                            <div>Clear or change the filters to broaden the results.</div>
+                        }
+                        else
+                        {
+                            <div class="fw-semibold text-dark mb-1">No jobs have been submitted yet.</div>
+                            <div>Jobs will appear here after an application enqueues its first Run.</div>
+                        }
+                    </td>
+                </tr>
             }
             else
             {
@@ -66,41 +98,69 @@
                         JobPhase.Dead => "bg-dark-subtle text-dark",
                         _ => "bg-danger-subtle text-danger"
                     };
+                    var statusText = run.Phase switch
+                    {
+                        JobPhase.Pending => "Waiting",
+                        JobPhase.Running => "Running",
+                        JobPhase.Succeeded => "Succeeded",
+                        JobPhase.Failed => "Failed",
+                        JobPhase.Canceled => "Canceled",
+                        JobPhase.Dead => "No retries left",
+                        _ => run.Phase.ToString()
+                    };
                     TimeSpan? duration = run.StartedAt is null
                         ? null
                         : (run.CompletedAt ?? DateTimeOffset.UtcNow) - run.StartedAt.Value;
                     <tr>
                         <td>
-                            <a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none">@run.Id[..Math.Min(12, run.Id.Length)]</a>
+                            <a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none" title="Open Run @run.Id">@run.Id[..Math.Min(12, run.Id.Length)]</a>
                             @if (run.ScheduleId is not null)
                             {
-                                <div class="small text-muted">schedule: @run.ScheduleId</div>
+                                <div class="small text-muted">Created by schedule: @run.ScheduleId</div>
                             }
                         </td>
-                        <td><div class="fw-semibold">@run.JobKey</div><span class="badge bg-light text-dark border">@run.Queue</span> <span class="small text-muted">priority @run.Priority</span></td>
-                        <td><span class="badge @badge">@run.Phase</span>@if (run.CancelRequested){<div class="small text-danger mt-1">cancel requested</div>}</td>
+                        <td>
+                            <div class="fw-semibold">@run.JobKey</div>
+                            <span class="badge bg-light text-dark border">@run.Queue</span>
+                            @if (run.Priority != 0)
+                            {
+                                <span class="small text-muted">priority @run.Priority</span>
+                            }
+                        </td>
+                        <td>
+                            <span class="badge @badge" title="KubeJob phase: @run.Phase">@statusText</span>
+                            @if (run.CancelRequested)
+                            {
+                                <div class="small text-danger mt-1">Cancellation requested</div>
+                            }
+                        </td>
                         <td>
                             @if (run.CurrentWorkerId is null)
                             {
-                                <span class="text-muted">—</span>
+                                <span class="text-muted">Not assigned</span>
                             }
                             else
                             {
-                                <div class="mono small">@run.CurrentWorkerId</div><div class="small text-muted">@run.CurrentSessionId</div>
+                                <div class="mono small">@run.CurrentWorkerId</div>
+                                <div class="small text-muted" title="Worker Session ID">@run.CurrentSessionId</div>
                             }
                         </td>
-                        <td>@run.AttemptCount / @run.MaxAttempts</td>
+                        <td title="Attempts used / maximum Attempts">@run.AttemptCount / @run.MaxAttempts</td>
                         <td class="small text-muted">
-                            <div>@run.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
+                            <div title="Submitted time">@run.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
                             @if (duration is not null)
                             {
-                                <div>@duration.Value.TotalSeconds.ToString("0.0")s</div>
+                                <div title="Execution duration">@duration.Value.TotalSeconds.ToString("0.0")s</div>
+                            }
+                            else
+                            {
+                                <div>Not started</div>
                             }
                         </td>
                         <td>
                             @if (run.FailureCode is null)
                             {
-                                <span class="text-muted">—</span>
+                                <span class="text-muted">No error</span>
                             }
                             else
                             {
@@ -115,14 +175,14 @@
         </table>
     </div>
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
-        <div class="small text-muted">@results.TotalCount runs · page @results.Page of @(Math.Max(1, results.TotalPages))</div>
-        <div class="d-flex gap-2">
+        <div class="small text-muted">@results.TotalCount job run(s) · page @results.Page of @(Math.Max(1, results.TotalPages))</div>
+        <div class="d-flex gap-2" aria-label="Job list pagination">
             <a class="btn btn-sm btn-outline-secondary @(results.Page <= 1 ? "disabled" : "")"
                asp-action="Runs" asp-route-page="@(results.Page - 1)" asp-route-pageSize="@results.PageSize"
-               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Previous</a>
+               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Previous page</a>
             <a class="btn btn-sm btn-outline-secondary @(results.TotalPages == 0 || results.Page >= results.TotalPages ? "disabled" : "")"
                asp-action="Runs" asp-route-page="@(results.Page + 1)" asp-route-pageSize="@results.PageSize"
-               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Next</a>
+               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Next page</a>
         </div>
     </div>
 </div>
