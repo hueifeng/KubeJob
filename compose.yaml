@@ -1,0 +1,48 @@
+name: kubejob-dev
+
+# Local development dependencies only. Production deployments should provide
+# their own credentials, persistence, backups, networking, and TLS settings.
+services:
+  postgres:
+    image: postgres:${KUBEJOB_POSTGRES_VERSION:-17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KUBEJOB_POSTGRES_DB:-kubejob}
+      POSTGRES_USER: ${KUBEJOB_POSTGRES_USER:-kubejob}
+      POSTGRES_PASSWORD: ${KUBEJOB_POSTGRES_PASSWORD:-kubejob-dev}
+    ports:
+      - "${KUBEJOB_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - kubejob-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:${KUBEJOB_RABBITMQ_VERSION:-4-management-alpine}
+    restart: unless-stopped
+    hostname: kubejob-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${KUBEJOB_RABBITMQ_USER:-kubejob}
+      RABBITMQ_DEFAULT_PASS: ${KUBEJOB_RABBITMQ_PASSWORD:-kubejob-dev}
+      RABBITMQ_DEFAULT_VHOST: ${KUBEJOB_RABBITMQ_VHOST:-/}
+    ports:
+      - "${KUBEJOB_RABBITMQ_PORT:-5672}:5672"
+      - "${KUBEJOB_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - kubejob-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  kubejob-postgres-data:
+  kubejob-rabbitmq-data:
