@@ -1,5 +1,7 @@
 # KubeJob Documentation
 
+- [Local development stack](./local-development.md)
+- [本地开发环境](./local-development.zh-CN.md)
 - [Getting Started](./getting-started.md)
 - [中文使用指南](./getting-started.zh-CN.md)
 - [Runtime Architecture](./architecture.md)
