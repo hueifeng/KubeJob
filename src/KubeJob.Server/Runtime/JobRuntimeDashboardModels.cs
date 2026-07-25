@@ -111,12 +111,24 @@ public sealed class DashboardAttemptSummary
 public sealed record DashboardQueueSummary(
     string Queue,
     int PendingRuns,
-    int RunningRuns)
+    int RunningRuns,
+    DateTimeOffset? OldestReadyAt)
 {
     public int ActiveRuns => PendingRuns + RunningRuns;
 }
 
+public sealed record DashboardActivitySummary(
+    int SucceededRuns,
+    int FailedRuns,
+    int CanceledRuns,
+    int DeadRuns)
+{
+    public int CompletedRuns => SucceededRuns + FailedRuns + CanceledRuns + DeadRuns;
+    public int UnsuccessfulRuns => FailedRuns + DeadRuns;
+}
+
 public sealed record DashboardOverview(
+    DateTimeOffset ObservedAt,
     int PendingRuns,
     int RunningRuns,
     int SucceededRuns,
@@ -130,6 +142,7 @@ public sealed record DashboardOverview(
     int EnabledSchedules,
     int DisabledSchedules,
     int PendingOutboxMessages,
+    DashboardActivitySummary LastHour,
     IReadOnlyList<DashboardQueueSummary> Queues,
     IReadOnlyList<DashboardRunSummary> RecentRuns);
 
