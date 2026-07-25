@@ -75,7 +75,7 @@ public sealed class DashboardApiTests
 
         overviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         overviewHtml.Should().Contain("Runtime Overview");
-        overviewHtml.Should().Contain("Runs & Attempts");
+        overviewHtml.Should().Contain("<span class=\"label\">Runs</span>");
         overviewHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
         overviewHtml.Should().NotContain("cdn.jsdelivr.net");
         overviewHtml.Should().NotContain("cdnjs.cloudflare.com");
