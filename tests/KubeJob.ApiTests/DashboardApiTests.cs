@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using FluentAssertions;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
+using KubeJob.Core.Scheduling;
 using KubeJob.Server.Extensions;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Authentication;
@@ -19,6 +20,75 @@ namespace KubeJob.ApiTests;
 
 public sealed class DashboardApiTests
 {
+    [Fact]
+    public async Task Dashboard_schedule_page_exposes_schedule_management_when_enabled()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services
+            .AddAuthentication("dashboard-test")
+            .AddScheme<AuthenticationSchemeOptions, HeaderAuthenticationHandler>(
+                "dashboard-test",
+                _ => { });
+        builder.Services.AddAuthorization(options =>
+        {
+            options.AddPolicy("KubeJobDashboard", policy =>
+            {
+                policy.AddAuthenticationSchemes("dashboard-test");
+                policy.RequireAuthenticatedUser();
+            });
+        });
+        builder.Services.AddKubeJobServer();
+        builder.Services.AddKubeJobDashboard(options =>
+        {
+            options.RoutePrefix = "/admin/jobs/";
+            options.AuthorizationPolicy = "KubeJobDashboard";
+            options.AllowMutatingActions = true;
+        });
+
+        await using var app = builder.Build();
+        app.UseRouting();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapControllers();
+        await app.StartAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        await app.Services.GetRequiredService<IJobScheduleStore>().UpsertAsync(
+            new JobScheduleRecord
+            {
+                Id = "dashboard-schedule",
+                JobKey = "demo.print",
+                PayloadJson = "{}",
+                CronExpression = "* * * * *",
+                TimeZoneId = "UTC",
+                Queue = "default",
+                MisfirePolicy = MisfirePolicy.FireOnce,
+                ConcurrencyPolicy = ScheduleConcurrencyPolicy.SkipIfRunning,
+                MaxAttempts = 1,
+                TimeoutSeconds = 60,
+                Enabled = true,
+                NextFireAt = now.AddMinutes(1),
+                CreatedAt = now,
+                UpdatedAt = now
+            },
+            CancellationToken.None);
+
+        using var request = CreateAuthorizedRequest("/admin/jobs/schedules");
+        using var response = await app.GetTestClient().SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("Create recurring job");
+        html.Should().Contain("Create Schedule");
+        html.Should().Contain("name=\"CreateForm.Id\"");
+        html.Should().Contain("name=\"CreateForm.PayloadJson\"");
+        html.Should().Contain("name=\"CreateForm.CronExpression\"");
+        html.Should().Contain("Delete");
+        html.Should().Contain("Pause");
+        html.Should().Contain("__RequestVerificationToken");
+    }
+
     [Fact]
     public async Task Dashboard_uses_custom_route_scoped_authorization_and_safe_defaults()
     {

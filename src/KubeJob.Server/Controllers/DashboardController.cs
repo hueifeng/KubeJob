@@ -1,4 +1,7 @@
+using System.Text.Json;
 using KubeJob.Core.Client;
+using KubeJob.Core.Runtime;
+using KubeJob.Core.Scheduling;
 using KubeJob.Server.Dashboard;
 using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
@@ -166,7 +169,97 @@ public sealed class DashboardController : Controller
             new DashboardSchedulesViewModel(
                 schedules,
                 _options.AllowMutatingActions,
-                limit));
+                limit,
+                new DashboardScheduleCreateForm()));
+    }
+
+    [HttpPost("schedules/create")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CreateSchedule(
+        [Bind(Prefix = "CreateForm")] DashboardScheduleCreateForm form,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
+        }
+
+        form.Id = form.Id?.Trim() ?? string.Empty;
+        form.JobKey = form.JobKey?.Trim() ?? string.Empty;
+        form.PayloadJson = form.PayloadJson?.Trim() ?? string.Empty;
+        form.CronExpression = form.CronExpression?.Trim() ?? string.Empty;
+        form.TimeZoneId = form.TimeZoneId?.Trim() ?? string.Empty;
+        form.Queue = form.Queue?.Trim() ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(form.Id)
+            && await _schedules.GetAsync(form.Id, cancellationToken) is not null)
+        {
+            ModelState.AddModelError("CreateForm.Id", "A Schedule with this ID already exists.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(form.PayloadJson))
+        {
+            try
+            {
+                using var payload = JsonDocument.Parse(form.PayloadJson);
+            }
+            catch (JsonException)
+            {
+                ModelState.AddModelError("CreateForm.PayloadJson", "Payload must be valid JSON.");
+            }
+        }
+
+        try
+        {
+            CronScheduleCalculator.Validate(form.CronExpression, form.TimeZoneId);
+        }
+        catch (Exception ex) when (ex is Cronos.CronFormatException
+                                   or TimeZoneNotFoundException
+                                   or InvalidTimeZoneException
+                                   or InvalidOperationException
+                                   or ArgumentException)
+        {
+            ModelState.AddModelError("CreateForm.CronExpression", ex.Message);
+        }
+
+        if (!ModelState.IsValid)
+        {
+            var limit = _options.GetNormalizedMaximumSchedules();
+            var schedules = await _dashboard.GetSchedulesAsync(limit, cancellationToken);
+            return View(
+                "~/Views/Dashboard/Schedules.cshtml",
+                new DashboardSchedulesViewModel(
+                    schedules,
+                    _options.AllowMutatingActions,
+                    limit,
+                    form));
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var schedule = new JobScheduleRecord
+        {
+            Id = form.Id.Trim(),
+            JobKey = form.JobKey.Trim(),
+            PayloadJson = form.PayloadJson.Trim(),
+            CronExpression = form.CronExpression.Trim(),
+            TimeZoneId = form.TimeZoneId.Trim(),
+            Queue = form.Queue.Trim(),
+            Priority = form.Priority,
+            MisfirePolicy = form.MisfirePolicy,
+            ConcurrencyPolicy = form.ConcurrencyPolicy,
+            MaxAttempts = form.MaxAttempts,
+            TimeoutSeconds = form.TimeoutSeconds,
+            Enabled = form.Enabled,
+            NextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
+                form.CronExpression,
+                form.TimeZoneId,
+                now).ToUniversalTime(),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        await _schedules.UpsertAsync(schedule, cancellationToken);
+        return RedirectToAction(nameof(Schedules));
     }
 
     [HttpPost("schedules/{id}/enabled")]
@@ -207,5 +300,22 @@ public sealed class DashboardController : Controller
         }
 
         return RedirectToAction(nameof(Schedules));
+    }
+
+    [HttpPost("schedules/{id}/delete")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteSchedule(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
+        }
+
+        var deleted = await _schedules.DeleteAsync(id, cancellationToken);
+        return deleted
+            ? RedirectToAction(nameof(Schedules))
+            : NotFound();
     }
 }

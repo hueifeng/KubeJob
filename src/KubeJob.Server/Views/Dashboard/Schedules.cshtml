@@ -21,6 +21,97 @@
     }
 </div>
 
+@if (Model.AllowMutatingActions)
+{
+    <div class="table-card mb-4">
+        <div class="p-4 border-bottom">
+            <h6 class="mb-1 fw-bold">Create recurring job</h6>
+            <div class="small text-muted">
+                The Job key must match a registered handler. Payload must be valid JSON. Cron uses the standard five-field format; <code>* * * * *</code> runs once per minute.
+            </div>
+        </div>
+        <form asp-action="CreateSchedule" method="post" class="p-4">
+            @Html.AntiForgeryToken()
+            <div asp-validation-summary="ModelOnly" class="text-danger small mb-3"></div>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label asp-for="CreateForm.Id" class="form-label">Schedule ID</label>
+                    <input asp-for="CreateForm.Id" class="form-control" placeholder="daily-report" />
+                    <span asp-validation-for="CreateForm.Id" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="CreateForm.JobKey" class="form-label">Job key</label>
+                    <input asp-for="CreateForm.JobKey" class="form-control" placeholder="demo.print" />
+                    <span asp-validation-for="CreateForm.JobKey" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="CreateForm.CronExpression" class="form-label">Cron expression</label>
+                    <input asp-for="CreateForm.CronExpression" class="form-control mono" placeholder="*/5 * * * *" />
+                    <span asp-validation-for="CreateForm.CronExpression" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="CreateForm.TimeZoneId" class="form-label">Time zone</label>
+                    <input asp-for="CreateForm.TimeZoneId" class="form-control" placeholder="UTC" />
+                    <span asp-validation-for="CreateForm.TimeZoneId" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="CreateForm.Queue" class="form-label">Queue</label>
+                    <input asp-for="CreateForm.Queue" class="form-control" placeholder="default" />
+                    <span asp-validation-for="CreateForm.Queue" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="CreateForm.Priority" class="form-label">Priority</label>
+                    <input asp-for="CreateForm.Priority" class="form-control" type="number" />
+                </div>
+                <div class="col-md-6">
+                    <label asp-for="CreateForm.MisfirePolicy" class="form-label">Missed-run behavior</label>
+                    <select asp-for="CreateForm.MisfirePolicy" class="form-select">
+                        @foreach (var policy in Enum.GetValues<MisfirePolicy>())
+                        {
+                            <option value="@((int)policy)">@policy</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label asp-for="CreateForm.ConcurrencyPolicy" class="form-label">Overlap behavior</label>
+                    <select asp-for="CreateForm.ConcurrencyPolicy" class="form-select">
+                        @foreach (var policy in Enum.GetValues<ScheduleConcurrencyPolicy>())
+                        {
+                            <option value="@((int)policy)">@policy</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="CreateForm.MaxAttempts" class="form-label">Max attempts</label>
+                    <input asp-for="CreateForm.MaxAttempts" class="form-control" type="number" min="1" />
+                    <span asp-validation-for="CreateForm.MaxAttempts" class="text-danger small"></span>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="CreateForm.TimeoutSeconds" class="form-label">Timeout (seconds)</label>
+                    <input asp-for="CreateForm.TimeoutSeconds" class="form-control" type="number" min="1" />
+                    <span asp-validation-for="CreateForm.TimeoutSeconds" class="text-danger small"></span>
+                </div>
+                <div class="col-md-6 d-flex align-items-end">
+                    <div class="form-check mb-2">
+                        <input asp-for="CreateForm.Enabled" class="form-check-input" />
+                        <label asp-for="CreateForm.Enabled" class="form-check-label">Start enabled</label>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <label asp-for="CreateForm.PayloadJson" class="form-label">Payload JSON</label>
+                    <textarea asp-for="CreateForm.PayloadJson" class="form-control mono" rows="4"></textarea>
+                    <span asp-validation-for="CreateForm.PayloadJson" class="text-danger small"></span>
+                </div>
+                <div class="col-12 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fa-solid fa-plus me-1" aria-hidden="true"></i>Create Schedule
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+}
+
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
@@ -31,7 +122,7 @@
                 <tr>
                     <td colspan="@(Model.AllowMutatingActions ? 7 : 6)" class="text-center text-muted py-5">
                         <div class="fw-semibold text-dark mb-1">No recurring jobs have been configured.</div>
-                        <div>Create a Schedule through <code>IJobScheduleClient</code>; it will appear here after it is stored.</div>
+                        <div>Use the form above or create a Schedule through <code>IJobScheduleClient</code>.</div>
                     </td>
                 </tr>
             }
@@ -96,9 +187,16 @@
                         {
                             <td class="text-end">
                                 <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post" onsubmit="return confirm('@(schedule.Enabled ? "Pause this schedule? No new runs will be created until it is resumed." : "Resume this schedule?")');">
+                                    @Html.AntiForgeryToken()
                                     <input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
                                     <button class="btn btn-sm @(schedule.Enabled ? "btn-outline-warning" : "btn-outline-success")">
                                         <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1" aria-hidden="true"></i>@(schedule.Enabled ? "Pause" : "Resume")
+                                    </button>
+                                </form>
+                                <form asp-action="DeleteSchedule" asp-route-id="@schedule.Id" method="post" class="mt-2" onsubmit="return confirm('Delete this recurring job?');">
+                                    @Html.AntiForgeryToken()
+                                    <button class="btn btn-sm btn-outline-danger">
+                                        <i class="fa-solid fa-trash me-1" aria-hidden="true"></i>Delete
                                     </button>
                                 </form>
                             </td>
