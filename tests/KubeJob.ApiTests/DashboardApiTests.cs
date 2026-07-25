@@ -169,8 +169,8 @@ public sealed class DashboardApiTests
             TimeSpan.Zero,
             CancellationToken.None);
 
-        permanentCompletion.RunPhase.Should().Be(JobPhase.Failed);
-        exhaustedCompletion.RunPhase.Should().Be(JobPhase.Dead);
+        permanentCompletion.Phase.Should().Be(JobPhase.Failed);
+        exhaustedCompletion.Phase.Should().Be(JobPhase.Dead);
 
         using var jobsRequest = CreateAuthorizedRequest("/admin/jobs/runs");
         using var jobsResponse = await client.SendAsync(jobsRequest);
