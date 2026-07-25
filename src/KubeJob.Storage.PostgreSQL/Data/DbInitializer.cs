@@ -78,6 +78,14 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardQueue
                 ON Kj2_JobRuns (Queue, CreatedAt DESC, Id DESC);
 
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardActiveQueue
+                ON Kj2_JobRuns (Queue, Phase, AvailableAt)
+                WHERE Phase IN (0, 1);
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardCompleted
+                ON Kj2_JobRuns (CompletedAt DESC)
+                WHERE CompletedAt IS NOT NULL;
+
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_DashboardJobKey
                 ON Kj2_JobRuns ((LOWER(JobKey)) text_pattern_ops);
 
