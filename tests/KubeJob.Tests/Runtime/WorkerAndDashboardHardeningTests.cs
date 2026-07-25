@@ -91,10 +91,10 @@ public sealed class WorkerAndDashboardHardeningTests
     }
 
     [Fact]
-    public async Task Dashboard_lists_are_payload_free_and_worker_sessions_are_bounded()
+    public async Task Dashboard_queries_are_payload_gated_credential_free_and_bounded()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(
+        var run = (await store.SubmitAsync(
             new SubmitJobCommand(
                 "mail.send",
                 "{\"large\":\"payload\"}",
@@ -105,7 +105,7 @@ public sealed class WorkerAndDashboardHardeningTests
                 null,
                 3,
                 60),
-            CancellationToken.None);
+            CancellationToken.None)).Run;
 
         for (var index = 0; index < 3; index++)
         {
@@ -125,10 +125,22 @@ public sealed class WorkerAndDashboardHardeningTests
         var runs = await store.GetRunsAsync(
             new DashboardRunQuery(PageSize: 10),
             CancellationToken.None);
+        var hiddenDetails = await store.GetRunDetailsAsync(
+            run.Id,
+            includePayload: false,
+            CancellationToken.None);
+        var visibleDetails = await store.GetRunDetailsAsync(
+            run.Id,
+            includePayload: true,
+            CancellationToken.None);
         var sessions = await store.GetWorkerSessionsAsync(2, CancellationToken.None);
 
         runs.Items.Should().ContainSingle();
         typeof(DashboardRunSummary).GetProperty("PayloadJson").Should().BeNull();
+        hiddenDetails.Should().NotBeNull();
+        hiddenDetails!.PayloadJson.Should().BeNull();
+        visibleDetails!.PayloadJson.Should().Be("{\"large\":\"payload\"}");
+        typeof(DashboardAttemptSummary).GetProperty("LeaseToken").Should().BeNull();
         sessions.Should().HaveCount(2);
     }
 

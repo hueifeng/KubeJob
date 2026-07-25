@@ -10,8 +10,8 @@ public sealed record DashboardRunsViewModel(
     DashboardRunQuery Query);
 
 public sealed record DashboardRunDetailsViewModel(
-    JobRunRecord Run,
-    IReadOnlyList<JobAttemptRecord> Attempts,
+    DashboardRunDetails Run,
+    IReadOnlyList<DashboardAttemptSummary> Attempts,
     bool ShowPayload,
     bool AllowMutatingActions);
 

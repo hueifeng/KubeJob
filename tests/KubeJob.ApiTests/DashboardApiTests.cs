@@ -76,6 +76,10 @@ public sealed class DashboardApiTests
         overviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         overviewHtml.Should().Contain("Runtime Overview");
         overviewHtml.Should().Contain("<span class=\"label\">Runs</span>");
+        overviewHtml.Should().Contain("Read-only dashboard");
+        overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
+        overviewHtml.Should().Contain("aria-current=\"page\"");
+        overviewHtml.Should().NotContain("Control plane online");
         overviewHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
         overviewHtml.Should().NotContain("cdn.jsdelivr.net");
         overviewHtml.Should().NotContain("cdnjs.cloudflare.com");
@@ -87,6 +91,7 @@ public sealed class DashboardApiTests
         detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         detailHtml.Should().Contain("Payload display is disabled");
         detailHtml.Should().NotContain("top-secret-value");
+        detailHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
         detailHtml.Should().NotContain(">Cancel<");
     }
 

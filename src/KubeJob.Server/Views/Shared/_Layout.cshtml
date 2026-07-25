@@ -1,3 +1,4 @@
+@inject KubeJob.Server.Options.KubeJobDashboardOptions DashboardOptions
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -103,7 +104,7 @@
         .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
         .page-title { margin: 2px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; letter-spacing: -.01em; }
         .runtime-state { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: #424242; font-size: 12px; font-weight: 600; }
-        .runtime-state .status-dot { margin: 0; }
+        .runtime-state.admin-mode { color: var(--warning); background: #fff8e8; border-color: #d8b35b; }
         .content-area { width: 100%; max-width: 1680px; margin: 0 auto; padding: 24px 28px 40px; }
 
         .section-header {
@@ -292,18 +293,22 @@
         <span class="brand-copy">KubeJob<small>CONTROL PLANE</small></span>
     </div>
     <div class="nav-caption">Runtime</div>
-    <nav>
-        <a asp-controller="Dashboard" asp-action="Index" class="nav-link @(action == "Index" ? "active" : "")">
-            <i class="fa-solid fa-gauge-high"></i><span class="label">Overview</span>
+    <nav aria-label="Dashboard navigation">
+        <a asp-controller="Dashboard" asp-action="Index" class="nav-link @(action == "Index" ? "active" : "")"
+           aria-label="Overview" aria-current="@(action == "Index" ? "page" : null)" title="Overview">
+            <i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span class="label">Overview</span>
         </a>
-        <a asp-controller="Dashboard" asp-action="Runs" class="nav-link @(action is "Runs" or "Run" ? "active" : "")">
-            <i class="fa-solid fa-list-check"></i><span class="label">Runs</span>
+        <a asp-controller="Dashboard" asp-action="Runs" class="nav-link @(action is "Runs" or "Run" ? "active" : "")"
+           aria-label="Runs" aria-current="@(action is "Runs" or "Run" ? "page" : null)" title="Runs">
+            <i class="fa-solid fa-list-check" aria-hidden="true"></i><span class="label">Runs</span>
         </a>
-        <a asp-controller="Dashboard" asp-action="Workers" class="nav-link @(action == "Workers" ? "active" : "")">
-            <i class="fa-solid fa-server"></i><span class="label">Workers</span>
+        <a asp-controller="Dashboard" asp-action="Workers" class="nav-link @(action == "Workers" ? "active" : "")"
+           aria-label="Workers" aria-current="@(action == "Workers" ? "page" : null)" title="Workers">
+            <i class="fa-solid fa-server" aria-hidden="true"></i><span class="label">Workers</span>
         </a>
-        <a asp-controller="Dashboard" asp-action="Schedules" class="nav-link @(action == "Schedules" ? "active" : "")">
-            <i class="fa-solid fa-calendar-days"></i><span class="label">Schedules</span>
+        <a asp-controller="Dashboard" asp-action="Schedules" class="nav-link @(action == "Schedules" ? "active" : "")"
+           aria-label="Schedules" aria-current="@(action == "Schedules" ? "page" : null)" title="Schedules">
+            <i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span class="label">Schedules</span>
         </a>
     </nav>
 </aside>
@@ -313,7 +318,11 @@
             <div class="eyebrow">KubeJob / Runtime</div>
             <h1 class="page-title">@ViewData["Title"]</h1>
         </div>
-        <span class="runtime-state"><span class="status-dot bg-success"></span>Control plane online</span>
+        <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
+              title="This indicator reflects dashboard permissions, not runtime health.">
+            <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
+            @(DashboardOptions.AllowMutatingActions ? "Mutations enabled" : "Read-only dashboard")
+        </span>
     </header>
     <main class="content-area">@RenderBody()</main>
 </div>

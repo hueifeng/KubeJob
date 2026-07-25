@@ -4,7 +4,7 @@
     ViewData["Title"] = "Run Detail";
     var run = Model.Run;
     string? payload = null;
-    if (Model.ShowPayload)
+    if (Model.ShowPayload && run.PayloadJson is not null)
     {
         try
         {
@@ -72,10 +72,14 @@
     <div class="col-lg-4">
         <div class="detail-card p-4 h-100">
             <h6 class="fw-bold mb-3">Payload</h6>
-            @if (Model.ShowPayload)
+            @if (Model.ShowPayload && payload is not null)
             {
                 <div class="small text-muted mb-2">Payload display is enabled by the host. Treat this data as sensitive.</div>
                 <pre class="payload mb-0">@payload</pre>
+            }
+            else if (Model.ShowPayload)
+            {
+                <div class="alert alert-secondary mb-0">Payload was not returned by the dashboard query service.</div>
             }
             else
             {

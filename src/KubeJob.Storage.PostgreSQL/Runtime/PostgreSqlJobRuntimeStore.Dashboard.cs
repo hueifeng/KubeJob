@@ -161,6 +161,70 @@ public sealed partial class PostgreSqlJobRuntimeStore
             normalized.PageSize);
     }
 
+    public async ValueTask<DashboardRunDetails?> GetRunDetailsAsync(
+        string runId,
+        bool includePayload,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        return await connection.QuerySingleOrDefaultAsync<DashboardRunDetails>(new CommandDefinition(@"
+            SELECT Id,
+                   JobKey,
+                   CASE WHEN @IncludePayload THEN PayloadJson ELSE NULL END AS PayloadJson,
+                   Queue,
+                   Priority,
+                   Phase,
+                   AvailableAt,
+                   CreatedAt,
+                   StartedAt,
+                   CompletedAt,
+                   AttemptCount,
+                   MaxAttempts,
+                   TimeoutSeconds,
+                   IdempotencyKey,
+                   ConcurrencyKey,
+                   ScheduleId,
+                   ScheduledFor,
+                   CurrentWorkerId,
+                   CancelRequested,
+                   FailureCode,
+                   FailureMessage
+            FROM Kj2_JobRuns
+            WHERE Id = @RunId
+            LIMIT 1;",
+            new
+            {
+                RunId = runId,
+                IncludePayload = includePayload
+            },
+            cancellationToken: cancellationToken));
+    }
+
+    public async ValueTask<IReadOnlyList<DashboardAttemptSummary>> GetAttemptSummariesAsync(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        return (await connection.QueryAsync<DashboardAttemptSummary>(new CommandDefinition(@"
+            SELECT Id,
+                   AttemptNumber,
+                   WorkerId,
+                   SessionId,
+                   SessionEpoch,
+                   Phase,
+                   ClaimedAt,
+                   StartedAt,
+                   LeaseExpiresAt,
+                   CompletedAt,
+                   FailureCode,
+                   FailureMessage
+            FROM Kj2_JobAttempts
+            WHERE RunId = @RunId
+            ORDER BY AttemptNumber;",
+            new { RunId = runId },
+            cancellationToken: cancellationToken))).ToArray();
+    }
+
     public async ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
         int limit,
         CancellationToken cancellationToken)
