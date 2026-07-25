@@ -80,6 +80,7 @@ public sealed class DashboardApiTests
         overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
         overviewHtml.Should().Contain("aria-current=\"page\"");
         overviewHtml.Should().Contain("Jobs are waiting, but no worker is ready.");
+        overviewHtml.Should().Contain("Check workers");
         overviewHtml.Should().Contain("Jobs in progress");
         overviewHtml.Should().Contain("Run</strong> means one logical job");
         overviewHtml.Should().NotContain("Control plane online");
