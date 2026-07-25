@@ -105,6 +105,39 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
+    public ValueTask<DashboardRunDetails?> GetRunDetailsAsync(
+        string runId,
+        bool includePayload,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return ValueTask.FromResult(
+                _runs.TryGetValue(runId, out var run)
+                    ? ToDashboardDetails(run, includePayload)
+                    : null);
+        }
+    }
+
+    public ValueTask<IReadOnlyList<DashboardAttemptSummary>> GetAttemptSummariesAsync(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!_attemptIdsByRun.TryGetValue(runId, out var ids))
+            {
+                return ValueTask.FromResult<IReadOnlyList<DashboardAttemptSummary>>(
+                    Array.Empty<DashboardAttemptSummary>());
+            }
+
+            return ValueTask.FromResult<IReadOnlyList<DashboardAttemptSummary>>(
+                ids.Select(id => ToDashboardAttemptSummary(_attempts[id])).ToArray());
+        }
+    }
+
     public ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
         int limit,
         CancellationToken cancellationToken)
@@ -158,6 +191,50 @@ public sealed partial class InMemoryJobRuntimeStore
         CancelRequested = run.CancelRequested,
         FailureCode = run.FailureCode,
         FailureMessage = run.FailureMessage
+    };
+
+    private static DashboardRunDetails ToDashboardDetails(
+        JobRunRecord run,
+        bool includePayload) => new()
+    {
+        Id = run.Id,
+        JobKey = run.JobKey,
+        PayloadJson = includePayload ? run.PayloadJson : null,
+        Queue = run.Queue,
+        Priority = run.Priority,
+        Phase = run.Phase,
+        AvailableAt = run.AvailableAt,
+        CreatedAt = run.CreatedAt,
+        StartedAt = run.StartedAt,
+        CompletedAt = run.CompletedAt,
+        AttemptCount = run.AttemptCount,
+        MaxAttempts = run.MaxAttempts,
+        TimeoutSeconds = run.TimeoutSeconds,
+        IdempotencyKey = run.IdempotencyKey,
+        ConcurrencyKey = run.ConcurrencyKey,
+        ScheduleId = run.ScheduleId,
+        ScheduledFor = run.ScheduledFor,
+        CurrentWorkerId = run.CurrentWorkerId,
+        CancelRequested = run.CancelRequested,
+        FailureCode = run.FailureCode,
+        FailureMessage = run.FailureMessage
+    };
+
+    private static DashboardAttemptSummary ToDashboardAttemptSummary(
+        JobAttemptRecord attempt) => new()
+    {
+        Id = attempt.Id,
+        AttemptNumber = attempt.AttemptNumber,
+        WorkerId = attempt.WorkerId,
+        SessionId = attempt.SessionId,
+        SessionEpoch = attempt.SessionEpoch,
+        Phase = attempt.Phase,
+        ClaimedAt = attempt.ClaimedAt,
+        StartedAt = attempt.StartedAt,
+        LeaseExpiresAt = attempt.LeaseExpiresAt,
+        CompletedAt = attempt.CompletedAt,
+        FailureCode = attempt.FailureCode,
+        FailureMessage = attempt.FailureMessage
     };
 
     private int CountRuns(JobPhase phase) =>
