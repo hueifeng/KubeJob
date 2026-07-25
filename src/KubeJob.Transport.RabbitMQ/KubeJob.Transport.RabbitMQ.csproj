@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>RabbitMQ work-available notifications for KubeJob.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RabbitMQ.Client" Version="6.8.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KubeJob.Core\KubeJob.Core.csproj" />
+    <ProjectReference Include="..\KubeJob.Server\KubeJob.Server.csproj" />
+    <ProjectReference Include="..\KubeJob.Worker\KubeJob.Worker.csproj" />
+  </ItemGroup>
+
+</Project>

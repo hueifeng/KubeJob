@@ -1,0 +1,117 @@
+name: Full Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: kubejob-full-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  complete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      KUBEJOB_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres;Include Error Detail=true
+      PACKAGE_VERSION: 0.0.0-complete.${{ github.run_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - id: validate
+        name: Validate runtime, dashboard, packages, and PostgreSQL
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p artifacts/validation
+          set -o pipefail
+          bash eng/validate-v2-complete.sh 2>&1 \
+            | tee artifacts/validation/full-validation.log
+
+      - name: Upload validation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-validation-log
+          path: artifacts/validation/full-validation.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report validation result
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          OUTCOME: ${{ steps.validate.outcome }}
+        with:
+          script: |
+            const marker = '<!-- kubejob-full-validation -->';
+            const success = process.env.OUTCOME === 'success';
+            const body = `${marker}\n## KubeJob full validation\n\n` +
+              `${success ? '✅' : '❌'} **${process.env.OUTCOME}**\n\n` +
+              `This validation covers:\n` +
+              `- Release solution build and unit/API tests\n` +
+              `- V2 Dashboard routing, authorization, Razor rendering, and credential redaction\n` +
+              `- real PostgreSQL claim/session/schedule/outbox/idempotency races\n` +
+              `- unified typed-job end-to-end execution\n` +
+              `- source-generator positive, typed-handler enforcement, and duplicate-key negative cases\n` +
+              `- all packages, direct Core consumer, and KubeJob meta-package consumer\n` +
+              `- optional RabbitMQ notification package compilation\n\n` +
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+            const existing = comments.find(comment =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
+
+      - name: Fail when full validation failed
+        if: always() && steps.validate.outcome != 'success'
+        run: exit 1

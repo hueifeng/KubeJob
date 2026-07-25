@@ -1,54 +1,159 @@
+using KubeJob;
+using KubeJob.Core.Client;
+using KubeJob.Core.Jobs;
+using KubeJob.Sample.RemoteWorker.Jobs;
+using KubeJob.Sample.Unified.Jobs;
 using KubeJob.Server.Extensions;
+using KubeJob.Storage.PostgreSQL.Extensions;
 using KubeJob.Worker.Extensions;
-using KubeJob.Sample.WorkerNode.Jobs;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using System.Threading.Tasks;
 
 var builder = WebApplication.CreateBuilder(args);
+var postgresConnectionString = builder.Configuration.GetConnectionString("KubeJob");
 
-// 1. Add KubeJob Server (Control Plane + Dashboard)
-// Mount UI to a custom route like "/admin/jobs" instead of default "/kubejob"
-builder.Services.AddKubeJobServer(opts => opts.UseInMemory());
-builder.Services.AddKubeJobDashboard(routePrefix: "/admin/jobs");
-
-// 2. Add KubeJob Worker (Data Plane)
-// In a unified setup, Server and Worker share the same process!
-builder.Services.AddKubeJobWorker(options => 
+builder.Services.AddKubeJobHandler<SampleDataJob, SampleDataPayload>();
+builder.Services.AddKubeJobHandler<DashboardDemoJob, DashboardDemoPayload>();
+builder.Services.AddKubeJob(
+    configureServer: options =>
+    {
+        if (string.IsNullOrWhiteSpace(postgresConnectionString))
+        {
+            options.UseInMemory();
+        }
+        else
+        {
+            options.UsePostgreSql(postgresConnectionString);
+        }
+    },
+    configureWorker: options =>
+    {
+        options.WorkerId = "unified-sample";
+        options.MaxConcurrentJobs = 10;
+        options.Queues = new List<string> { "default", "samples" };
+        options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
+        options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
+        options.Labels["app"] = "unified-sample";
+    });
+builder.Services.AddKubeJobDashboard(options =>
 {
-    // Point back to itself using the local Kestrel port
-    options.ServerEndpoint = "http://localhost:5041"; 
-    options.MaxConcurrentJobs = 10;
-    options.Labels.Add("env", "dev");
-    options.Labels.Add("app", "unified");
+    options.RoutePrefix = "admin/jobs";
+    // This sample is local-development only. Enabling mutations makes the
+    // long-running demo job useful for exercising cooperative cancellation.
+    options.AllowMutatingActions = true;
 });
 
-// Register the specific jobs
-builder.Services.AddTransient<SampleDataJob>();
-builder.Services.AddTransient<FailingJob>();
-builder.Services.AddTransient<LongRunningJob>();
-builder.Services.AddTransient<BroadcastJob>();
-
 var app = builder.Build();
-
-// 3. Initialize DB Schema
-app.InitializeKubeJobDatabase();
-
-if (!app.Environment.IsDevelopment())
+if (!string.IsNullOrWhiteSpace(postgresConnectionString))
 {
-    app.UseExceptionHandler("/Error");
+    app.InitializeKubeJobDatabase();
 }
-app.UseStaticFiles();
 
-// Make sure routing is set up
+app.UseStaticFiles();
 app.UseRouting();
 app.MapControllers();
 
-// Add a root redirect to our custom dashboard route
-app.MapGet("/", context => {
+var dashboardDemoJob = new JobKey<DashboardDemoPayload>("sample.dashboard-demo");
+app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancellationToken) =>
+{
+    var batchId = Guid.NewGuid().ToString("N");
+    var scenarios = new (string Name, DashboardDemoPayload Payload, JobEnqueueOptions Options, string Expected)[]
+    {
+        (
+            "success",
+            new DashboardDemoPayload("success", DelayMilliseconds: 250),
+            new JobEnqueueOptions
+            {
+                Queue = "samples",
+                MaxAttempts = 1,
+                Timeout = TimeSpan.FromSeconds(10),
+                IdempotencyKey = $"dashboard-demo:{batchId}:success"
+            },
+            "Succeeded after one Attempt"),
+        (
+            "retry-then-success",
+            new DashboardDemoPayload("retry-then-success", DelayMilliseconds: 250, FailUntilAttempt: 1),
+            new JobEnqueueOptions
+            {
+                Queue = "samples",
+                MaxAttempts = 3,
+                Timeout = TimeSpan.FromSeconds(10),
+                IdempotencyKey = $"dashboard-demo:{batchId}:retry-success"
+            },
+            "First Attempt fails; second Attempt succeeds"),
+        (
+            "exhausted-retries",
+            new DashboardDemoPayload("always-fail"),
+            new JobEnqueueOptions
+            {
+                Queue = "samples",
+                MaxAttempts = 2,
+                Timeout = TimeSpan.FromSeconds(10),
+                IdempotencyKey = $"dashboard-demo:{batchId}:dead"
+            },
+            "Retryable failures exhaust MaxAttempts and become Dead"),
+        (
+            "permanent-failure",
+            new DashboardDemoPayload("permanent-failure"),
+            new JobEnqueueOptions
+            {
+                Queue = "samples",
+                MaxAttempts = 3,
+                Timeout = TimeSpan.FromSeconds(10),
+                IdempotencyKey = $"dashboard-demo:{batchId}:permanent"
+            },
+            "Payload validation failure becomes a permanent failure without retry"),
+        (
+            "timeout",
+            new DashboardDemoPayload("timeout", DelayMilliseconds: 5_000),
+            new JobEnqueueOptions
+            {
+                Queue = "samples",
+                MaxAttempts = 2,
+                Timeout = TimeSpan.FromSeconds(1),
+                IdempotencyKey = $"dashboard-demo:{batchId}:timeout"
+            },
+            "Both Attempts time out and the Run becomes Dead"),
+        (
+            "cancel-me",
+            new DashboardDemoPayload("long-running", DelayMilliseconds: 60_000),
+            new JobEnqueueOptions
+            {
+                Queue = "samples",
+                MaxAttempts = 1,
+                Timeout = TimeSpan.FromSeconds(90),
+                IdempotencyKey = $"dashboard-demo:{batchId}:cancel"
+            },
+            "Use the Dashboard cancellation action while the job is running")
+    };
+
+    var submitted = new List<object>(scenarios.Length);
+    foreach (var scenario in scenarios)
+    {
+        var handle = await jobs.EnqueueAsync(
+            dashboardDemoJob,
+            scenario.Payload,
+            scenario.Options,
+            cancellationToken);
+        submitted.Add(new
+        {
+            scenario = scenario.Name,
+            expected = scenario.Expected,
+            runId = handle.JobId,
+            dashboard = $"/admin/jobs/runs/{handle.JobId}"
+        });
+    }
+
+    return Results.Accepted("/admin/jobs", new
+    {
+        batchId,
+        dashboard = "/admin/jobs",
+        failures = "/admin/jobs/failures",
+        jobs = submitted
+    });
+});
+
+app.MapGet("/", context =>
+{
     context.Response.Redirect("/admin/jobs");
     return Task.CompletedTask;
 });
-
-app.Run("http://localhost:5041");
+app.Run();

@@ -1,44 +1,358 @@
+@inject KubeJob.Server.Options.KubeJobDashboardOptions DashboardOptions
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>@ViewData["Title"] - KubeJob</title>
-    <script>
-        (function () {
-            try {
-                document.documentElement.setAttribute("data-theme", localStorage.getItem("kubejob-dashboard-theme") || "light");
-            } catch (_) { }
-        })();
-    </script>
-    <link rel="stylesheet" href="~/_content/KubeJob.Server/css/dashboard.css" asp-append-version="true" />
+    <style>
+        :root {
+            --primary: #0f6cbd;
+            --primary-hover: #115ea3;
+            --primary-soft: #eff6fc;
+            --success: #0f7b0f;
+            --warning: #8a5700;
+            --danger: #c50f1f;
+            --info: #0078d4;
+            --secondary: #616161;
+            --canvas: #f5f5f5;
+            --surface: #ffffff;
+            --surface-subtle: #fafafa;
+            --border: #e1e1e1;
+            --border-strong: #d1d1d1;
+            --text: #242424;
+            --muted: #616161;
+            --muted-2: #8a8886;
+            --shadow: none;
+        }
+
+        * { box-sizing: border-box; }
+        html { font-family: "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; line-height: 1.45; }
+        body { margin: 0; background: var(--canvas); color: var(--text); font-size: 14px; }
+        a { color: var(--primary); }
+        button, input, select { font: inherit; }
+        code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+        :focus-visible { outline: 3px solid rgba(15,108,189,.35); outline-offset: 2px; }
+        .skip-link { position: fixed; left: 16px; top: 12px; z-index: 2000; padding: 8px 12px; color: white; background: var(--primary); border-radius: 4px; transform: translateY(-160%); transition: transform .15s ease; }
+        .skip-link:focus { transform: translateY(0); }
+
+        .sidebar {
+            position: sticky;
+            top: 0;
+            min-height: 52px;
+            display: flex;
+            align-items: stretch;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            z-index: 1030;
+        }
+        .brand {
+            min-height: 52px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 24px;
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 650;
+            text-decoration: none;
+        }
+        .brand-mark {
+            width: 28px;
+            height: 28px;
+            display: inline-grid;
+            place-items: center;
+            border-radius: 6px;
+            background: var(--primary);
+            color: white;
+            font-size: 13px;
+            font-weight: 700;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+        }
+        .brand-copy { line-height: 1.05; }
+        .brand small { display: none; }
+        .nav-caption { display: none; }
+        .sidebar nav { display: flex; align-items: stretch; }
+        .sidebar .nav-link {
+            position: relative;
+            min-height: 52px;
+            margin: 0;
+            padding: 0 13px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-left: 1px solid transparent;
+            border-right: 1px solid transparent;
+            color: #424242;
+            font-weight: 500;
+            text-decoration: none;
+        }
+        .sidebar .nav-link:hover { background: #f3f3f3; color: var(--text); }
+        .sidebar .nav-link.active { background: var(--canvas); border-color: var(--border); color: var(--text); font-weight: 650; }
+        .sidebar .nav-link.active::before { display: none; }
+        .sidebar .nav-link .fa-solid { display: none; }
+
+        .main-wrapper { min-height: 100vh; }
+        .topbar {
+            min-height: 64px;
+            padding: 13px max(24px, calc((100vw - 1240px) / 2));
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--canvas);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar-start { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+        .page-title { margin: 2px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; letter-spacing: -.01em; }
+        .runtime-state { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: #424242; font-size: 12px; font-weight: 600; }
+        .runtime-state.admin-mode { color: var(--warning); background: #fff8e8; border-color: #d8b35b; }
+        .content-area { width: min(1240px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 40px; }
+
+        .section-header {
+            padding: 0 0 12px;
+            margin-bottom: 0;
+            background: transparent;
+            border: 0;
+            box-shadow: none;
+        }
+        .section-header h5 { font-size: 15px; letter-spacing: -.005em; }
+        .stats-card, .table-card, .detail-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+        }
+        .stats-card { height: 100%; overflow: hidden; }
+        .stats-card.border-start { border-left-width: 1px !important; }
+        .stats-card .card-body { position: relative; padding: 18px; }
+        .stats-icon { position: absolute; right: 16px; top: 16px; width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); font-size: 13px; opacity: .9; }
+        .table-card { overflow: hidden; padding: 0; }
+        .detail-card { box-shadow: none; }
+        .table-responsive { overflow-x: auto; }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { padding: 11px 14px; vertical-align: middle; border-bottom: 1px solid #ededed; text-align: left; }
+        .table thead th { height: 36px; background: #fafafa; color: #616161; border-bottom: 1px solid var(--border-strong); font-size: 11px; font-weight: 650; letter-spacing: .025em; text-transform: none; white-space: nowrap; }
+        .table tbody tr:hover { background: #f8fbfe; }
+        .table tbody tr:last-child td { border-bottom: 0; }
+        .key-value dt { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: none; }
+        .key-value dd { margin: 3px 0 16px; word-break: break-word; color: var(--text); }
+        .status-dot { width: 7px; height: 7px; display: inline-block; border-radius: 50%; margin-right: 5px; }
+        .payload { max-height: 26rem; overflow: auto; background: #1f1f1f; color: #f5f5f5; border: 1px solid #333; border-radius: 4px; padding: 14px; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.55; }
+
+        .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+        .metric-card { min-height: 132px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); }
+        .metric-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; font-weight: 600; }
+        .metric-glyph { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 4px; background: var(--surface-subtle); border: 1px solid var(--border); color: var(--muted); }
+        .metric-value { margin-top: 15px; font-size: 30px; line-height: 1; font-weight: 650; letter-spacing: -.035em; }
+        .metric-value small { margin-left: 3px; color: var(--muted-2); font-size: 15px; font-weight: 500; letter-spacing: 0; }
+        .metric-detail { margin-top: 11px; display: flex; flex-wrap: wrap; gap: 5px 12px; color: var(--muted); font-size: 12px; }
+        .metric-detail strong { color: var(--text); font-weight: 650; }
+        .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr); gap: 16px; margin-bottom: 24px; }
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; }
+        .panel-header { min-height: 58px; padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); }
+        .panel-header h5 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+        .panel-subtitle { color: var(--muted); font-size: 12px; }
+        .signal-list { margin: 0; padding: 4px 16px; list-style: none; }
+        .signal-item { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #ededed; }
+        .signal-item:last-child { border-bottom: 0; }
+        .signal-label { color: var(--muted); }
+        .signal-value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+        .row { display: flex; flex-wrap: wrap; margin-left: -.5rem; margin-right: -.5rem; }
+        .row > * { padding-left: .5rem; padding-right: .5rem; width: 100%; }
+        .col-auto { width: auto; }
+        .g-2 { row-gap: .5rem; }
+        .g-3 { row-gap: 1rem; }
+        .d-flex { display: flex; }
+        .flex-wrap { flex-wrap: wrap; }
+        .align-items-center { align-items: center; }
+        .align-items-end { align-items: flex-end; }
+        .justify-content-between { justify-content: space-between; }
+        .gap-1 { gap: .25rem; }
+        .gap-2 { gap: .5rem; }
+        .gap-3 { gap: 1rem; }
+        .h-100 { height: 100%; }
+        .m-0 { margin: 0; }
+        .mt-1 { margin-top: .25rem; }
+        .mt-2 { margin-top: .5rem; }
+        .mt-3 { margin-top: 1rem; }
+        .mb-0 { margin-bottom: 0; }
+        .mb-1 { margin-bottom: .25rem; }
+        .mb-2 { margin-bottom: .5rem; }
+        .mb-3 { margin-bottom: 1rem; }
+        .mb-4 { margin-bottom: 1.5rem; }
+        .me-1 { margin-right: .25rem; }
+        .me-2 { margin-right: .5rem; }
+        .ms-1 { margin-left: .25rem; }
+        .p-3 { padding: 1rem; }
+        .p-4 { padding: 1.5rem; }
+        .px-3 { padding-left: 1rem; padding-right: 1rem; }
+        .py-2 { padding-top: .5rem; padding-bottom: .5rem; }
+        .py-5 { padding-top: 3rem; padding-bottom: 3rem; }
+        .border { border: 1px solid var(--border); }
+        .border-top { border-top: 1px solid var(--border); }
+        .border-bottom { border-bottom: 1px solid var(--border); }
+        .border-start { border-left-style: solid; }
+        .border-4 { border-left-width: 4px; }
+        .border-primary { border-color: var(--primary); }
+        .border-success { border-color: var(--success); }
+        .border-info { border-color: var(--info); }
+        .border-danger { border-color: var(--danger); }
+        .rounded-pill { border-radius: 999px; }
+        .small { font-size: 12px; }
+        .display-6 { font-size: 30px; line-height: 1.1; }
+        .fs-5 { font-size: 15px; }
+        .fs-6 { font-size: 14px; }
+        .fw-semibold { font-weight: 600; }
+        .fw-bold { font-weight: 650; }
+        .text-uppercase { text-transform: uppercase; }
+        .text-muted { color: var(--muted); }
+        .text-primary { color: var(--primary); }
+        .text-success { color: var(--success); }
+        .text-warning, .text-warning-emphasis { color: var(--warning); }
+        .text-danger { color: var(--danger); }
+        .text-info, .text-info-emphasis { color: var(--info); }
+        .text-secondary { color: var(--secondary); }
+        .text-dark { color: var(--text); }
+        .text-center { text-align: center !important; }
+        .text-end { text-align: right !important; }
+        .text-decoration-none { text-decoration: none; }
+        .text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .badge { display: inline-flex; align-items: center; min-height: 22px; border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap; }
+        .bg-light { background: #fafafa; }
+        .bg-primary { background: var(--primary); }
+        .bg-success { background: var(--success); }
+        .bg-primary-subtle { background: #eff6fc; }
+        .bg-success-subtle { background: #edf9ed; }
+        .bg-warning-subtle { background: #fff8e8; }
+        .bg-danger-subtle { background: #fdf3f4; }
+        .bg-info-subtle { background: #eff6fc; }
+        .bg-secondary-subtle { background: #f3f3f3; }
+        .bg-dark-subtle { background: #e8e8e8; }
+        .btn { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); border-radius: 4px; padding: 5px 11px; color: var(--text); font-weight: 600; text-decoration: none; cursor: pointer; background: white; box-shadow: 0 1px 1px rgba(0,0,0,.03); }
+        .btn-sm { min-height: 28px; padding: 4px 9px; font-size: 12px; }
+        .btn-primary { color: white; background: var(--primary); border-color: var(--primary); }
+        .btn-outline-primary { color: var(--primary); border-color: #8ac2e8; }
+        .btn-outline-secondary { color: #424242; border-color: var(--border-strong); }
+        .btn-outline-danger { color: var(--danger); border-color: #e6a6ad; }
+        .btn-outline-warning { color: var(--warning); border-color: #d8b35b; }
+        .btn-outline-success { color: var(--success); border-color: #86c586; }
+        .btn:hover { background: #f5f5f5; }
+        .btn-primary:hover { color: white; background: var(--primary-hover); border-color: var(--primary-hover); }
+        .btn.disabled, .btn:disabled { opacity: .42; pointer-events: none; }
+        .mobile-nav-toggle, .nav-toggle, .nav-scrim { display: none; }
+        .form-label { display: block; color: var(--muted); font-weight: 600; }
+        .form-control, .form-select { width: 100%; min-height: 34px; padding: 5px 8px; color: var(--text); background: white; border: 1px solid var(--border-strong); border-radius: 4px; outline: none; }
+        .form-control:focus, .form-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(15,108,189,.16); }
+        .form-control-sm, .form-select-sm { min-height: 30px; padding: 4px 7px; font-size: 12px; }
+        .alert { border: 1px solid transparent; border-radius: 4px; padding: 11px 12px; }
+        .alert-danger { color: #8e0b18; background: #fdf3f4; border-color: #f1bbc2; }
+        .alert-secondary { color: #424242; background: #fafafa; border-color: var(--border); }
+        .progress { overflow: hidden; height: 5px; background: #e8e8e8; border-radius: 999px; }
+        .progress-bar { height: 100%; background: var(--primary); border-radius: inherit; }
+        .fa-solid { display: inline-block; width: 1.1em; text-align: center; font-style: normal; }
+        .fa-bars::before { content: "☰"; }
+        .fa-cubes-stacked::before { content: "K"; }
+        .fa-code-branch::before { content: "⋈"; }
+        .fa-gauge-high::before { content: "◫"; }
+        .fa-list-check::before { content: "≡"; }
+        .fa-server::before { content: "▤"; }
+        .fa-calendar-days::before { content: "□"; }
+        .fa-rotate::before { content: "↻"; }
+        .fa-filter::before { content: "⌕"; }
+        .fa-arrow-left::before { content: "←"; }
+        .fa-ban::before { content: "×"; }
+        .fa-eye-slash::before { content: "−"; }
+        .fa-lock::before { content: "▣"; }
+        .fa-forward-step::before { content: "›"; }
+        .fa-clock-rotate-left::before { content: "◷"; }
+        .fa-pause::before { content: "Ⅱ"; }
+        .fa-play::before { content: "▶"; }
+        .fa-bolt::before { content: "↗"; }
+        .fa-triangle-exclamation::before { content: "!"; }
+
+        @@media (min-width: 576px) { .col-sm-6 { width: 50%; } }
+        @@media (min-width: 768px) { .col-md-4 { width: 33.333333%; } .col-md-6 { width: 50%; } }
+        @@media (min-width: 992px) { .col-lg-4 { width: 33.333333%; } .col-lg-5 { width: 41.666667%; } .col-lg-7 { width: 58.333333%; } .col-lg-8 { width: 66.666667%; } }
+        @@media (min-width: 1200px) { .col-xl-3 { width: 25%; } }
+        @@media (max-width: 1100px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-grid { grid-template-columns: 1fr; } }
+        @@media (max-width: 760px) {
+            .sidebar { position: static; flex-wrap: wrap; }
+            .brand { min-height: 48px; padding: 0 14px; }
+            .sidebar nav { order: 3; width: 100%; overflow-x: auto; border-top: 1px solid var(--border); }
+            .sidebar .nav-link { min-height: 42px; padding: 0 10px; }
+            .sidebar .label { display: inline; }
+            .topbar { padding: 10px 16px; }
+            .topbar .runtime-state { display: none; }
+            .topbar .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .content-area { width: min(100% - 32px, 1240px); padding: 16px 0; }
+            .metric-grid { grid-template-columns: 1fr; }
+            .section-header > .d-flex { width: 100%; }
+            .section-header .btn { flex: 0 0 auto; }
+            .table th, .table td { padding: 10px 12px; }
+        }
+    </style>
 </head>
 <body>
-    @{
-        var action = ViewContext.RouteData.Values["Action"]?.ToString();
-    }
-    <header class="kj-header">
-        <div class="kj-header-inner">
-            <a asp-controller="Dashboard" asp-action="Index" class="kj-brand">KubeJob</a>
-            <nav class="kj-nav" aria-label="Dashboard">
-                <a asp-controller="Dashboard" asp-action="Index" class="kj-nav-link @(action == "Index" ? "active" : "")">Dashboard</a>
-                <a asp-controller="Dashboard" asp-action="Runs" class="kj-nav-link @(action == "Runs" ? "active" : "")">Jobs</a>
-                <a asp-controller="Dashboard" asp-action="Specs" class="kj-nav-link @(action == "Specs" ? "active" : "")">Recurring Jobs</a>
-                <a asp-controller="Dashboard" asp-action="Nodes" class="kj-nav-link @(action == "Nodes" ? "active" : "")">Servers</a>
-            </nav>
-            <div class="kj-header-actions">
-                @RenderSection("TopbarActions", required: false)
-                <button id="kj-theme-toggle" class="kj-btn kj-btn-outline" type="button" aria-label="Toggle color theme">Dark mode</button>
+@{
+    var action = ViewContext.RouteData.Values["Action"]?.ToString();
+}
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="sidebar">
+    <a asp-controller="Dashboard" asp-action="Index" class="brand">
+        <span class="brand-mark">K</span>
+        <span class="brand-copy">KubeJob<small>CONTROL PLANE</small></span>
+    </a>
+    <div class="nav-caption">Runtime</div>
+    <nav aria-label="Dashboard navigation">
+        <a asp-controller="Dashboard" asp-action="Index" class="nav-link @(action == "Index" ? "active" : "")"
+           aria-label="Overview" aria-current="@(action == "Index" ? "page" : null)" title="Overview">
+            <i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span class="label">Overview</span>
+        </a>
+        <a asp-controller="Dashboard" asp-action="Runs" class="nav-link @(action is "Runs" or "Run" ? "active" : "")"
+           aria-label="Jobs" aria-current="@(action is "Runs" or "Run" ? "page" : null)" title="Jobs">
+            <i class="fa-solid fa-list-check" aria-hidden="true"></i><span class="label">Jobs</span>
+        </a>
+        <a asp-controller="Dashboard" asp-action="Failures" class="nav-link @(action == "Failures" ? "active" : "")"
+           aria-label="Failures" aria-current="@(action == "Failures" ? "page" : null)" title="Failures">
+            <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span class="label">Failures</span>
+        </a>
+        <a asp-controller="Dashboard" asp-action="Workers" class="nav-link @(action == "Workers" ? "active" : "")"
+           aria-label="Workers" aria-current="@(action == "Workers" ? "page" : null)" title="Workers">
+            <i class="fa-solid fa-server" aria-hidden="true"></i><span class="label">Workers</span>
+        </a>
+        <a asp-controller="Dashboard" asp-action="JobTypes" class="nav-link @(action == "JobTypes" ? "active" : "")"
+           aria-label="Job Types" aria-current="@(action == "JobTypes" ? "page" : null)" title="Job Types">
+            <i class="fa-solid fa-code-branch" aria-hidden="true"></i><span class="label">Job Types</span>
+        </a>
+        <a asp-controller="Dashboard" asp-action="Schedules" class="nav-link @(action == "Schedules" ? "active" : "")"
+           aria-label="Schedules" aria-current="@(action == "Schedules" ? "page" : null)" title="Schedules">
+            <i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span class="label">Schedules</span>
+        </a>
+    </nav>
+</header>
+<div class="main-wrapper">
+    <header class="topbar">
+        <div class="topbar-start">
+            <div>
+                <div class="eyebrow">KubeJob / Runtime</div>
+                <h1 class="page-title">@ViewData["Title"]</h1>
             </div>
         </div>
-    </header>
-    <main class="kj-container">
-        <div class="kj-page-head">
-            <h1 class="kj-page-title">@ViewData["Title"]</h1>
-            <div class="kj-page-actions">@RenderSection("PageActions", required: false)</div>
+        <div class="d-flex align-items-center gap-2">
+            <a class="btn btn-sm btn-outline-secondary" href="@Context.Request.Path@Context.Request.QueryString" aria-label="Refresh this page" title="Refresh this page">
+                <i class="fa-solid fa-rotate" aria-hidden="true"></i><span class="label ms-1">Refresh</span>
+            </a>
+            <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
+                  title="This indicator reflects dashboard permissions, not runtime health.">
+                <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
+                @(DashboardOptions.AllowMutatingActions ? "Admin mode" : "Read-only")
+            </span>
         </div>
-        @RenderBody()
-    </main>
-    <script src="~/_content/KubeJob.Server/js/dashboard.js" asp-append-version="true"></script>
+    </header>
+    <main id="main-content" class="content-area">@RenderBody()</main>
+</div>
+@await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

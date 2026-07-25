@@ -2,28 +2,92 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: kubejob-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@v4
-    
+
+    - name: Validate local development tooling
+      shell: bash
+      run: |
+        bash -n \
+          scripts/dev-stack.sh \
+          scripts/run-unified-sample.sh \
+          scripts/seed-dashboard-demo.sh
+        docker compose -f compose.yaml config >/dev/null
+        pwsh -NoProfile -Command '
+          $files = @(
+            "scripts/dev-stack.ps1",
+            "scripts/run-unified-sample.ps1",
+            "scripts/seed-dashboard-demo.ps1"
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file,
+              [ref]$tokens,
+              [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              exit 1
+            }
+          }'
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '9.0.x'
-        
+
     - name: Restore dependencies
       run: dotnet restore KubeJob.sln
-      
+
     - name: Build
-      run: dotnet build KubeJob.sln --no-restore --configuration Release
-      
+      shell: bash
+      run: |
+        mkdir -p artifacts/ci
+        set -o pipefail
+        dotnet build KubeJob.sln --no-restore --configuration Release 2>&1 \
+          | tee artifacts/ci/build.log
+
+    - name: Upload build log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-build-log
+        path: artifacts/ci/build.log
+        if-no-files-found: warn
+        retention-days: 7
+
     - name: Test
-      run: dotnet test KubeJob.sln --no-build --verbosity normal --configuration Release
+      shell: bash
+      run: |
+        mkdir -p artifacts/ci
+        set -o pipefail
+        dotnet test KubeJob.sln --no-build --verbosity normal --configuration Release 2>&1 \
+          | tee artifacts/ci/test.log
+
+    - name: Upload test log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-test-log
+        path: artifacts/ci/test.log
+        if-no-files-found: warn
+        retention-days: 7
