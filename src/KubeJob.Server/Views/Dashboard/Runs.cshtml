@@ -4,9 +4,9 @@
     var results = Model.Runs;
     var query = Model.Query;
     var overview = Model.Overview;
-    var hasFilters = query.Phase is not null
-                     || !string.IsNullOrWhiteSpace(query.Queue)
-                     || !string.IsNullOrWhiteSpace(query.JobKey);
+    var hasScopeFilters = !string.IsNullOrWhiteSpace(query.Queue)
+                          || !string.IsNullOrWhiteSpace(query.JobKey);
+    var hasFilters = query.Phase is not null || hasScopeFilters;
     var totalRuns = overview.PendingRuns
                     + overview.RunningRuns
                     + overview.SucceededRuns
@@ -17,6 +17,26 @@
     string StatusButtonClass(JobPhase? phase) => query.Phase == phase
         ? "btn-primary"
         : "btn-outline-secondary";
+
+    int? StatusCount(JobPhase? phase)
+    {
+        if (hasScopeFilters)
+        {
+            return query.Phase == phase ? results.TotalCount : null;
+        }
+
+        return phase switch
+        {
+            null => totalRuns,
+            JobPhase.Pending => overview.PendingRuns,
+            JobPhase.Running => overview.RunningRuns,
+            JobPhase.Succeeded => overview.SucceededRuns,
+            JobPhase.Failed => overview.FailedRuns,
+            JobPhase.Canceled => overview.CanceledRuns,
+            JobPhase.Dead => overview.DeadRuns,
+            _ => null
+        };
+    }
 }
 <meta http-equiv="refresh" content="30">
 
@@ -29,8 +49,12 @@
             </div>
         </div>
         <div class="d-flex flex-wrap gap-2">
-            <a asp-action="Failures" class="btn btn-sm btn-outline-danger">
-                Review failures <span class="badge bg-danger-subtle text-danger ms-1">@(overview.FailedRuns + overview.DeadRuns)</span>
+            <a asp-action="Failures" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" class="btn btn-sm btn-outline-danger">
+                Review failures
+                @if (!hasScopeFilters)
+                {
+                    <span class="badge bg-danger-subtle text-danger ms-1">@(overview.FailedRuns + overview.DeadRuns)</span>
+                }
             </a>
         </div>
     </div>
@@ -38,18 +62,24 @@
 
 <div class="d-flex flex-wrap gap-2 mb-3" aria-label="Filter jobs by status">
     <a asp-action="Runs" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
-       class="btn btn-sm @StatusButtonClass(null)">All <span class="badge bg-light text-dark ms-1">@totalRuns</span></a>
+       class="btn btn-sm @StatusButtonClass(null)">All @StatusBadge(null)</a>
     <a asp-action="Runs" asp-route-phase="@JobPhase.Pending" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
-       class="btn btn-sm @StatusButtonClass(JobPhase.Pending)">Waiting <span class="badge bg-warning-subtle text-warning-emphasis ms-1">@overview.PendingRuns</span></a>
+       class="btn btn-sm @StatusButtonClass(JobPhase.Pending)">Waiting @StatusBadge(JobPhase.Pending, "bg-warning-subtle text-warning-emphasis")</a>
     <a asp-action="Runs" asp-route-phase="@JobPhase.Running" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
-       class="btn btn-sm @StatusButtonClass(JobPhase.Running)">Running <span class="badge bg-primary-subtle text-primary ms-1">@overview.RunningRuns</span></a>
+       class="btn btn-sm @StatusButtonClass(JobPhase.Running)">Running @StatusBadge(JobPhase.Running, "bg-primary-subtle text-primary")</a>
     <a asp-action="Runs" asp-route-phase="@JobPhase.Failed" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
-       class="btn btn-sm @StatusButtonClass(JobPhase.Failed)">Permanent failures <span class="badge bg-danger-subtle text-danger ms-1">@overview.FailedRuns</span></a>
+       class="btn btn-sm @StatusButtonClass(JobPhase.Failed)">Permanent failures @StatusBadge(JobPhase.Failed, "bg-danger-subtle text-danger")</a>
     <a asp-action="Runs" asp-route-phase="@JobPhase.Dead" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
-       class="btn btn-sm @StatusButtonClass(JobPhase.Dead)">No retries left <span class="badge bg-dark-subtle text-dark ms-1">@overview.DeadRuns</span></a>
+       class="btn btn-sm @StatusButtonClass(JobPhase.Dead)">No retries left @StatusBadge(JobPhase.Dead, "bg-dark-subtle text-dark")</a>
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Canceled" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(JobPhase.Canceled)">Canceled @StatusBadge(JobPhase.Canceled, "bg-secondary-subtle text-secondary")</a>
     <a asp-action="Runs" asp-route-phase="@JobPhase.Succeeded" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
-       class="btn btn-sm @StatusButtonClass(JobPhase.Succeeded)">Succeeded <span class="badge bg-success-subtle text-success ms-1">@overview.SucceededRuns</span></a>
+       class="btn btn-sm @StatusButtonClass(JobPhase.Succeeded)">Succeeded @StatusBadge(JobPhase.Succeeded, "bg-success-subtle text-success")</a>
 </div>
+@if (hasScopeFilters)
+{
+    <div class="small text-muted mb-3">Queue and job-key filters are active. A count is shown only for the currently selected status so global totals are not mistaken for filtered totals.</div>
+}
 
 <div class="section-header">
     <form method="get" class="row g-2 align-items-end" aria-label="Filter jobs">
@@ -220,3 +250,37 @@
         </div>
     </div>
 </div>
+
+@functions {
+    private Microsoft.AspNetCore.Html.IHtmlContent StatusBadge(JobPhase? phase, string classes = "bg-light text-dark")
+    {
+        var model = (DashboardRunsViewModel)Model;
+        var query = model.Query;
+        var overview = model.Overview;
+        var hasScopeFilters = !string.IsNullOrWhiteSpace(query.Queue)
+                              || !string.IsNullOrWhiteSpace(query.JobKey);
+        int? count;
+        if (hasScopeFilters)
+        {
+            count = query.Phase == phase ? model.Runs.TotalCount : null;
+        }
+        else
+        {
+            count = phase switch
+            {
+                null => overview.PendingRuns + overview.RunningRuns + overview.SucceededRuns + overview.FailedRuns + overview.CanceledRuns + overview.DeadRuns,
+                JobPhase.Pending => overview.PendingRuns,
+                JobPhase.Running => overview.RunningRuns,
+                JobPhase.Succeeded => overview.SucceededRuns,
+                JobPhase.Failed => overview.FailedRuns,
+                JobPhase.Canceled => overview.CanceledRuns,
+                JobPhase.Dead => overview.DeadRuns,
+                _ => null
+            };
+        }
+
+        return count is null
+            ? Microsoft.AspNetCore.Html.HtmlString.Empty
+            : new Microsoft.AspNetCore.Html.HtmlString($"<span class=\"badge {classes} ms-1\">{count.Value}</span>");
+    }
+}
