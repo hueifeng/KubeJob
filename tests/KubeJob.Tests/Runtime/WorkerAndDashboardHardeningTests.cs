@@ -145,6 +145,25 @@ public sealed class WorkerAndDashboardHardeningTests
     }
 
     [Fact]
+    public async Task Dashboard_can_filter_runs_by_exact_job_key()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(
+            new SubmitJobCommand("mail.send", "{}", "default", 0, DateTimeOffset.UtcNow, null, null, 1, 60),
+            CancellationToken.None);
+        await store.SubmitAsync(
+            new SubmitJobCommand("mail.send.v2", "{}", "default", 0, DateTimeOffset.UtcNow, null, null, 1, 60),
+            CancellationToken.None);
+
+        var result = await store.GetRunsAsync(
+            new DashboardRunQuery(PageSize: 10, JobKey: "mail.send", ExactJobKey: true),
+            CancellationToken.None);
+
+        result.Items.Should().ContainSingle();
+        result.Items[0].JobKey.Should().Be("mail.send");
+    }
+
+    [Fact]
     public async Task Dashboard_overview_reports_oldest_ready_run_and_recent_activity()
     {
         var store = new InMemoryJobRuntimeStore();

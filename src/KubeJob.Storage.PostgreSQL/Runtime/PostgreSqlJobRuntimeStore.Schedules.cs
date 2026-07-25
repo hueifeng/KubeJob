@@ -7,6 +7,45 @@ namespace KubeJob.Storage.PostgreSQL.Runtime;
 
 public sealed partial class PostgreSqlJobRuntimeStore
 {
+    public async ValueTask<JobScheduleRecord?> CreateIfAbsentAsync(
+        JobScheduleRecord schedule,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        return await connection.QuerySingleOrDefaultAsync<JobScheduleRecord>(new CommandDefinition(@"
+            INSERT INTO Kj2_JobSchedules
+                (Id, JobKey, PayloadJson, CronExpression, TimeZoneId, Queue,
+                 Priority, MisfirePolicy, ConcurrencyPolicy, MaxAttempts,
+                 TimeoutSeconds, Enabled, NextFireAt, LastFireAt, ClaimToken,
+                 ClaimUntil, CreatedAt, UpdatedAt, Version)
+            VALUES
+                (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @CronExpression,
+                 @TimeZoneId, @Queue, @Priority, @MisfirePolicy,
+                 @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @Enabled,
+                 @NextFireAt, @LastFireAt, NULL, NULL, clock_timestamp(),
+                 clock_timestamp(), 1)
+            ON CONFLICT (Id) DO NOTHING
+            RETURNING *;",
+            new
+            {
+                schedule.Id,
+                schedule.JobKey,
+                schedule.PayloadJson,
+                schedule.CronExpression,
+                schedule.TimeZoneId,
+                schedule.Queue,
+                schedule.Priority,
+                MisfirePolicy = (int)schedule.MisfirePolicy,
+                ConcurrencyPolicy = (int)schedule.ConcurrencyPolicy,
+                schedule.MaxAttempts,
+                schedule.TimeoutSeconds,
+                schedule.Enabled,
+                NextFireAt = schedule.NextFireAt.ToUniversalTime(),
+                LastFireAt = schedule.LastFireAt?.ToUniversalTime()
+            },
+            cancellationToken: cancellationToken));
+    }
+
     public async ValueTask<JobScheduleRecord> UpsertAsync(
         JobScheduleRecord schedule,
         CancellationToken cancellationToken)

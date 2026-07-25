@@ -86,7 +86,6 @@
         return $"{Math.Floor(age.TotalSeconds):0}s";
     }
 }
-<meta http-equiv="refresh" content="20">
 
 <style>
     .overview-summary {
@@ -190,7 +189,7 @@
         </div>
         <div class="table-responsive">
             <table class="table mb-0">
-                <thead><tr><th>Queue</th><th>Waiting</th><th>Running</th><th>Oldest wait</th><th class="text-end">Active jobs</th></tr></thead>
+                <thead><tr><th scope="col">Queue</th><th scope="col">Waiting</th><th scope="col">Running</th><th scope="col">Oldest wait</th><th scope="col" class="text-end">Active jobs</th></tr></thead>
                 <tbody>
                 @if (overview.Queues.Count == 0)
                 {
@@ -252,7 +251,7 @@
     </div>
     <div class="table-responsive">
         <table class="table mb-0">
-            <thead><tr><th>Job run</th><th>Job type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Submitted</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job type</th><th scope="col">Queue</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Submitted</th></tr></thead>
             <tbody>
             @if (overview.RecentRuns.Count == 0)
             {

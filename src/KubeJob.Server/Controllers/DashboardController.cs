@@ -1,4 +1,7 @@
+using System.Text.Json;
 using KubeJob.Core.Client;
+using KubeJob.Core.Runtime;
+using KubeJob.Core.Scheduling;
 using KubeJob.Server.Dashboard;
 using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
@@ -42,9 +45,10 @@ public sealed class DashboardController : Controller
         JobPhase? phase = null,
         string? queue = null,
         string? jobKey = null,
+        bool exactJobKey = false,
         CancellationToken cancellationToken = default)
     {
-        var query = new DashboardRunQuery(page, pageSize, phase, queue, jobKey).Normalize();
+        var query = new DashboardRunQuery(page, pageSize, phase, queue, jobKey, exactJobKey).Normalize();
         var runs = await _dashboard.GetRunsAsync(query, cancellationToken);
         var overview = await _dashboard.GetOverviewAsync(1, cancellationToken);
         return View(
@@ -59,6 +63,7 @@ public sealed class DashboardController : Controller
         int pageSize = 25,
         string? queue = null,
         string? jobKey = null,
+        bool exactJobKey = false,
         CancellationToken cancellationToken = default)
     {
         var permanentFailureQuery = new DashboardRunQuery(
@@ -66,13 +71,15 @@ public sealed class DashboardController : Controller
             pageSize,
             JobPhase.Failed,
             queue,
-            jobKey).Normalize();
+            jobKey,
+            exactJobKey).Normalize();
         var exhaustedRetryQuery = new DashboardRunQuery(
             deadPage,
             pageSize,
             JobPhase.Dead,
             queue,
-            jobKey).Normalize();
+            jobKey,
+            exactJobKey).Normalize();
 
         var permanentFailures = await _dashboard.GetRunsAsync(
             permanentFailureQuery,
@@ -147,13 +154,100 @@ public sealed class DashboardController : Controller
     }
 
     [HttpGet("workers")]
-    public async Task<IActionResult> Workers(CancellationToken cancellationToken)
+    public async Task<IActionResult> Workers(
+        bool history = false,
+        CancellationToken cancellationToken = default)
     {
         var limit = _options.GetNormalizedMaximumWorkerSessions();
-        var sessions = await _dashboard.GetWorkerSessionsAsync(limit, cancellationToken);
+        var allSessions = await _dashboard.GetWorkerSessionsAsync(limit, cancellationToken);
+        var activeSessions = allSessions
+            .Where(IsActiveWorkerSession)
+            .ToArray();
+        var sessions = history
+            ? allSessions
+            : activeSessions;
         return View(
             "~/Views/Dashboard/Workers.cshtml",
-            new DashboardWorkersViewModel(sessions, DateTimeOffset.UtcNow, limit));
+            new DashboardWorkersViewModel(
+                sessions,
+                DateTimeOffset.UtcNow,
+                limit,
+                history,
+                activeSessions.Length,
+                allSessions.Count - activeSessions.Length));
+    }
+
+    private static bool IsActiveWorkerSession(WorkerSessionRecord session) =>
+        session.State is WorkerSessionState.Ready or WorkerSessionState.Draining;
+
+    [HttpGet("job-types")]
+    public async Task<IActionResult> JobTypes(CancellationToken cancellationToken)
+    {
+        const int recentRunLimit = 100;
+        var workerLimit = _options.GetNormalizedMaximumWorkerSessions();
+        var sessions = await _dashboard.GetWorkerSessionsAsync(workerLimit, cancellationToken);
+        var recentRuns = await _dashboard.GetRunsAsync(
+            new DashboardRunQuery(PageSize: recentRunLimit),
+            cancellationToken);
+        var schedules = await _dashboard.GetSchedulesAsync(
+            _options.GetNormalizedMaximumSchedules(),
+            cancellationToken);
+
+        var jobKeys = sessions
+            .SelectMany(session => session.Capabilities)
+            .Concat(recentRuns.Items.Select(run => run.JobKey))
+            .Concat(schedules.Select(schedule => schedule.JobKey))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
+
+        var summaries = jobKeys
+            .Select(jobKey =>
+            {
+                var matchingSessions = sessions
+                    .Where(session => session.Capabilities.Contains(jobKey, StringComparer.Ordinal))
+                    .ToArray();
+                var matchingRuns = recentRuns.Items
+                    .Where(run => string.Equals(run.JobKey, jobKey, StringComparison.Ordinal))
+                    .OrderByDescending(run => run.CreatedAt)
+                    .ToArray();
+                var latestRun = matchingRuns.FirstOrDefault();
+                var matchingSchedules = schedules
+                    .Where(schedule => string.Equals(schedule.JobKey, jobKey, StringComparison.Ordinal))
+                    .ToArray();
+
+                return new DashboardJobTypeSummary(
+                    jobKey,
+                    matchingSessions.Select(session => session.WorkerId).Distinct(StringComparer.Ordinal).Count(),
+                    matchingSessions
+                        .Where(session => session.State == WorkerSessionState.Ready)
+                        .Select(session => session.WorkerId)
+                        .Distinct(StringComparer.Ordinal)
+                        .Count(),
+                    matchingSessions
+                        .Select(session => session.WorkerId)
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(workerId => workerId, StringComparer.Ordinal)
+                        .ToArray(),
+                    matchingSessions
+                        .SelectMany(session => session.Queues)
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(queue => queue, StringComparer.Ordinal)
+                        .ToArray(),
+                    matchingRuns.Length,
+                    latestRun?.CreatedAt,
+                    latestRun?.Phase,
+                    matchingSchedules.Length);
+            })
+            .ToArray();
+
+        return View(
+            "~/Views/Dashboard/JobTypes.cshtml",
+            new DashboardJobTypesViewModel(
+                summaries,
+                recentRunLimit,
+                DateTimeOffset.UtcNow));
     }
 
     [HttpGet("schedules")]
@@ -166,7 +260,115 @@ public sealed class DashboardController : Controller
             new DashboardSchedulesViewModel(
                 schedules,
                 _options.AllowMutatingActions,
-                limit));
+                limit,
+                new DashboardScheduleCreateForm(),
+                ShowCreateForm: false));
+    }
+
+    [HttpPost("schedules/create")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CreateSchedule(
+        [Bind(Prefix = "CreateForm")] DashboardScheduleCreateForm form,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
+        }
+
+        form.Id = form.Id?.Trim() ?? string.Empty;
+        form.JobKey = form.JobKey?.Trim() ?? string.Empty;
+        form.PayloadJson = form.PayloadJson?.Trim() ?? string.Empty;
+        form.CronExpression = form.CronExpression?.Trim() ?? string.Empty;
+        form.TimeZoneId = form.TimeZoneId?.Trim() ?? string.Empty;
+        form.Queue = form.Queue?.Trim() ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(form.PayloadJson))
+        {
+            try
+            {
+                using var payload = JsonDocument.Parse(form.PayloadJson);
+            }
+            catch (JsonException)
+            {
+                ModelState.AddModelError("CreateForm.PayloadJson", "Payload must be valid JSON.");
+            }
+        }
+
+        if (!Enum.IsDefined(form.MisfirePolicy))
+        {
+            ModelState.AddModelError("CreateForm.MisfirePolicy", "Choose a supported missed-run behavior.");
+        }
+
+        if (!Enum.IsDefined(form.ConcurrencyPolicy))
+        {
+            ModelState.AddModelError("CreateForm.ConcurrencyPolicy", "Choose a supported overlap behavior.");
+        }
+
+        try
+        {
+            CronScheduleCalculator.Validate(form.CronExpression, form.TimeZoneId);
+        }
+        catch (Exception ex) when (ex is Cronos.CronFormatException
+                                   or TimeZoneNotFoundException
+                                   or InvalidTimeZoneException
+                                   or InvalidOperationException
+                                   or ArgumentException)
+        {
+            ModelState.AddModelError("CreateForm.CronExpression", ex.Message);
+        }
+
+        if (!ModelState.IsValid)
+        {
+            return await RenderScheduleFormAsync(form, cancellationToken);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var schedule = new JobScheduleRecord
+        {
+            Id = form.Id.Trim(),
+            JobKey = form.JobKey.Trim(),
+            PayloadJson = form.PayloadJson.Trim(),
+            CronExpression = form.CronExpression.Trim(),
+            TimeZoneId = form.TimeZoneId.Trim(),
+            Queue = form.Queue.Trim(),
+            Priority = form.Priority,
+            MisfirePolicy = form.MisfirePolicy,
+            ConcurrencyPolicy = form.ConcurrencyPolicy,
+            MaxAttempts = form.MaxAttempts,
+            TimeoutSeconds = form.TimeoutSeconds,
+            Enabled = form.Enabled,
+            NextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
+                form.CronExpression,
+                form.TimeZoneId,
+                now).ToUniversalTime(),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        if (await _schedules.CreateIfAbsentAsync(schedule, cancellationToken) is null)
+        {
+            ModelState.AddModelError("CreateForm.Id", "A Schedule with this ID already exists.");
+            return await RenderScheduleFormAsync(form, cancellationToken);
+        }
+
+        return RedirectToAction(nameof(Schedules));
+    }
+
+    private async Task<IActionResult> RenderScheduleFormAsync(
+        DashboardScheduleCreateForm form,
+        CancellationToken cancellationToken)
+    {
+        var limit = _options.GetNormalizedMaximumSchedules();
+        var schedules = await _dashboard.GetSchedulesAsync(limit, cancellationToken);
+        return View(
+            "~/Views/Dashboard/Schedules.cshtml",
+            new DashboardSchedulesViewModel(
+                schedules,
+                _options.AllowMutatingActions,
+                limit,
+                form,
+                ShowCreateForm: true));
     }
 
     [HttpPost("schedules/{id}/enabled")]
@@ -207,5 +409,22 @@ public sealed class DashboardController : Controller
         }
 
         return RedirectToAction(nameof(Schedules));
+    }
+
+    [HttpPost("schedules/{id}/delete")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteSchedule(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowMutatingActions)
+        {
+            return Forbid();
+        }
+
+        var deleted = await _schedules.DeleteAsync(id, cancellationToken);
+        return deleted
+            ? RedirectToAction(nameof(Schedules))
+            : NotFound();
     }
 }

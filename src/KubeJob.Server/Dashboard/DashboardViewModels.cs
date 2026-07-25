@@ -1,5 +1,7 @@
+using System.ComponentModel.DataAnnotations;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
+using KubeJob.Core.Scheduling;
 using KubeJob.Server.Runtime;
 
 namespace KubeJob.Server.Dashboard;
@@ -164,9 +166,56 @@ public sealed record DashboardRunDetailsViewModel(
 public sealed record DashboardWorkersViewModel(
     IReadOnlyList<WorkerSessionRecord> Sessions,
     DateTimeOffset ObservedAt,
-    int MaximumItems);
+    int MaximumItems,
+    bool IncludeHistory,
+    int ActiveSessionCount,
+    int HistoricalSessionCount);
 
 public sealed record DashboardSchedulesViewModel(
     IReadOnlyList<JobScheduleRecord> Schedules,
     bool AllowMutatingActions,
-    int MaximumItems);
+    int MaximumItems,
+    DashboardScheduleCreateForm CreateForm,
+    bool ShowCreateForm);
+
+public sealed class DashboardScheduleCreateForm
+{
+    [Required]
+    [StringLength(200)]
+    public string Id { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(300)]
+    public string JobKey { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(1_000_000)]
+    public string PayloadJson { get; set; } = "{\"Message\":\"recurring demo\",\"Steps\":3}";
+
+    [Required]
+    [StringLength(200)]
+    public string CronExpression { get; set; } = "* * * * *";
+
+    [Required]
+    [StringLength(200)]
+    public string TimeZoneId { get; set; } = "UTC";
+
+    [Required]
+    [StringLength(100)]
+    public string Queue { get; set; } = "default";
+
+    [Range(-1000, 1000)]
+    public int Priority { get; set; }
+
+    public MisfirePolicy MisfirePolicy { get; set; } = MisfirePolicy.FireOnce;
+
+    public ScheduleConcurrencyPolicy ConcurrencyPolicy { get; set; } = ScheduleConcurrencyPolicy.SkipIfRunning;
+
+    [Range(1, 100)]
+    public int MaxAttempts { get; set; } = 1;
+
+    [Range(1, 86400)]
+    public int TimeoutSeconds { get; set; } = 300;
+
+    public bool Enabled { get; set; } = true;
+}

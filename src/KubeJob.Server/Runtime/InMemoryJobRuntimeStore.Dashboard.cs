@@ -100,9 +100,14 @@ public sealed partial class InMemoryJobRuntimeStore
 
             if (normalized.JobKey is not null)
             {
-                runs = runs.Where(run => run.JobKey.StartsWith(
-                    normalized.JobKey,
-                    StringComparison.OrdinalIgnoreCase));
+                runs = normalized.ExactJobKey
+                    ? runs.Where(run => string.Equals(
+                        run.JobKey,
+                        normalized.JobKey,
+                        StringComparison.OrdinalIgnoreCase))
+                    : runs.Where(run => run.JobKey.StartsWith(
+                        normalized.JobKey,
+                        StringComparison.OrdinalIgnoreCase));
             }
 
             var ordered = runs

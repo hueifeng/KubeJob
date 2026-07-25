@@ -7,38 +7,11 @@
     var hasScopeFilters = !string.IsNullOrWhiteSpace(query.Queue)
                           || !string.IsNullOrWhiteSpace(query.JobKey);
     var hasFilters = query.Phase is not null || hasScopeFilters;
-    var totalRuns = overview.PendingRuns
-                    + overview.RunningRuns
-                    + overview.SucceededRuns
-                    + overview.FailedRuns
-                    + overview.CanceledRuns
-                    + overview.DeadRuns;
-
     string StatusButtonClass(JobPhase? phase) => query.Phase == phase
         ? "btn-primary"
         : "btn-outline-secondary";
 
-    int? StatusCount(JobPhase? phase)
-    {
-        if (hasScopeFilters)
-        {
-            return query.Phase == phase ? results.TotalCount : null;
-        }
-
-        return phase switch
-        {
-            null => totalRuns,
-            JobPhase.Pending => overview.PendingRuns,
-            JobPhase.Running => overview.RunningRuns,
-            JobPhase.Succeeded => overview.SucceededRuns,
-            JobPhase.Failed => overview.FailedRuns,
-            JobPhase.Canceled => overview.CanceledRuns,
-            JobPhase.Dead => overview.DeadRuns,
-            _ => null
-        };
-    }
 }
-<meta http-equiv="refresh" content="30">
 
 <div class="section-header">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
@@ -49,7 +22,7 @@
             </div>
         </div>
         <div class="d-flex flex-wrap gap-2">
-            <a asp-action="Failures" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" class="btn btn-sm btn-outline-danger">
+            <a asp-action="Failures" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey" class="btn btn-sm btn-outline-danger">
                 Review failures
                 @if (!hasScopeFilters)
                 {
@@ -61,19 +34,19 @@
 </div>
 
 <div class="d-flex flex-wrap gap-2 mb-3" aria-label="Filter jobs by status">
-    <a asp-action="Runs" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(null)">All @StatusBadge(null)</a>
-    <a asp-action="Runs" asp-route-phase="@JobPhase.Pending" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Pending" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(JobPhase.Pending)">Waiting @StatusBadge(JobPhase.Pending, "bg-warning-subtle text-warning-emphasis")</a>
-    <a asp-action="Runs" asp-route-phase="@JobPhase.Running" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Running" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(JobPhase.Running)">Running @StatusBadge(JobPhase.Running, "bg-primary-subtle text-primary")</a>
-    <a asp-action="Runs" asp-route-phase="@JobPhase.Failed" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Failed" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(JobPhase.Failed)">Permanent failures @StatusBadge(JobPhase.Failed, "bg-danger-subtle text-danger")</a>
-    <a asp-action="Runs" asp-route-phase="@JobPhase.Dead" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Dead" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(JobPhase.Dead)">No retries left @StatusBadge(JobPhase.Dead, "bg-dark-subtle text-dark")</a>
-    <a asp-action="Runs" asp-route-phase="@JobPhase.Canceled" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Canceled" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(JobPhase.Canceled)">Canceled @StatusBadge(JobPhase.Canceled, "bg-secondary-subtle text-secondary")</a>
-    <a asp-action="Runs" asp-route-phase="@JobPhase.Succeeded" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Succeeded" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey"
        class="btn btn-sm @StatusButtonClass(JobPhase.Succeeded)">Succeeded @StatusBadge(JobPhase.Succeeded, "bg-success-subtle text-success")</a>
 </div>
 @if (hasScopeFilters)
@@ -115,10 +88,11 @@
             <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="for example: default" />
         </div>
         <div class="col-auto">
-            <label class="form-label small mb-1">Job key starts with</label>
+            <label class="form-label small mb-1">@(query.ExactJobKey ? "Job key equals" : "Job key starts with")</label>
             <input name="jobKey" value="@query.JobKey" class="form-control form-control-sm" placeholder="for example: mail." />
         </div>
         <input type="hidden" name="pageSize" value="@query.PageSize" />
+        <input type="hidden" name="exactJobKey" value="@query.ExactJobKey" />
         <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1" aria-hidden="true"></i>Apply filters</button></div>
         @if (hasFilters)
         {
@@ -130,7 +104,7 @@
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Job run</th><th>Job type / queue</th><th>Status</th><th>Assigned worker</th><th>Attempts</th><th>Submitted / duration</th><th>Last error</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job type / queue</th><th scope="col">Status</th><th scope="col">Assigned worker</th><th scope="col">Attempts</th><th scope="col">Submitted / duration</th><th scope="col">Last error</th></tr></thead>
             <tbody>
             @if (results.Items.Count == 0)
             {
@@ -243,10 +217,10 @@
         <div class="d-flex gap-2" aria-label="Job list pagination">
             <a class="btn btn-sm btn-outline-secondary @(results.Page <= 1 ? "disabled" : "")"
                asp-action="Runs" asp-route-page="@(results.Page - 1)" asp-route-pageSize="@results.PageSize"
-               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Previous page</a>
+               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey">Previous page</a>
             <a class="btn btn-sm btn-outline-secondary @(results.TotalPages == 0 || results.Page >= results.TotalPages ? "disabled" : "")"
                asp-action="Runs" asp-route-page="@(results.Page + 1)" asp-route-pageSize="@results.PageSize"
-               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey">Next page</a>
+               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey">Next page</a>
         </div>
     </div>
 </div>

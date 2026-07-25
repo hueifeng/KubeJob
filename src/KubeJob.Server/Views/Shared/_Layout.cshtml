@@ -33,6 +33,9 @@
         a { color: var(--primary); }
         button, input, select { font: inherit; }
         code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+        :focus-visible { outline: 3px solid rgba(15,108,189,.35); outline-offset: 2px; }
+        .skip-link { position: fixed; left: 16px; top: 12px; z-index: 2000; padding: 8px 12px; color: white; background: var(--primary); border-radius: 4px; transform: translateY(-160%); transition: transform .15s ease; }
+        .skip-link:focus { transform: translateY(0); }
 
         .sidebar {
             position: fixed;
@@ -101,6 +104,7 @@
             border-bottom: 1px solid var(--border);
             backdrop-filter: blur(14px);
         }
+        .topbar-start { display: flex; align-items: center; gap: 10px; min-width: 0; }
         .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
         .page-title { margin: 2px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; letter-spacing: -.01em; }
         .runtime-state { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: #424242; font-size: 12px; font-weight: 600; }
@@ -182,6 +186,7 @@
         .mb-4 { margin-bottom: 1.5rem; }
         .me-1 { margin-right: .25rem; }
         .me-2 { margin-right: .5rem; }
+        .ms-1 { margin-left: .25rem; }
         .p-3 { padding: 1rem; }
         .p-4 { padding: 1.5rem; }
         .px-3 { padding-left: 1rem; padding-right: 1rem; }
@@ -238,6 +243,7 @@
         .btn:hover { background: #f5f5f5; }
         .btn-primary:hover { color: white; background: var(--primary-hover); border-color: var(--primary-hover); }
         .btn.disabled, .btn:disabled { opacity: .42; pointer-events: none; }
+        .mobile-nav-toggle, .nav-toggle, .nav-scrim { display: none; }
         .form-label { display: block; color: var(--muted); font-weight: 600; }
         .form-control, .form-select { width: 100%; min-height: 34px; padding: 5px 8px; color: var(--text); background: white; border: 1px solid var(--border-strong); border-radius: 4px; outline: none; }
         .form-control:focus, .form-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(15,108,189,.16); }
@@ -248,7 +254,9 @@
         .progress { overflow: hidden; height: 5px; background: #e8e8e8; border-radius: 999px; }
         .progress-bar { height: 100%; background: var(--primary); border-radius: inherit; }
         .fa-solid { display: inline-block; width: 1.1em; text-align: center; font-style: normal; }
+        .fa-bars::before { content: "☰"; }
         .fa-cubes-stacked::before { content: "K"; }
+        .fa-code-branch::before { content: "⋈"; }
         .fa-gauge-high::before { content: "◫"; }
         .fa-list-check::before { content: "≡"; }
         .fa-server::before { content: "▤"; }
@@ -272,14 +280,23 @@
         @@media (min-width: 1200px) { .col-xl-3 { width: 25%; } }
         @@media (max-width: 1100px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-grid { grid-template-columns: 1fr; } }
         @@media (max-width: 760px) {
-            :root { --sidebar-width: 64px; }
-            .brand { justify-content: center; padding: 0; }
-            .brand-copy, .nav-caption, .sidebar .label { display: none; }
-            .sidebar .nav-link { justify-content: center; margin: 3px 7px; padding: 8px; }
-            .sidebar .nav-link.active::before { top: 7px; bottom: 7px; }
+            :root { --sidebar-width: 0px; }
+            .sidebar { width: min(280px, calc(100vw - 48px)); transform: translateX(-105%); transition: transform .18s ease; box-shadow: 10px 0 28px rgba(15,23,42,.14); }
+            .nav-toggle:checked ~ .sidebar { transform: translateX(0); }
+            .nav-toggle:checked ~ .nav-scrim { display: block; position: fixed; inset: 0; z-index: 1025; background: rgba(15,23,42,.28); }
+            .brand { justify-content: flex-start; padding: 0 18px; }
+            .brand-copy, .nav-caption, .sidebar .label { display: block; }
+            .sidebar .nav-link { justify-content: flex-start; margin: 2px 8px; padding: 8px 10px; }
+            .sidebar .nav-link.active::before { top: 8px; bottom: 8px; }
+            .mobile-nav-toggle { display: inline-flex; min-width: 34px; padding: 5px 8px; }
             .topbar { padding: 10px 16px; }
+            .topbar .runtime-state { display: none; }
+            .topbar .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
             .content-area { padding: 16px; }
             .metric-grid { grid-template-columns: 1fr; }
+            .section-header > .d-flex { width: 100%; }
+            .section-header .btn { flex: 0 0 auto; }
+            .table th, .table td { padding: 10px 12px; }
         }
     </style>
 </head>
@@ -287,6 +304,8 @@
 @{
     var action = ViewContext.RouteData.Values["Action"]?.ToString();
 }
+<a class="skip-link" href="#main-content">Skip to content</a>
+<input class="nav-toggle" type="checkbox" id="dashboard-nav-toggle" aria-label="Toggle dashboard navigation" />
 <aside class="sidebar">
     <div class="brand">
         <span class="brand-mark">K</span>
@@ -310,25 +329,40 @@
            aria-label="Workers" aria-current="@(action == "Workers" ? "page" : null)" title="Workers">
             <i class="fa-solid fa-server" aria-hidden="true"></i><span class="label">Workers</span>
         </a>
+        <a asp-controller="Dashboard" asp-action="JobTypes" class="nav-link @(action == "JobTypes" ? "active" : "")"
+           aria-label="Job Types" aria-current="@(action == "JobTypes" ? "page" : null)" title="Job Types">
+            <i class="fa-solid fa-code-branch" aria-hidden="true"></i><span class="label">Job Types</span>
+        </a>
         <a asp-controller="Dashboard" asp-action="Schedules" class="nav-link @(action == "Schedules" ? "active" : "")"
            aria-label="Schedules" aria-current="@(action == "Schedules" ? "page" : null)" title="Schedules">
             <i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span class="label">Schedules</span>
         </a>
     </nav>
 </aside>
+<label class="nav-scrim" for="dashboard-nav-toggle" aria-label="Close dashboard navigation"></label>
 <div class="main-wrapper">
     <header class="topbar">
-        <div>
-            <div class="eyebrow">KubeJob / Runtime</div>
-            <h1 class="page-title">@ViewData["Title"]</h1>
+        <div class="topbar-start">
+            <label class="btn btn-sm btn-outline-secondary mobile-nav-toggle" for="dashboard-nav-toggle" aria-label="Open dashboard navigation" title="Open navigation">
+                <i class="fa-solid fa-bars" aria-hidden="true"></i>
+            </label>
+            <div>
+                <div class="eyebrow">KubeJob / Runtime</div>
+                <h1 class="page-title">@ViewData["Title"]</h1>
+            </div>
         </div>
-        <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
-              title="This indicator reflects dashboard permissions, not runtime health.">
-            <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
-            @(DashboardOptions.AllowMutatingActions ? "Mutations enabled" : "Read-only dashboard")
-        </span>
+        <div class="d-flex align-items-center gap-2">
+            <a class="btn btn-sm btn-outline-secondary" href="@Context.Request.Path@Context.Request.QueryString" aria-label="Refresh this page" title="Refresh this page">
+                <i class="fa-solid fa-rotate" aria-hidden="true"></i><span class="label ms-1">Refresh</span>
+            </a>
+            <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
+                  title="This indicator reflects dashboard permissions, not runtime health.">
+                <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
+                @(DashboardOptions.AllowMutatingActions ? "Admin mode" : "Read-only")
+            </span>
+        </div>
     </header>
-    <main class="content-area">@RenderBody()</main>
+    <main id="main-content" class="content-area">@RenderBody()</main>
 </div>
 @await RenderSectionAsync("Scripts", required: false)
 </body>
