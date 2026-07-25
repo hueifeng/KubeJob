@@ -23,14 +23,14 @@ $script:ComposeExe = $null
 $script:ComposePrefix = @()
 
 if ([string]::IsNullOrWhiteSpace($requested) -or $requested -eq "docker") {
-    if (Test-Command "docker" -and (Test-ComposeCandidate "docker" @("compose"))) {
+    if ((Test-Command "docker") -and (Test-ComposeCandidate "docker" @("compose"))) {
         $script:ComposeExe = "docker"
         $script:ComposePrefix = @("compose")
     }
 }
 
 if ($null -eq $script:ComposeExe -and ([string]::IsNullOrWhiteSpace($requested) -or $requested -eq "podman")) {
-    if (Test-Command "podman" -and (Test-ComposeCandidate "podman" @("compose"))) {
+    if ((Test-Command "podman") -and (Test-ComposeCandidate "podman" @("compose"))) {
         $script:ComposeExe = "podman"
         $script:ComposePrefix = @("compose")
     }
@@ -56,10 +56,14 @@ function Invoke-Compose {
 }
 
 function Invoke-ComposeRaw([string[]]$Arguments) {
-    return & $script:ComposeExe @script:ComposePrefix @script:ProjectArgs @Arguments
+    $output = & $script:ComposeExe @script:ComposePrefix @script:ProjectArgs @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Compose command failed with exit code $LASTEXITCODE."
+    }
+    return $output
 }
 
-function Wait-Service([string]$Name, [string[]]$HealthCommand) {
+function Wait-KubeJobService([string]$Name, [string[]]$HealthCommand) {
     for ($attempt = 1; $attempt -le 60; $attempt++) {
         & $script:ComposeExe @script:ComposePrefix @script:ProjectArgs exec -T $Name @HealthCommand *> $null
         if ($LASTEXITCODE -eq 0) {
@@ -84,8 +88,8 @@ function Get-PostgresConnectionString {
 switch ($Action) {
     { $_ -in @("up", "start") } {
         Invoke-Compose up -d
-        Wait-Service "postgres" @("sh", "-ec", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"')
-        Wait-Service "rabbitmq" @("rabbitmq-diagnostics", "-q", "ping")
+        Wait-KubeJobService "postgres" @("sh", "-ec", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"')
+        Wait-KubeJobService "rabbitmq" @("rabbitmq-diagnostics", "-q", "ping")
 
         $rabbitPortOutput = (Invoke-ComposeRaw @("port", "rabbitmq", "15672") | Select-Object -Last 1)
         $rabbitPort = ($rabbitPortOutput -split ":")[-1].Trim()
