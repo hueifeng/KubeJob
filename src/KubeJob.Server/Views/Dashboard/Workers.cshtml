@@ -1,25 +1,33 @@
 @model DashboardWorkersViewModel
 @{
-    ViewData["Title"] = "Worker Sessions";
+    ViewData["Title"] = "Workers";
 }
 <meta http-equiv="refresh" content="15">
 
-<div class="section-header d-flex justify-content-between align-items-center">
+<div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-        <h5 class="mb-1 fw-bold">Worker sessions</h5>
-        <div class="small text-muted">WorkerId is stable; SessionId and Epoch fence restarts and stale processes. Showing up to @Model.MaximumItems sessions.</div>
+        <h5 class="mb-1 fw-bold">Workers that can execute jobs</h5>
+        <div class="small text-muted">
+            A Worker ID identifies the machine or process. Each restart creates a new Session and Epoch so stale processes cannot report results.
+            Showing up to @Model.MaximumItems sessions.
+        </div>
     </div>
-    <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()"><i class="fa-solid fa-rotate me-1"></i>Refresh</button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>Refresh now</button>
 </div>
 
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Worker / session</th><th>State</th><th>Capacity</th><th>Queues</th><th>Capabilities</th><th>Labels</th><th>Build / heartbeat</th></tr></thead>
+            <thead><tr><th>Worker</th><th>Status</th><th>Execution slots</th><th>Queues served</th><th>Job types</th><th>Labels</th><th>Build / last contact</th></tr></thead>
             <tbody>
             @if (Model.Sessions.Count == 0)
             {
-                <tr><td colspan="7" class="text-center text-muted py-5">No worker session has registered.</td></tr>
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-5">
+                        <div class="fw-semibold text-dark mb-1">No worker has connected yet.</div>
+                        <div>Start a worker and verify its control-plane endpoint, queue list, and credentials.</div>
+                    </td>
+                </tr>
             }
             else
             {
@@ -35,23 +43,48 @@
                         WorkerSessionState.Closed => "bg-secondary-subtle text-secondary",
                         _ => "bg-danger-subtle text-danger"
                     };
+                    var stateText = session.State switch
+                    {
+                        WorkerSessionState.Ready => "Ready for jobs",
+                        WorkerSessionState.Draining => "Finishing current work",
+                        WorkerSessionState.Closed => "Disconnected",
+                        _ => session.State.ToString()
+                    };
                     <tr>
                         <td>
                             <div class="fw-bold">@session.WorkerId</div>
-                            <div class="mono small text-muted">@session.SessionId</div>
-                            <div class="small text-muted">epoch @session.Epoch · @session.HostName</div>
+                            <div class="small text-muted">Host: @(session.HostName ?? "unknown")</div>
+                            <div class="mono small text-muted" title="Session ID / fencing epoch">@session.SessionId / epoch @session.Epoch</div>
                         </td>
-                        <td><span class="badge @stateClass">@session.State</span></td>
-                        <td style="min-width: 150px">
-                            <div class="d-flex justify-content-between small mb-1"><span>@used running</span><span>@session.AvailableSlots free / @session.MaxConcurrency</span></div>
-                            <div class="progress" style="height: 6px"><div class="progress-bar" style="width: @percent%"></div></div>
+                        <td><span class="badge @stateClass" title="KubeJob session state: @session.State">@stateText</span></td>
+                        <td style="min-width: 180px">
+                            <div class="d-flex justify-content-between small mb-1"><span><strong>@used</strong> busy</span><span><strong>@session.AvailableSlots</strong> available of @session.MaxConcurrency</span></div>
+                            <div class="progress" style="height: 6px" title="@percent% of configured worker capacity is in use"><div class="progress-bar" style="width: @percent%"></div></div>
                         </td>
-                        <td><div class="d-flex flex-wrap gap-1">@foreach (var queue in session.Queues){<span class="badge bg-light text-dark border">@queue</span>}</div></td>
-                        <td><div class="d-flex flex-wrap gap-1">@foreach (var capability in session.Capabilities){<span class="badge bg-primary-subtle text-primary">@capability</span>}</div></td>
+                        <td>
+                            @if (session.Queues.Count == 0)
+                            {
+                                <span class="text-danger small">No queues configured</span>
+                            }
+                            else
+                            {
+                                <div class="d-flex flex-wrap gap-1">@foreach (var queue in session.Queues){<span class="badge bg-light text-dark border">@queue</span>}</div>
+                            }
+                        </td>
+                        <td>
+                            @if (session.Capabilities.Count == 0)
+                            {
+                                <span class="text-muted small">No job types advertised</span>
+                            }
+                            else
+                            {
+                                <div class="d-flex flex-wrap gap-1">@foreach (var capability in session.Capabilities){<span class="badge bg-primary-subtle text-primary">@capability</span>}</div>
+                            }
+                        </td>
                         <td>
                             @if (session.Labels.Count == 0)
                             {
-                                <span class="text-muted">—</span>
+                                <span class="text-muted">No labels</span>
                             }
                             else
                             {
@@ -59,9 +92,9 @@
                             }
                         </td>
                         <td class="small">
-                            <div>@(session.BuildId ?? "unknown")</div>
-                            <div class="text-muted">@session.LastHeartbeatAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
-                            <div class="@(heartbeatAge > TimeSpan.FromSeconds(30) ? "text-danger" : "text-success")">@heartbeatAge.TotalSeconds.ToString("0")s ago</div>
+                            <div>Build: @(session.BuildId ?? "unknown")</div>
+                            <div class="text-muted" title="@session.LastHeartbeatAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")">Last contact @Math.Max(0, heartbeatAge.TotalSeconds).ToString("0")s ago</div>
+                            <div class="text-muted">Auto-refreshes every 15 seconds</div>
                         </td>
                     </tr>
                 }
