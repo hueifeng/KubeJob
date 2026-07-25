@@ -59,6 +59,55 @@ public sealed class DashboardRunSummary
     public string? FailureMessage { get; init; }
 }
 
+/// <summary>
+/// Sanitized Run projection for the operations dashboard. PayloadJson is populated
+/// only when the host explicitly enables payload rendering.
+/// </summary>
+public sealed class DashboardRunDetails
+{
+    public required string Id { get; init; }
+    public required string JobKey { get; init; }
+    public string? PayloadJson { get; init; }
+    public string Queue { get; init; } = "default";
+    public int Priority { get; init; }
+    public JobPhase Phase { get; init; }
+    public DateTimeOffset AvailableAt { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? CompletedAt { get; init; }
+    public int AttemptCount { get; init; }
+    public int MaxAttempts { get; init; }
+    public int TimeoutSeconds { get; init; }
+    public string? IdempotencyKey { get; init; }
+    public string? ConcurrencyKey { get; init; }
+    public string? ScheduleId { get; init; }
+    public DateTimeOffset? ScheduledFor { get; init; }
+    public string? CurrentWorkerId { get; init; }
+    public bool CancelRequested { get; init; }
+    public string? FailureCode { get; init; }
+    public string? FailureMessage { get; init; }
+}
+
+/// <summary>
+/// Credential-free Attempt projection for the operations dashboard. LeaseToken is
+/// deliberately absent so the presentation layer cannot render fencing credentials.
+/// </summary>
+public sealed class DashboardAttemptSummary
+{
+    public required string Id { get; init; }
+    public required int AttemptNumber { get; init; }
+    public required string WorkerId { get; init; }
+    public required string SessionId { get; init; }
+    public required long SessionEpoch { get; init; }
+    public JobAttemptPhase Phase { get; init; }
+    public DateTimeOffset ClaimedAt { get; init; }
+    public DateTimeOffset StartedAt { get; init; }
+    public DateTimeOffset LeaseExpiresAt { get; init; }
+    public DateTimeOffset? CompletedAt { get; init; }
+    public string? FailureCode { get; init; }
+    public string? FailureMessage { get; init; }
+}
+
 public sealed record DashboardQueueSummary(
     string Queue,
     int PendingRuns,
@@ -92,6 +141,15 @@ public interface IJobRuntimeDashboardStore
 
     ValueTask<DashboardPage<DashboardRunSummary>> GetRunsAsync(
         DashboardRunQuery query,
+        CancellationToken cancellationToken);
+
+    ValueTask<DashboardRunDetails?> GetRunDetailsAsync(
+        string runId,
+        bool includePayload,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<DashboardAttemptSummary>> GetAttemptSummariesAsync(
+        string runId,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<WorkerSessionRecord>> GetWorkerSessionsAsync(
