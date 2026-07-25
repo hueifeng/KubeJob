@@ -2,6 +2,27 @@
 @{
     ViewData["Title"] = "Runtime Overview";
     var overview = Model.Overview;
+
+    static string FormatAge(TimeSpan value)
+    {
+        var age = value < TimeSpan.Zero ? TimeSpan.Zero : value;
+        if (age.TotalDays >= 1)
+        {
+            return $"{(int)age.TotalDays}d {age.Hours}h";
+        }
+
+        if (age.TotalHours >= 1)
+        {
+            return $"{(int)age.TotalHours}h {age.Minutes}m";
+        }
+
+        if (age.TotalMinutes >= 1)
+        {
+            return $"{(int)age.TotalMinutes}m {age.Seconds}s";
+        }
+
+        return $"{Math.Floor(age.TotalSeconds):0}s";
+    }
 }
 <meta http-equiv="refresh" content="20">
 
@@ -23,18 +44,19 @@
         </div>
     </section>
     <section class="metric-card">
-        <div class="metric-head"><span>Schedules</span><span class="metric-glyph">□</span></div>
-        <div class="metric-value">@overview.EnabledSchedules</div>
+        <div class="metric-head"><span>Completed · 1 hour</span><span class="metric-glyph">✓</span></div>
+        <div class="metric-value">@overview.LastHour.CompletedRuns</div>
         <div class="metric-detail">
-            <span><strong>@overview.DisabledSchedules</strong> disabled</span>
+            <span><strong class="text-success">@overview.LastHour.SucceededRuns</strong> succeeded</span>
+            <span><strong>@overview.LastHour.CanceledRuns</strong> canceled</span>
         </div>
     </section>
     <section class="metric-card">
-        <div class="metric-head"><span>Terminal failures</span><span class="metric-glyph">!</span></div>
-        <div class="metric-value">@(overview.FailedRuns + overview.DeadRuns)</div>
+        <div class="metric-head"><span>Unsuccessful · 1 hour</span><span class="metric-glyph">!</span></div>
+        <div class="metric-value text-danger">@overview.LastHour.UnsuccessfulRuns</div>
         <div class="metric-detail">
-            <span><strong>@overview.FailedRuns</strong> failed</span>
-            <span><strong>@overview.DeadRuns</strong> dead</span>
+            <span><strong>@overview.LastHour.FailedRuns</strong> failed</span>
+            <span><strong>@overview.LastHour.DeadRuns</strong> dead</span>
         </div>
     </section>
 </div>
@@ -44,17 +66,17 @@
         <div class="panel-header">
             <div>
                 <h5>Queue backlog</h5>
-                <div class="panel-subtitle">Active logical runs grouped by submission queue.</div>
+                <div class="panel-subtitle">Active logical runs and the oldest Pending Run that is ready to claim.</div>
             </div>
             <a asp-action="Runs" class="btn btn-sm btn-outline-primary">Open runs</a>
         </div>
         <div class="table-responsive">
             <table class="table mb-0">
-                <thead><tr><th>Queue</th><th>Pending</th><th>Running</th><th class="text-end">Active</th></tr></thead>
+                <thead><tr><th>Queue</th><th>Pending</th><th>Running</th><th>Oldest ready</th><th class="text-end">Active</th></tr></thead>
                 <tbody>
                 @if (overview.Queues.Count == 0)
                 {
-                    <tr><td colspan="4" class="text-center text-muted py-5">No active queue backlog.</td></tr>
+                    <tr><td colspan="5" class="text-center text-muted py-5">No active queue backlog.</td></tr>
                 }
                 else
                 {
@@ -64,6 +86,18 @@
                             <td><a asp-action="Runs" asp-route-queue="@queue.Queue" class="fw-semibold text-decoration-none">@queue.Queue</a></td>
                             <td><span class="badge bg-warning-subtle text-warning-emphasis">@queue.PendingRuns</span></td>
                             <td><span class="badge bg-primary-subtle text-primary">@queue.RunningRuns</span></td>
+                            <td class="small">
+                                @if (queue.OldestReadyAt is null)
+                                {
+                                    <span class="text-muted">—</span>
+                                }
+                                else
+                                {
+                                    var age = overview.ObservedAt - queue.OldestReadyAt.Value;
+                                    <span class="@(age >= TimeSpan.FromMinutes(5) ? "text-danger fw-semibold" : "text-muted")"
+                                          title="@queue.OldestReadyAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")">@FormatAge(age)</span>
+                                }
+                            </td>
                             <td class="text-end fw-bold">@queue.ActiveRuns</td>
                         </tr>
                     }
@@ -77,15 +111,15 @@
         <div class="panel-header">
             <div>
                 <h5>Runtime signals</h5>
-                <div class="panel-subtitle">Current operational totals.</div>
+                <div class="panel-subtitle">Snapshot @overview.ObservedAt.ToLocalTime().ToString("HH:mm:ss zzz").</div>
             </div>
         </div>
         <ul class="signal-list">
             <li class="signal-item"><span class="signal-label">Outbox pending</span><span class="signal-value">@overview.PendingOutboxMessages</span></li>
-            <li class="signal-item"><span class="signal-label">Succeeded runs</span><span class="signal-value text-success">@overview.SucceededRuns</span></li>
-            <li class="signal-item"><span class="signal-label">Canceled runs</span><span class="signal-value">@overview.CanceledRuns</span></li>
-            <li class="signal-item"><span class="signal-label">Ready workers</span><span class="signal-value">@overview.ReadyWorkers</span></li>
-            <li class="signal-item"><span class="signal-label">Total terminal</span><span class="signal-value">@(overview.SucceededRuns + overview.FailedRuns + overview.CanceledRuns + overview.DeadRuns)</span></li>
+            <li class="signal-item"><span class="signal-label">Schedules enabled</span><span class="signal-value">@overview.EnabledSchedules</span></li>
+            <li class="signal-item"><span class="signal-label">Schedules disabled</span><span class="signal-value">@overview.DisabledSchedules</span></li>
+            <li class="signal-item"><span class="signal-label">Lifetime succeeded</span><span class="signal-value text-success">@overview.SucceededRuns</span></li>
+            <li class="signal-item"><span class="signal-label">Lifetime failed / dead</span><span class="signal-value text-danger">@(overview.FailedRuns + overview.DeadRuns)</span></li>
         </ul>
     </section>
 </div>
