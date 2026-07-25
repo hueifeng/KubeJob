@@ -9,6 +9,20 @@ namespace KubeJob.Tests.Runtime;
 public sealed class ScheduleRuntimeTests
 {
     [Fact]
+    public async Task Create_if_absent_does_not_overwrite_an_existing_schedule()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var first = await store.CreateIfAbsentAsync(NewSchedule(DateTimeOffset.UtcNow), CancellationToken.None);
+        var second = await store.CreateIfAbsentAsync(
+            NewSchedule(DateTimeOffset.UtcNow.AddHours(1), jobKey: "other.handler"),
+            CancellationToken.None);
+
+        first.Should().NotBeNull();
+        second.Should().BeNull();
+        (await store.GetAsync("daily-report", CancellationToken.None))!.JobKey.Should().Be("report.generate");
+    }
+
+    [Fact]
     public async Task Expired_schedule_claim_can_be_recovered()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -170,10 +184,11 @@ public sealed class ScheduleRuntimeTests
 
     private static JobScheduleRecord NewSchedule(
         DateTimeOffset nextFireAt,
-        ScheduleConcurrencyPolicy concurrencyPolicy = ScheduleConcurrencyPolicy.Allow) => new()
+        ScheduleConcurrencyPolicy concurrencyPolicy = ScheduleConcurrencyPolicy.Allow,
+        string jobKey = "report.generate") => new()
     {
         Id = "daily-report",
-        JobKey = "report.generate",
+        JobKey = jobKey,
         PayloadJson = "{\"kind\":\"daily\"}",
         CronExpression = "*/5 * * * *",
         TimeZoneId = "UTC",

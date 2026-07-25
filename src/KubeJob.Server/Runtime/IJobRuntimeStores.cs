@@ -88,6 +88,14 @@ public interface IJobQueryStore
 
 public interface IJobScheduleStore
 {
+    /// <summary>
+    /// Creates a schedule only when its ID is not already present. Returns null
+    /// when another writer already owns the ID.
+    /// </summary>
+    ValueTask<JobScheduleRecord?> CreateIfAbsentAsync(
+        JobScheduleRecord schedule,
+        CancellationToken cancellationToken);
+
     ValueTask<JobScheduleRecord> UpsertAsync(
         JobScheduleRecord schedule,
         CancellationToken cancellationToken);

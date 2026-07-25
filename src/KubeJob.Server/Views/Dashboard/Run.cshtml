@@ -52,6 +52,7 @@
         @if (Model.AllowMutatingActions && run.Phase is JobPhase.Pending or JobPhase.Running)
         {
             <form asp-action="CancelRun" asp-route-id="@run.Id" method="post" onsubmit="return confirm('Request cooperative cancellation for this job? A running handler must observe its cancellation token before it stops.');">
+                @Html.AntiForgeryToken()
                 <button class="btn btn-sm btn-outline-danger" title="Request cooperative cancellation"><i class="fa-solid fa-ban me-1" aria-hidden="true"></i>Request cancellation</button>
             </form>
         }
@@ -163,7 +164,7 @@
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Try</th><th>Attempt ID</th><th>Worker session</th><th>Status</th><th>Started / finished</th><th>Lease valid until</th><th>Error</th></tr></thead>
+            <thead><tr><th scope="col">Try</th><th scope="col">Attempt ID</th><th scope="col">Worker session</th><th scope="col">Status</th><th scope="col">Started / finished</th><th scope="col">Lease valid until</th><th scope="col">Error</th></tr></thead>
             <tbody>
             @if (Model.Attempts.Count == 0)
             {

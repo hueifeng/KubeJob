@@ -19,7 +19,8 @@ public sealed record DashboardRunQuery(
     int PageSize = 25,
     JobPhase? Phase = null,
     string? Queue = null,
-    string? JobKey = null)
+    string? JobKey = null,
+    bool ExactJobKey = false)
 {
     public DashboardRunQuery Normalize()
     {
@@ -126,6 +127,25 @@ public sealed record DashboardActivitySummary(
     public int CompletedRuns => SucceededRuns + FailedRuns + CanceledRuns + DeadRuns;
     public int UnsuccessfulRuns => FailedRuns + DeadRuns;
 }
+
+public sealed record DashboardJobTypeSummary(
+    string JobKey,
+    int WorkerCount,
+    int ReadyWorkerCount,
+    IReadOnlyList<string> WorkerIds,
+    IReadOnlyList<string> Queues,
+    int RecentRunCount,
+    DateTimeOffset? LastRunAt,
+    JobPhase? LastPhase,
+    int ScheduleCount)
+{
+    public bool IsAvailable => ReadyWorkerCount > 0;
+}
+
+public sealed record DashboardJobTypesViewModel(
+    IReadOnlyList<DashboardJobTypeSummary> JobTypes,
+    int RecentRunLimit,
+    DateTimeOffset ObservedAt);
 
 public sealed record DashboardOverview(
     DateTimeOffset ObservedAt,
