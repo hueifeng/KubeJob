@@ -1,3 +1,4 @@
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
 
