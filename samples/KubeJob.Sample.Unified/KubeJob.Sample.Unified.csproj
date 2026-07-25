@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KubeJob\KubeJob.csproj" />
+    <ProjectReference Include="..\..\src\KubeJob.Storage.PostgreSQL\KubeJob.Storage.PostgreSQL.csproj" />
     <ProjectReference Include="..\KubeJob.Sample.RemoteWorker\KubeJob.Sample.RemoteWorker.csproj" />
   </ItemGroup>
 
