@@ -1,6 +1,6 @@
 # KubeJob
 
-[中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [Architecture](./docs/v2/architecture.md) · [Hardening Review](./docs/v2/hardening-review.md)
+[中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [本地开发环境](./docs/v2/local-development.zh-CN.md) · [Local Development](./docs/v2/local-development.md) · [Architecture](./docs/v2/architecture.md) · [Hardening Review](./docs/v2/hardening-review.md)
 
 KubeJob is a typed, embeddable, distributed background-job runtime for .NET.
 It uses logical Runs, physical Attempts, pull-based workers, expiring leases,
@@ -9,6 +9,26 @@ cron Schedule resources.
 
 KubeJob provides **at-least-once execution**. It does not claim exactly-once
 external side effects.
+
+## Run locally
+
+The repository includes a development stack for PostgreSQL and RabbitMQ. It
+automatically supports Docker Compose, `podman compose`, and `podman-compose`:
+
+```bash
+bash scripts/dev-stack.sh up
+```
+
+Run the unified sample against the real PostgreSQL store with one command:
+
+```bash
+bash scripts/run-unified-sample.sh
+```
+
+On Windows, use `pwsh scripts/dev-stack.ps1 -Action up` or
+`pwsh scripts/run-unified-sample.ps1`. The sample Dashboard is available at
+`http://localhost:5041/admin/jobs`; RabbitMQ management is available at
+`http://localhost:15672`. The included credentials are development-only.
 
 ## Define a typed job
 
