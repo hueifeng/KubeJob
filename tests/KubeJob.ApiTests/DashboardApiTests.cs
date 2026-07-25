@@ -76,7 +76,8 @@ public sealed class DashboardApiTests
 
         overviewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         overviewHtml.Should().Contain("Runtime Overview");
-        overviewHtml.Should().Contain("<span class=\"label\">Runs</span>");
+        overviewHtml.Should().Contain("<span class=\"label\">Jobs</span>");
+        overviewHtml.Should().Contain("<span class=\"label\">Failures</span>");
         overviewHtml.Should().Contain("Read-only dashboard");
         overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
         overviewHtml.Should().Contain("aria-current=\"page\"");
@@ -180,15 +181,26 @@ public sealed class DashboardApiTests
         jobsHtml.Should().Contain("Review failures");
         jobsHtml.Should().Contain("Permanent failures");
         jobsHtml.Should().Contain("No retries left");
+        jobsHtml.Should().Contain("Canceled");
         jobsHtml.Should().Contain("smtp_rejected");
         jobsHtml.Should().Contain("socket_timeout");
 
-        using var failuresRequest = CreateAuthorizedRequest("/admin/jobs/failures");
+        using var scopedJobsRequest = CreateAuthorizedRequest("/admin/jobs/runs?queue=mail&phase=Failed");
+        using var scopedJobsResponse = await client.SendAsync(scopedJobsRequest);
+        var scopedJobsHtml = await scopedJobsResponse.Content.ReadAsStringAsync();
+
+        scopedJobsResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        scopedJobsHtml.Should().Contain("A count is shown only for the currently selected status");
+        scopedJobsHtml.Should().Contain("smtp_rejected");
+        scopedJobsHtml.Should().NotContain("socket_timeout");
+
+        using var failuresRequest = CreateAuthorizedRequest("/admin/jobs/failures?queue=mail");
         using var failuresResponse = await client.SendAsync(failuresRequest);
         var failuresHtml = await failuresResponse.Content.ReadAsStringAsync();
 
         failuresResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         failuresHtml.Should().Contain("Failure Workbench");
+        failuresHtml.Should().Contain("Summary counts and both tables reflect the active Queue and Job key filters");
         failuresHtml.Should().Contain("Permanent failures");
         failuresHtml.Should().Contain("No retries left");
         failuresHtml.Should().Contain("smtp_rejected");
