@@ -56,6 +56,34 @@ pwsh scripts/run-unified-sample.ps1
 Dashboard 地址为 `http://localhost:5041/admin/jobs`。如果没有提供
 `ConnectionStrings__KubeJob`，统一示例仍会回退到内存存储，因此不安装容器也能运行。
 
+## 生成真实 Dashboard 验收数据
+
+统一示例启动后，在另一个终端执行：
+
+```bash
+bash scripts/seed-dashboard-demo.sh
+```
+
+```powershell
+pwsh scripts/seed-dashboard-demo.ps1
+```
+
+脚本通过公开的 `IJobClient` 提交一组真实任务，Worker 会正常领取和执行它们：
+
+- 一次执行成功；
+- 第一次失败、第二次重试成功；
+- 可重试异常耗尽 `MaxAttempts` 后进入 `Dead`；
+- Payload 校验异常直接进入永久失败；
+- 两次执行超时后进入 `Dead`；
+- 一个长时间运行的 `cancel-me` 任务，可在 Dashboard 中测试协作式取消。
+
+这些记录不是直接写入数据库的演示数据。它们完整经过提交、Claim、Attempt、Lease、
+重试和 Completion 流程，因此适合验收 Jobs、Failures、执行时间线、Worker 容量和取消操作。
+失败与超时场景大约需要数秒完成；页面会自动刷新。
+
+日志平台和分布式 Trace 不是运行该验收流程的前置条件。应用可选择在自己的日志系统中
+使用 Run ID、Attempt ID 或 Trace ID 建立跳转，但 KubeJob Dashboard 在没有这些集成时也能独立工作。
+
 手动配置其他应用：
 
 ```bash
