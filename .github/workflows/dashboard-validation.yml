@@ -40,13 +40,14 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      - name: Restore dashboard tests
-        run: |
-          dotnet restore tests/KubeJob.ApiTests/KubeJob.ApiTests.csproj
-          dotnet restore tests/KubeJob.Tests/KubeJob.Tests.csproj
+      - name: Restore solution
+        run: dotnet restore KubeJob.sln
 
-      - name: Run dashboard API and Razor tests
-        run: dotnet test tests/KubeJob.ApiTests/KubeJob.ApiTests.csproj --configuration Release --no-restore
+      - name: Build solution and Razor views
+        run: dotnet build KubeJob.sln --configuration Release --no-restore
+
+      - name: Run dashboard API tests
+        run: dotnet test tests/KubeJob.ApiTests/KubeJob.ApiTests.csproj --configuration Release --no-build
 
       - name: Run runtime and PostgreSQL tests
-        run: dotnet test tests/KubeJob.Tests/KubeJob.Tests.csproj --configuration Release --no-restore
+        run: dotnet test tests/KubeJob.Tests/KubeJob.Tests.csproj --configuration Release --no-build
