@@ -1,137 +1,133 @@
+@using KubeJob.Core.Domain
 @using KubeJob.Core.Enums
 @{
-    ViewData["Title"] = "Dashboard Overview";
+    ViewData["Title"] = "Dashboard";
+    var counts = (IReadOnlyDictionary<JobStatus, int>)ViewBag.StatusCounts;
 }
 
-<!-- Auto Refresh Meta Tag to keep dashboard live -->
-<meta http-equiv="refresh" content="30">
+@section TopbarActions {
+    <div class="kj-live-meta">
+        <span data-kj-refresh-status class="kj-live-chip is-ok">Live</span>
+        <span data-kj-refresh-details>Loading updates...</span>
+    </div>
+}
 
-<div class="row mb-4 g-4">
-    <!-- Active Nodes Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Nodes" class="text-decoration-none">
-            <div class="card stats-card bg-primary text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Active Nodes</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.ActiveNodesCount <span class="fs-5 opacity-75 fw-normal">/ @ViewBag.TotalNodesCount</span></h2>
-                    <i class="fa-solid fa-server stats-icon"></i>
-                </div>
-            </div>
+@section PageActions {
+    <a asp-action="Runs" asp-route-status="Failed" class="kj-btn kj-btn-outline">View failed jobs</a>
+}
+
+<div data-kj-refresh-endpoint="api/overview" data-kj-refresh-interval-ms="10000">
+    <div class="kj-metrics">
+        <a asp-action="Nodes" class="kj-metric">
+            <span class="kj-metric-label">Servers online</span>
+            <span class="kj-metric-value"><span data-kj-stat="activeNodes">@ViewBag.ActiveNodesCount</span><span class="kj-muted"> / <span data-kj-stat="totalNodes">@ViewBag.TotalNodesCount</span></span></span>
+        </a>
+        <a asp-action="Specs" class="kj-metric">
+            <span class="kj-metric-label">Recurring jobs</span>
+            <span class="kj-metric-value" data-kj-stat="totalSpecs">@ViewBag.TotalSpecsCount</span>
+        </a>
+        <a asp-action="Runs" asp-route-status="Pending" class="kj-metric is-warning">
+            <span class="kj-metric-label">Queued / assigned</span>
+            <span class="kj-metric-value"><span data-kj-stat="pending">@counts[JobStatus.Pending]</span><span class="kj-muted"> / <span data-kj-stat="assigned">@counts[JobStatus.Assigned]</span></span>
+        </a>
+        <a asp-action="Runs" asp-route-status="Running" class="kj-metric">
+            <span class="kj-metric-label">Running now</span>
+            <span class="kj-metric-value" data-kj-stat="running">@counts[JobStatus.Running]</span>
+        </a>
+        <a asp-action="Runs" asp-route-status="Failed" class="kj-metric is-danger">
+            <span class="kj-metric-label">Failed jobs</span>
+            <span class="kj-metric-value" data-kj-stat="failed">@counts[JobStatus.Failed]</span>
         </a>
     </div>
 
-    <!-- Total Specs Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Specs" class="text-decoration-none">
-            <div class="card stats-card bg-info text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Job Specs</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.TotalSpecsCount</h2>
-                    <i class="fa-solid fa-cubes stats-icon"></i>
-                </div>
+    <div class="kj-summary-grid">
+        <section class="kj-card">
+            <div class="kj-card-head"><h2 class="kj-card-title">Jobs completed in the last 24 hours</h2></div>
+            <div class="kj-chart">
+                <div id="kj-histogram" class="kj-chart-plot" aria-label="Succeeded and failed jobs by hour"></div>
+                <div class="kj-chart-axis"><span>24 hours ago</span><span>Now</span></div>
+                <div class="kj-chart-legend"><span><i class="success"></i>Succeeded</span><span><i class="failed"></i>Failed</span></div>
             </div>
-        </a>
+        </section>
+        <aside class="kj-card">
+            <div class="kj-card-head"><h2 class="kj-card-title">System health</h2></div>
+            <div class="kj-card-body">
+                <ul class="kj-health-list">
+                    <li><span class="kj-health-label">Offline servers</span><strong data-kj-stat="offlineNodes">@ViewBag.OfflineNodesCount</strong></li>
+                    <li><span class="kj-health-label">Paused recurring jobs</span><strong data-kj-stat="pausedSpecs">@ViewBag.PausedSpecsCount</strong></li>
+                    <li><span class="kj-health-label">Succeeded jobs</span><strong data-kj-stat="succeeded">@counts[JobStatus.Succeeded]</strong></li>
+                    <li><span class="kj-health-label">Canceled jobs</span><strong data-kj-stat="canceled">@counts[JobStatus.Canceled]</strong></li>
+                </ul>
+            </div>
+        </aside>
     </div>
 
-    <!-- Success Jobs Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Runs" class="text-decoration-none">
-            <div class="card stats-card bg-success text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Success (Recent)</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.SuccessCount</h2>
-                    <i class="fa-solid fa-check-circle stats-icon"></i>
-                </div>
-            </div>
-        </a>
-    </div>
-
-    <!-- Failed Jobs Card -->
-    <div class="col-md-3">
-        <a asp-controller="Dashboard" asp-action="Runs" class="text-decoration-none">
-            <div class="card stats-card bg-danger text-white h-100">
-                <div class="card-body">
-                    <h6 class="text-uppercase mb-2 opacity-75 fw-bold">Failed (Recent)</h6>
-                    <h2 class="display-5 fw-bold mb-0">@ViewBag.FailedCount</h2>
-                    <i class="fa-solid fa-triangle-exclamation stats-icon"></i>
-                </div>
-            </div>
-        </a>
-    </div>
-</div>
-
-<div class="d-flex justify-content-between align-items-center mt-5 section-header">
-    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-bolt text-primary me-2"></i>Recent Activity</h4>
-    <a asp-controller="Dashboard" asp-action="Runs" class="btn btn-sm btn-outline-primary rounded-pill px-3">View All</a>
-</div>
-
-<div class="table-card">
-    <div class="table-responsive">
-        <table class="table table-hover table-borderless mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Run ID</th>
-                    <th>Spec ID</th>
-                    <th>Target Node</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Duration</th>
-                </tr>
-            </thead>
-            <tbody>
-                @if (ViewBag.RecentRuns == null || ViewBag.RecentRuns.Count == 0)
+    <section class="kj-card">
+        <div class="kj-card-head">
+            <h2 class="kj-card-title">Recent jobs</h2>
+            <a asp-action="Runs">All jobs</a>
+        </div>
+        <div class="kj-table-wrap">
+            <table class="kj-table">
+                <thead><tr><th>Id</th><th>Job</th><th>Server</th><th>Status</th><th>Created</th><th class="kj-number">Duration</th></tr></thead>
+                <tbody id="kj-overview-runs">
+                @foreach (JobRun run in ViewBag.RecentRuns)
                 {
+                    var duration = run.StartTime.HasValue && run.EndTime.HasValue ? $"{(run.EndTime.Value - run.StartTime.Value).TotalSeconds:0.0}s" : "-";
                     <tr>
-                        <td colspan="6" class="text-center text-muted py-4">
-                            <i class="fa-regular fa-folder-open fs-2 mb-2"></i><br />
-                            No recent activity found.
-                        </td>
+                        <td class="kj-mono">@run.Id[..Math.Min(8, run.Id.Length)]</td><td>@run.SpecId</td><td>@(run.TargetNodeId ?? "-")</td>
+                        <td><span class="kj-pill status-@run.Status.ToString().ToLowerInvariant()">@run.Status</span></td>
+                        <td>@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td><td class="kj-number">@duration</td>
                     </tr>
                 }
-                else
-                {
-                    @foreach (KubeJob.Core.Domain.JobRun run in ViewBag.RecentRuns)
-                    {
-                        var duration = run.EndTime.HasValue && run.StartTime.HasValue 
-                                        ? (run.EndTime.Value - run.StartTime.Value).TotalSeconds.ToString("0.0") + "s" 
-                                        : "-";
-                        <tr>
-                            <td><span class="font-monospace text-muted">@run.Id.Substring(0, 8)</span></td>
-                            <td class="fw-bold text-dark">@run.SpecId</td>
-                            <td>
-                                @if (string.IsNullOrEmpty(run.TargetNodeId))
-                                {
-                                    <span class="text-muted fst-italic">Pending Assign</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-light border text-dark"><i class="fa-solid fa-server text-primary me-1"></i> @run.TargetNodeId</span>
-                                }
-                            </td>
-                            <td>
-                                @if (run.Status == JobStatus.Succeeded)
-                                {
-                                    <span class="badge bg-success rounded-pill px-3"><i class="fa-solid fa-check me-1"></i> @run.Status</span>
-                                }
-                                else if (run.Status == JobStatus.Failed)
-                                {
-                                    <span class="badge bg-danger rounded-pill px-3"><i class="fa-solid fa-xmark me-1"></i> @run.Status</span>
-                                }
-                                else if (run.Status == JobStatus.Running)
-                                {
-                                    <span class="badge bg-info rounded-pill px-3"><i class="fa-solid fa-spinner fa-spin me-1"></i> @run.Status</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-warning text-dark rounded-pill px-3"><i class="fa-regular fa-clock me-1"></i> @run.Status</span>
-                                }
-                            </td>
-                            <td>@run.CreatedAt.ToString("MM-dd HH:mm:ss")</td>
-                            <td class="text-muted">@duration</td>
-                        </tr>
-                    }
-                }
-            </tbody>
-        </table>
-    </div>
+                </tbody>
+            </table>
+        </div>
+    </section>
 </div>
+
+<script>
+(() => {
+    const text = (node, value) => { if (node) node.textContent = String(value ?? 0); };
+    const cell = (value, className) => { const el = document.createElement("td"); el.textContent = value; if (className) el.className = className; return el; };
+    const renderHistogram = (points) => {
+        const plot = document.getElementById("kj-histogram");
+        if (!plot) return;
+        plot.replaceChildren();
+        const max = Math.max(1, ...points.map(p => (p.succeeded || 0) + (p.failed || 0)));
+        points.forEach(point => {
+            const column = document.createElement("div");
+            column.className = "kj-chart-column";
+            column.title = `${window.kubeJobDashboardUtils.safeLocalDateTime(point.hourUtc)}: ${point.succeeded} succeeded, ${point.failed} failed`;
+            [["failed", point.failed], ["success", point.succeeded]].forEach(([kind, count]) => {
+                if (!count) return;
+                const bar = document.createElement("div");
+                bar.className = `kj-chart-bar ${kind}`;
+                bar.style.height = `${(count / max) * 100}%`;
+                column.appendChild(bar);
+            });
+            plot.appendChild(column);
+        });
+    };
+    window.kubeJobDashboardRender = (root, payload) => {
+        if (!payload?.stats) return;
+        Object.entries(payload.stats).forEach(([key, value]) => root.querySelectorAll(`[data-kj-stat="${key}"]`).forEach(node => text(node, value)));
+        renderHistogram(Array.isArray(payload.histogram) ? payload.histogram : []);
+        const body = root.querySelector("#kj-overview-runs");
+        if (!body) return;
+        body.replaceChildren();
+        const runs = Array.isArray(payload.recentRuns) ? payload.recentRuns : [];
+        if (!runs.length) {
+            const row = document.createElement("tr"); const empty = cell("No jobs have run yet.", "kj-empty"); empty.colSpan = 6; row.append(empty); body.append(row); return;
+        }
+        runs.forEach(run => {
+            const row = document.createElement("tr");
+            row.append(cell(String(run.id || "").slice(0, 8), "kj-mono"), cell(run.specId || "-"), cell(run.targetNodeId || "-"));
+            const status = document.createElement("td"); const pill = document.createElement("span"); pill.className = `kj-pill status-${String(run.status || "").toLowerCase()}`; pill.textContent = run.status || "-"; status.append(pill); row.append(status);
+            row.append(cell(window.kubeJobDashboardUtils.safeLocalDateTime(run.createdAt)), cell(run.durationSeconds == null ? "-" : `${run.durationSeconds}s`, "kj-number"));
+            body.append(row);
+        });
+    };
+    renderHistogram(@Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.Histogram)));
+})();
+</script>

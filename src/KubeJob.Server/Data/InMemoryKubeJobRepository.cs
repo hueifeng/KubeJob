@@ -84,7 +84,9 @@ namespace KubeJob.Server.Data
 
         public Task<bool> HasActiveRunsForSpecAsync(string specId)
         {
-            var hasActive = _runs.Values.Any(r => r.SpecId == specId && (r.Status == JobStatus.Pending || r.Status == JobStatus.Running));
+            var hasActive = _runs.Values.Any(r =>
+                r.SpecId == specId &&
+                (r.Status == JobStatus.Pending || r.Status == JobStatus.Assigned || r.Status == JobStatus.Running));
             return Task.FromResult(hasActive);
         }
 
@@ -93,7 +95,7 @@ namespace KubeJob.Server.Data
             var activeRuns = _runs.Values.Where(r => r.SpecId == specId && (r.Status == JobStatus.Pending || r.Status == JobStatus.Running));
             foreach (var run in activeRuns)
             {
-                run.Status = JobStatus.Failed;
+                run.Status = JobStatus.Canceled;
                 run.ResultMsg = reason;
                 run.EndTime = DateTime.UtcNow;
             }
@@ -105,7 +107,7 @@ namespace KubeJob.Server.Data
             if (_runs.TryGetValue(runId, out var run) && run.Status == JobStatus.Pending && run.RowVersion == oldRowVersion)
             {
                 run.TargetNodeId = targetNodeId;
-                run.Status = JobStatus.Running;
+                run.Status = JobStatus.Assigned;
                 run.RowVersion = Guid.NewGuid().ToString();
                 return Task.FromResult(true);
             }
@@ -115,7 +117,7 @@ namespace KubeJob.Server.Data
         public Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId)
         {
             var assigned = _runs.Values
-                .Where(r => r.Status == JobStatus.Running && r.TargetNodeId == nodeId)
+                .Where(r => r.Status == JobStatus.Assigned && r.TargetNodeId == nodeId)
                 .Select(r => 
                 {
                     // Copy and inject missing props that the UI expects via JOIN in Postgres
@@ -148,9 +150,12 @@ namespace KubeJob.Server.Data
             return Task.FromResult(recent);
         }
 
-        public Task<int> GetRunsCountAsync()
+        public Task<int> GetRunsCountAsync(JobStatus? status = null)
         {
-            return Task.FromResult(_runs.Count);
+            var count = status.HasValue
+                ? _runs.Values.Count(r => r.Status == status.Value)
+                : _runs.Count;
+            return Task.FromResult(count);
         }
 
         public Task<JobRun?> GetJobRunAsync(string runId)
@@ -165,10 +170,44 @@ namespace KubeJob.Server.Data
             return Task.FromResult(count);
         }
 
-        public Task<List<JobRun>> GetRunsPagedAsync(int limit, int offset)
+        public Task<List<JobRun>> GetRunsPagedAsync(int limit, int offset, JobStatus? status = null)
         {
-            var paged = _runs.Values.OrderByDescending(r => r.CreatedAt).Skip(offset).Take(limit).ToList();
+            IEnumerable<JobRun> query = _runs.Values;
+            if (status.HasValue)
+            {
+                query = query.Where(r => r.Status == status.Value);
+            }
+
+            var paged = query.OrderByDescending(r => r.CreatedAt).Skip(offset).Take(limit).ToList();
             return Task.FromResult(paged);
+        }
+
+        public Task<Dictionary<JobStatus, int>> GetRunStatusCountsAsync()
+        {
+            var counts = _runs.Values
+                .GroupBy(r => r.Status)
+                .ToDictionary(g => g.Key, g => g.Count());
+            return Task.FromResult(counts);
+        }
+
+        public Task<List<JobRunHistogramBucket>> GetRunHistogramAsync(DateTime sinceUtc)
+        {
+            var buckets = _runs.Values
+                .Where(r => r.CreatedAt >= sinceUtc)
+                .GroupBy(r => new
+                {
+                    Bucket = new DateTime(r.CreatedAt.Year, r.CreatedAt.Month, r.CreatedAt.Day, r.CreatedAt.Hour, 0, 0, DateTimeKind.Utc),
+                    r.Status
+                })
+                .Select(g => new JobRunHistogramBucket
+                {
+                    BucketUtc = g.Key.Bucket,
+                    Status = g.Key.Status,
+                    Count = g.Count()
+                })
+                .OrderBy(b => b.BucketUtc)
+                .ToList();
+            return Task.FromResult(buckets);
         }
 
         public Task<int> DeleteOldRunsAsync(DateTime cutoffTime)
@@ -243,7 +282,11 @@ namespace KubeJob.Server.Data
         public Task ResetOfflineNodeRunsAsync()
         {
             var offlineNodeIds = _nodes.Values.Where(n => n.IsOffline).Select(n => n.Id).ToHashSet();
-            var runsToReset = _runs.Values.Where(r => (r.Status == JobStatus.Running || (int)r.Status == 2) && r.TargetNodeId != null && offlineNodeIds.Contains(r.TargetNodeId)).ToList();
+            var runsToReset = _runs.Values
+                .Where(r => (r.Status == JobStatus.Assigned || r.Status == JobStatus.Running)
+                            && !string.IsNullOrEmpty(r.TargetNodeId)
+                            && offlineNodeIds.Contains(r.TargetNodeId))
+                .ToList();
             foreach (var run in runsToReset)
             {
                 run.Status = JobStatus.Pending;

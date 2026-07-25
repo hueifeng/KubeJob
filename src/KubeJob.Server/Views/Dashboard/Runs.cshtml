@@ -2,199 +2,99 @@
 @using KubeJob.Core.Enums
 @model IEnumerable<JobRun>
 @{
-    ViewData["Title"] = "Execution History";
+    ViewData["Title"] = "Jobs";
+    var activeStatus = (JobStatus?)ViewBag.ActiveStatus;
+    var counts = (IReadOnlyDictionary<JobStatus, int>)ViewBag.StatusCounts;
+    var tabOrder = (IEnumerable<JobStatus>)ViewBag.TabOrder;
+    string TabUrl(JobStatus? status) => status.HasValue
+        ? Url.Action("Runs", new { status = status.Value.ToString(), pageSize = ViewBag.PageSize })!
+        : Url.Action("Runs", new { pageSize = ViewBag.PageSize })!;
+    string PageUrl(int page) => Url.Action("Runs", new { status = activeStatus?.ToString(), page, pageSize = ViewBag.PageSize })!;
 }
 
-<!-- Auto Refresh Meta Tag -->
-<meta http-equiv="refresh" content="30">
+@section PageActions {
+    <button class="kj-btn kj-btn-outline" type="button" onclick="location.reload()">Refresh</button>
+}
 
-<div class="d-flex justify-content-between align-items-center section-header">
-    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-list-check text-primary me-2"></i>Job Runs</h4>
-    <div>
-        <button class="btn btn-outline-secondary btn-sm rounded-pill px-3" onclick="location.reload()">
-            <i class="fa-solid fa-rotate-right me-1"></i> Refresh
-        </button>
-    </div>
-</div>
+<nav class="kj-tabs" aria-label="Job status">
+    <a class="kj-tab @(!activeStatus.HasValue ? "active" : "")" href="@TabUrl(null)">All <span class="kj-tab-count">@ViewBag.AllRunsCount</span></a>
+    @foreach (var status in tabOrder)
+    {
+        <a class="kj-tab @(activeStatus == status ? "active" : "")" href="@TabUrl(status)">@status <span class="kj-tab-count">@counts[status]</span></a>
+    }
+</nav>
 
-<div class="table-card">
-    <div class="table-responsive">
-        <table class="table table-hover table-borderless align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Execution ID</th>
-                    <th>Spec / Shard</th>
-                    <th>Target Node</th>
-                    <th>Status</th>
-                    <th>Timing</th>
-                    <th>Duration</th>
-                    <th>Details</th>
-                </tr>
-            </thead>
+<section class="kj-card">
+    <div class="kj-table-wrap">
+        <table class="kj-table">
+            <thead><tr><th>Id</th><th>Job / shard</th><th>Server</th><th>Status</th><th>Created</th><th class="kj-number">Duration</th><th></th></tr></thead>
             <tbody>
-                @if (!Model.Any())
+            @if (!Model.Any())
+            {
+                <tr><td colspan="7" class="kj-empty">No jobs match this status.</td></tr>
+            }
+            else
+            {
+                @foreach (var run in Model)
                 {
+                    var rowId = $"run-detail-{run.Id}";
+                    var duration = run.StartTime.HasValue && run.EndTime.HasValue ? $"{(run.EndTime.Value - run.StartTime.Value).TotalSeconds:0.0}s" : "-";
                     <tr>
-                        <td colspan="7" class="text-center text-muted py-5">
-                            <i class="fa-solid fa-folder-open fs-1 mb-3"></i><br />
-                            No execution history available.
+                        <td><div class="kj-mono">@run.Id[..Math.Min(8, run.Id.Length)]</div><div class="kj-muted kj-mono">@((run.BatchId ?? "-")[..Math.Min(8, (run.BatchId ?? "-").Length)])</div></td>
+                        <td><div>@run.SpecId</div><div class="kj-muted">Shard @run.ShardIndex</div></td>
+                        <td>@(run.TargetNodeId ?? "-")</td>
+                        <td><span class="kj-pill status-@run.Status.ToString().ToLowerInvariant()">@run.Status</span></td>
+                        <td>@run.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="kj-number">@duration</td>
+                        <td>
+                            @if (!string.IsNullOrWhiteSpace(run.ResultMsg))
+                            {
+                                <button type="button" class="kj-btn kj-btn-link" data-kj-toggle-log="@rowId" aria-expanded="false">Details</button>
+                            }
                         </td>
                     </tr>
-                }
-                else
-                {
-                    @foreach (var run in Model)
+                    @if (!string.IsNullOrWhiteSpace(run.ResultMsg))
                     {
-                        <tr>
-                            <td>
-                                <div class="font-monospace text-dark fw-bold" title="@run.Id">@run.Id.Substring(0, 8)...</div>
-                                <div class="font-monospace text-muted small" title="Batch: @run.BatchId"><i class="fa-solid fa-layer-group me-1"></i>@run.BatchId.Substring(0, 8)</div>
-                            </td>
-                            <td>
-                                <div class="fw-bold text-primary">@run.SpecId</div>
-                                <div><span class="badge bg-secondary rounded-pill mt-1"><i class="fa-solid fa-puzzle-piece me-1"></i>Shard @run.ShardIndex</span></div>
-                            </td>
-                            <td>
-                                @if (string.IsNullOrEmpty(run.TargetNodeId))
-                                {
-                                    <span class="text-muted fst-italic"><i class="fa-solid fa-hourglass-empty me-1"></i> Unassigned</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-light text-dark border px-2 py-1"><i class="fa-solid fa-server text-primary me-1"></i>@run.TargetNodeId</span>
-                                }
-                            </td>
-                            <td>
-                                @{
-                                    var badgeClass = run.Status switch {
-                                        JobStatus.Succeeded => "bg-success",
-                                        JobStatus.Failed => "bg-danger",
-                                        JobStatus.Running => "bg-info",
-                                        JobStatus.Pending => "bg-warning text-dark",
-                                        _ => "bg-secondary"
-                                    };
-                                    var iconClass = run.Status switch {
-                                        JobStatus.Succeeded => "fa-check",
-                                        JobStatus.Failed => "fa-xmark",
-                                        JobStatus.Running => "fa-spinner fa-spin",
-                                        JobStatus.Pending => "fa-clock",
-                                        _ => "fa-circle-question"
-                                    };
-                                }
-                                <span class="badge @badgeClass rounded-pill px-3 py-2 shadow-sm"><i class="fa-solid @iconClass me-1"></i> @run.Status</span>
-                            </td>
-                            <td class="text-muted small">
-                                <div><i class="fa-solid fa-calendar-plus me-1 text-secondary" title="Created At"></i> @run.CreatedAt.ToString("MM-dd HH:mm:ss")</div>
-                                @if(run.StartTime.HasValue)
-                                {
-                                    <div class="mt-1"><i class="fa-solid fa-play me-1 text-success" title="Started At"></i> @run.StartTime.Value.ToString("MM-dd HH:mm:ss")</div>
-                                }
-                            </td>
-                            <td class="fw-bold text-dark">
-                                @if(run.StartTime.HasValue && run.EndTime.HasValue)
-                                {
-                                    <span><i class="fa-solid fa-stopwatch text-muted me-1"></i>@((run.EndTime.Value - run.StartTime.Value).TotalSeconds.ToString("0.0"))s</span>
-                                }
-                                else if (run.StartTime.HasValue)
-                                {
-                                    <span class="text-info"><i class="fa-solid fa-spinner fa-spin me-1"></i> Running</span>
-                                }
-                                else
-                                {
-                                    <span class="text-muted">-</span>
-                                }
-                            </td>
-                            <td>
-                                @if(!string.IsNullOrEmpty(run.ResultMsg))
-                                {
-                                    <span title="View Logs" class="d-inline-block">
-                                        <button class="btn btn-sm btn-light border text-muted rounded-circle" type="button" data-bs-toggle="modal" data-bs-target="#logModal-@run.Id">
-                                            <i class="fa-solid fa-comment-dots"></i>
-                                        </button>
-                                    </span>
-                                    <!-- Modal is placed outside the table below -->
-                                }
-                                else
-                                {
-                                    <span class="text-muted">-</span>
-                                }
-                            </td>
-                        </tr>
+                        <tr id="@rowId" class="kj-expand-row" hidden><td colspan="7"><pre class="kj-log">@run.ResultMsg</pre></td></tr>
                     }
                 }
+            }
             </tbody>
         </table>
     </div>
-@if (ViewBag.TotalPages > 0)
-{
-    <div class="d-flex justify-content-between align-items-center mt-4 px-3 pb-3">
-        <div class="text-muted small fw-bold d-flex align-items-center gap-3">
-            <div>
-                Showing page <span class="text-primary">@ViewBag.CurrentPage</span> of @ViewBag.TotalPages 
-                <span class="ms-2 badge bg-light text-dark border">Total: @ViewBag.TotalCount records</span>
-            </div>
-            <form id="pageSizeForm" method="get" class="d-flex align-items-center gap-2 m-0">
-                <label for="pageSize" class="mb-0 text-nowrap">Per page:</label>
-                <select name="pageSize" id="pageSize" class="form-select form-select-sm" style="width: auto;" onchange="document.getElementById('pageSizeForm').submit()">
-                    @foreach(var sz in new[] { 10, 20, 50, 100 })
-                    {
-                        if (ViewBag.PageSize == sz) {
-                            <option value="@sz" selected>@sz</option>
-                        } else {
-                            <option value="@sz">@sz</option>
-                        }
-                    }
-                </select>
-                <input type="hidden" name="page" value="1" />
-            </form>
-        </div>
-        <ul class="pagination pagination-sm mb-0 shadow-sm">
-            <li class="page-item @(ViewBag.CurrentPage == 1 ? "disabled" : "")">
-                <a class="page-link" href="?page=@(ViewBag.CurrentPage - 1)&pageSize=@ViewBag.PageSize"><i class="fa-solid fa-chevron-left"></i> Prev</a>
-            </li>
-            
-            @{
-                int startPage = Math.Max(1, ViewBag.CurrentPage - 2);
-                int endPage = Math.Min(ViewBag.TotalPages, startPage + 4);
-                if (endPage - startPage < 4) {
-                    startPage = Math.Max(1, endPage - 4);
-                }
-            }
 
-            @for (int i = startPage; i <= endPage; i++)
-            {
-                <li class="page-item @(ViewBag.CurrentPage == i ? "active" : "")">
-                    <a class="page-link" href="?page=@i&pageSize=@ViewBag.PageSize">@i</a>
-                </li>
-            }
-
-            <li class="page-item @(ViewBag.CurrentPage == ViewBag.TotalPages ? "disabled" : "")">
-                <a class="page-link" href="?page=@(ViewBag.CurrentPage + 1)&pageSize=@ViewBag.PageSize">Next <i class="fa-solid fa-chevron-right"></i></a>
-            </li>
-        </ul>
-    </div>
-}
-</div>
-
-@if (Model != null && Model.Any())
-{
-    @foreach(var run in Model)
+    @if (ViewBag.TotalPages > 0)
     {
-        if(!string.IsNullOrEmpty(run.ResultMsg))
-        {
-            <div class="modal fade" id="logModal-@run.Id" tabindex="-1" aria-hidden="true">
-                <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
-                    <div class="modal-content shadow">
-                        <div class="modal-header bg-light">
-                            <h5 class="modal-title fw-bold text-dark"><i class="fa-solid fa-terminal text-primary me-2"></i>Logs for @run.Id.Substring(0, Math.Min(8, run.Id.Length))</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                        </div>
-                        <div class="modal-body bg-dark text-light p-0 text-start">
-                            <pre class="p-3 m-0 font-monospace small" style="white-space: pre-wrap; word-break: break-all;">@run.ResultMsg</pre>
-                        </div>
-                    </div>
-                </div>
+        <div class="kj-pagination">
+            <span class="kj-muted">Page @ViewBag.CurrentPage of @ViewBag.TotalPages · @ViewBag.TotalCount jobs</span>
+            <form class="kj-page-size" method="get">
+                @if (activeStatus.HasValue) { <input type="hidden" name="status" value="@activeStatus.Value" /> }
+                <input type="hidden" name="page" value="1" />
+                <label class="kj-muted" for="pageSize">Rows</label>
+                <select id="pageSize" name="pageSize" onchange="this.form.submit()">
+                    @foreach (var size in new[] { 10, 20, 50, 100 }) { <option value="@size" selected="@(ViewBag.PageSize == size ? "selected" : null)">@size</option> }
+                </select>
+            </form>
+            <div class="kj-page-links">
+                @if (ViewBag.CurrentPage > 1) { <a href="@PageUrl(ViewBag.CurrentPage - 1)">Prev</a> } else { <span>Prev</span> }
+                @for (var i = Math.Max(1, (int)ViewBag.CurrentPage - 2); i <= Math.Min((int)ViewBag.TotalPages, (int)ViewBag.CurrentPage + 2); i++)
+                {
+                    if (i == ViewBag.CurrentPage) { <span class="active">@i</span> } else { <a href="@PageUrl(i)">@i</a> }
+                }
+                @if (ViewBag.CurrentPage < ViewBag.TotalPages) { <a href="@PageUrl(ViewBag.CurrentPage + 1)">Next</a> } else { <span>Next</span> }
             </div>
-        }
+        </div>
     }
-}
+</section>
+
+<script>
+document.addEventListener("click", event => {
+    const button = event.target.closest("[data-kj-toggle-log]");
+    if (!button) return;
+    const row = document.getElementById(button.dataset.kjToggleLog);
+    if (!row) return;
+    row.hidden = !row.hidden;
+    button.setAttribute("aria-expanded", String(!row.hidden));
+    button.textContent = row.hidden ? "Details" : "Hide details";
+});
+</script>

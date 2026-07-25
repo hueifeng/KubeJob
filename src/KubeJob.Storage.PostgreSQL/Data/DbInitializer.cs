@@ -80,6 +80,16 @@ namespace KubeJob.Storage.PostgreSQL.Data
                     ExpiresAt TIMESTAMP NOT NULL
                 );
             ");
+
+            // 5. Create indexes for high-frequency scheduler/dashboard queries
+            conn.Execute(@"
+                CREATE INDEX IF NOT EXISTS IX_Kj_JobRuns_Status_CreatedAt ON Kj_JobRuns (Status, CreatedAt DESC);
+                CREATE INDEX IF NOT EXISTS IX_Kj_JobRuns_SpecId_Status_CreatedAt ON Kj_JobRuns (SpecId, Status, CreatedAt DESC);
+                CREATE INDEX IF NOT EXISTS IX_Kj_JobRuns_TargetNodeId_Status_CreatedAt ON Kj_JobRuns (TargetNodeId, Status, CreatedAt DESC);
+                CREATE INDEX IF NOT EXISTS IX_Kj_WorkerNodes_IsOffline_LastHeartbeat ON Kj_WorkerNodes (IsOffline, LastHeartbeat DESC);
+                CREATE INDEX IF NOT EXISTS IX_Kj_JobSpecs_NextRunTime_IsDisabled ON Kj_JobSpecs (IsDisabled, NextRunTime);
+                CREATE INDEX IF NOT EXISTS IX_Kj_Leases_ExpiresAt ON Kj_Leases (ExpiresAt);
+            ");
         }
     }
 }

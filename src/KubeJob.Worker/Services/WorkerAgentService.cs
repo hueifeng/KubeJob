@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Net.Http;
@@ -57,7 +58,10 @@ namespace KubeJob.Worker.Services
                     }
                 }
             }
-            catch { /* Ignore */ }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve local IPv4 address, falling back to loopback.");
+            }
             return "127.0.0.1";
         }
 
@@ -104,10 +108,7 @@ namespace KubeJob.Worker.Services
             try
             {
                 var jobTypes = AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => {
-                        try { return a.GetTypes(); } 
-                        catch { return Array.Empty<Type>(); }
-                    })
+                    .SelectMany(GetLoadableTypes)
                     .Where(t => typeof(IKubeJob).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
 
                 var req = new RegisterJobsRequest { WorkerId = _workerId };
@@ -244,7 +245,7 @@ namespace KubeJob.Worker.Services
                 
                 // Lookup type by run.JobType (provided by server)
                 var resolvedJobType = AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => a.GetTypes())
+                    .SelectMany(GetLoadableTypes)
                     .FirstOrDefault(t => t.Name == run.JobType || (t.GetCustomAttribute<KubeJobAttribute>()?.Name == run.JobType));
 
                 if (resolvedJobType == null || !typeof(IKubeJob).IsAssignableFrom(resolvedJobType))
@@ -303,6 +304,24 @@ namespace KubeJob.Worker.Services
             catch(Exception ex)
             {
                 _logger.LogError(ex, "Failed to report status for {RunId}", runId);
+            }
+        }
+
+        private IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                _logger.LogWarning(ex, "Partial type load failure in assembly {Assembly}.", assembly.FullName);
+                return ex.Types.Where(t => t != null).Cast<Type>();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to scan types in assembly {Assembly}.", assembly.FullName);
+                return Array.Empty<Type>();
             }
         }
     }

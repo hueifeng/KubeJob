@@ -59,9 +59,9 @@ KubeJob separates scheduling logic from execution logic, allowing it to scale se
 
 - **Cloud-Native Scheduling Model**: KubeJob adopts Kubernetes-style scheduling. It utilizes `CronJob` specifications, `Node Selectors`, and `Execution Models` (Standalone/Broadcast/Sharded), making it highly suitable for modern microservices and containerized environments.
 - **High Availability (Leader Election)**: Deploy multiple `KubeJob.Server` nodes without the fear of duplicate scheduling. The built-in, storage-agnostic Distributed Lock Provider ensures only one Control Plane node orchestrates tasks at any given time, preventing race conditions and ensuring cluster consistency.
-- **Out-of-the-Box Dashboard**: KubeJob includes a high-quality, responsive dashboard built with Bootswatch. You can monitor cluster health, manually trigger jobs, and edit specifications on the fly without having to develop your own UI.
+- **Out-of-the-Box Dashboard**: KubeJob includes a built-in Razor dashboard with self-hosted assets, design tokens, and light/dark themes. You can monitor cluster health, manually trigger jobs, and edit specifications on the fly without having to develop your own UI.
 - **Smart Concurrency & Resilience**: Native support for `Concurrency Policies` (Allow/Forbid/Replace) combined with `CancellationToken`-based timeouts, automatic retries, and Graceful Shutdowns.
-- **Intuitive Log Visualization**: The dashboard features a clean, dark-themed terminal modal to view complete exception stack traces and execution logs directly in the UI, accelerating the debugging process.
+- **Intuitive Log Visualization**: The dashboard includes a readable log dialog to inspect complete exception stack traces and execution logs directly in the UI, accelerating debugging.
 
 ---
 

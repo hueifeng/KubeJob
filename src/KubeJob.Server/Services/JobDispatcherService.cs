@@ -81,14 +81,22 @@ namespace KubeJob.Server.Services
 
         private Core.Domain.WorkerNode? MatchNode(Core.Domain.JobSpec spec, System.Collections.Generic.List<Core.Domain.WorkerNode> nodes)
         {
-            // Parse node selector
-            var requiredLabels = JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(spec.NodeSelector) ?? new();
+            if (!TryParseLabels(spec.NodeSelector, out var requiredLabels))
+            {
+                _logger.LogWarning("Skipping dispatch for Spec {SpecId} because NodeSelector JSON is invalid: {NodeSelector}", spec.Id, spec.NodeSelector);
+                return null;
+            }
             
             var availableNodes = nodes.Where(n => 
             {
                 if (n.CurrentLoad >= n.MaxCapacity) return false;
                 
-                var nodeLabels = JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(n.Labels) ?? new();
+                if (!TryParseLabels(n.Labels, out var nodeLabels))
+                {
+                    _logger.LogWarning("Ignoring node {NodeId} because labels JSON is invalid: {Labels}", n.Id, n.Labels);
+                    return false;
+                }
+
                 // Check if all required labels exist in node labels
                 foreach(var req in requiredLabels)
                 {
@@ -99,6 +107,26 @@ namespace KubeJob.Server.Services
 
             // Return node with least load
             return availableNodes.OrderBy(n => n.CurrentLoad).FirstOrDefault();
+        }
+
+        private static bool TryParseLabels(string raw, out System.Collections.Generic.Dictionary<string, string> labels)
+        {
+            labels = new System.Collections.Generic.Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return true;
+            }
+
+            try
+            {
+                labels = JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(raw)
+                         ?? new System.Collections.Generic.Dictionary<string, string>();
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
         }
     }
 }

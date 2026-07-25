@@ -1,8 +1,8 @@
 using System;
-using System.Text.Json;
 using System.Threading.Tasks;
 using KubeJob.Core.Domain;
 using KubeJob.Core.Enums;
+using KubeJob.Server.Options;
 using KubeJob.Server.Data;
 using Microsoft.AspNetCore.Mvc;
 
@@ -13,15 +13,22 @@ namespace KubeJob.Server.Controllers
     public class SeedController : ControllerBase
     {
         private readonly IKubeJobRepository _repository;
+        private readonly KubeJobServerOptions _options;
 
-        public SeedController(IKubeJobRepository repository)
+        public SeedController(IKubeJobRepository repository, KubeJobServerOptions options)
         {
             _repository = repository;
+            _options = options;
         }
 
         [HttpPost]
         public async Task<IActionResult> Seed()
         {
+            if (!_options.EnableSeedEndpoint)
+            {
+                return NotFound();
+            }
+
             for (int i = 1; i <= 50; i++)
             {
                 var policy = i % 3 == 0 ? ConcurrencyPolicy.Replace :

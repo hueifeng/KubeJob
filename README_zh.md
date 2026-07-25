@@ -59,7 +59,7 @@ KubeJob 的设计严格分离了**调度逻辑**与**执行逻辑**，从而赋�
 
 - **云原生调度模型**: KubeJob 深度借鉴了 Kubernetes 的调度模型。它采用 `CronJob` 规格、`Node Selectors`（节点选择器）和 `Execution Models`（单机/广播/分片执行），使其自然地契合现代的微服务和分布式容器化环境。
 - **高可用与主节点选举 (Leader Election)**: 您可以部署多个 `KubeJob.Server` 实例而不用担心定时任务重复触发。框架内置了与存储无关的分布式锁提供程序，确保在任意时刻只有一台服务器作为 Leader 进行调度，完美避免了竞态条件，保障了控制面的高可用性。
-- **开箱即用的现代化控制面板**: KubeJob 内置了基于 Bootswatch 构建的响应式 Web Dashboard。您可以直接监控节点负载、手工触发任务、动态修改执行策略，大大降低了运维门槛。
+- **开箱即用的现代化控制面板**: KubeJob 内置了 Razor Dashboard，采用自托管静态资源、设计令牌与明暗主题。您可以直接监控节点负载、手工触发任务、动态修改执行策略，大大降低运维门槛。
 - **智能的并发与超时控制**: 原生提供对 `Concurrency Policies`（Allow/Forbid/Replace）的策略支持，并基于 `CancellationToken` 实现了完善的超时熔断与平滑退出 (Graceful Shutdown) 能力。
 - **直观的日志与异常可视化**: 在运行历史面板中提供终端风格的深色代码弹窗，直接查看任务的完整异常堆栈 (Stack Traces) 与执行日志，方便快速定位问题。
 

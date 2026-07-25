@@ -2,119 +2,87 @@
 @using System.Text.Json
 @model IEnumerable<WorkerNode>
 @{
-    ViewData["Title"] = "Worker Nodes";
+    ViewData["Title"] = "Servers";
 }
 
-<!-- Auto Refresh Meta Tag -->
-<meta http-equiv="refresh" content="30">
-
-<div class="d-flex justify-content-between align-items-center section-header">
-    <h4 class="mb-0 fw-bold text-dark"><i class="fa-solid fa-server text-primary me-2"></i>Worker Nodes</h4>
-    <div>
-        <button class="btn btn-outline-secondary btn-sm rounded-pill px-3" onclick="location.reload()">
-            <i class="fa-solid fa-rotate-right me-1"></i> Refresh
-        </button>
+@section TopbarActions {
+    <div class="kj-live-meta">
+        <span data-kj-refresh-status class="kj-live-chip is-ok">Live</span>
+        <span data-kj-refresh-details>Loading updates...</span>
     </div>
-</div>
+}
 
-<div class="table-card">
-    <div class="table-responsive">
-        <table class="table table-hover table-borderless align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>Node ID</th>
-                    <th>Status</th>
-                    <th>Load / Capacity</th>
-                    <th>Labels</th>
-                    <th>Last Heartbeat</th>
-                    <th class="text-end">Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                @if (!Model.Any())
+@section PageActions {
+    <button class="kj-btn kj-btn-outline" type="button" onclick="location.reload()">Refresh</button>
+}
+
+<div data-kj-refresh-endpoint="api/nodes" data-kj-refresh-interval-ms="10000" data-kj-delete-url-template="@Url.Action("DeleteNode", "Dashboard", new { id = "__NODE_ID__" })">
+    <section class="kj-card">
+        <div class="kj-table-wrap">
+            <table class="kj-table">
+                <thead><tr><th>Server</th><th>Status</th><th>Load</th><th>Queues / labels</th><th>Heartbeat</th><th></th></tr></thead>
+                <tbody id="kj-nodes">
+                @foreach (var node in Model)
                 {
+                    var labels = new Dictionary<string, string>();
+                    if (!string.IsNullOrWhiteSpace(node.Labels))
+                    {
+                        try { labels = JsonSerializer.Deserialize<Dictionary<string, string>>(node.Labels) ?? new(); } catch (JsonException) { }
+                    }
+                    var pct = node.MaxCapacity <= 0 ? 0 : Math.Min(100, (int)Math.Round(node.CurrentLoad * 100d / node.MaxCapacity));
+                    var loadClass = pct >= 90 ? "is-danger" : pct >= 70 ? "is-warning" : "";
                     <tr>
-                        <td colspan="6" class="text-center text-muted py-5">
-                            <i class="fa-solid fa-network-wired fs-1 mb-3"></i><br />
-                            No worker nodes registered. Start a worker node to see it here.
-                        </td>
+                        <td><div class="kj-mono">@node.Id</div><div class="kj-muted">@node.IpAddress</div></td>
+                        <td><span class="kj-pill @(node.IsOffline ? "status-canceled" : "status-succeeded")">@(node.IsOffline ? "Offline" : "Online")</span></td>
+                        <td><div>@node.CurrentLoad / @node.MaxCapacity</div><div class="kj-load @loadClass"><span style="width:@pct%"></span></div></td>
+                        <td>@if (labels.Any()) { foreach (var label in labels) { <span class="kj-pill">@label.Key:@label.Value</span> } } else { <span class="kj-muted">No labels</span> }</td>
+                        <td>@node.LastHeartbeat.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td>@if (node.IsOffline) { <form asp-action="DeleteNode" asp-route-id="@node.Id" method="post" onsubmit="return confirm('Remove this offline server?');">@Html.AntiForgeryToken()<button type="submit" class="kj-btn kj-btn-danger">Remove</button></form> }</td>
                     </tr>
                 }
-                else
-                {
-                    @foreach (var node in Model)
-                    {
-                        var labels = new Dictionary<string, string>();
-                        try { labels = JsonSerializer.Deserialize<Dictionary<string, string>>(node.Labels) ?? new(); } catch { }
-                        
-                        var loadPercentage = node.MaxCapacity > 0 ? (int)Math.Round((double)node.CurrentLoad / node.MaxCapacity * 100) : 0;
-                        var pgClass = loadPercentage > 80 ? "bg-danger" : loadPercentage > 50 ? "bg-warning" : "bg-success";
-
-                        <tr class="@(node.IsOffline ? "offline-node" : "")">
-                            <td>
-                                <div class="fw-bold text-dark font-monospace"><i class="fa-solid fa-desktop text-muted me-2"></i>@node.Id</div>
-                                @if (!string.IsNullOrEmpty(node.IpAddress))
-                                {
-                                    <div class="small text-muted mt-1"><i class="fa-solid fa-network-wired me-1"></i>@node.IpAddress</div>
-                                }
-                            </td>
-                            <td>
-                                @if (node.IsOffline)
-                                {
-                                    <span class="badge bg-secondary rounded-pill px-3"><i class="fa-solid fa-circle-minus me-1"></i> Offline</span>
-                                }
-                                else
-                                {
-                                    <span class="badge bg-success rounded-pill px-3"><i class="fa-solid fa-circle-check me-1"></i> Online</span>
-                                }
-                            </td>
-                            <td style="min-width: 200px;">
-                                <div class="d-flex justify-content-between small text-muted mb-1">
-                                    <span>@node.CurrentLoad Jobs</span>
-                                    <span>Max @node.MaxCapacity</span>
-                                </div>
-                                <div class="progress" style="height: 6px;">
-                                    <div class="progress-bar @pgClass" role="progressbar" style="width: @loadPercentage%;" aria-valuenow="@loadPercentage" aria-valuemin="0" aria-valuemax="100"></div>
-                                </div>
-                            </td>
-                            <td>
-                                @if(labels.Any())
-                                {
-                                    <div class="d-flex flex-wrap gap-1">
-                                        @foreach(var lbl in labels)
-                                        {
-                                            <span class="badge bg-light text-dark border"><span class="text-primary opacity-75">@lbl.Key:</span> @lbl.Value</span>
-                                        }
-                                    </div>
-                                }
-                                else
-                                {
-                                    <span class="text-muted small fst-italic">No labels</span>
-                                }
-                            </td>
-                            <td class="text-muted small">
-                                <div><i class="fa-regular fa-clock me-1"></i>@node.LastHeartbeat.ToString("yyyy-MM-dd HH:mm:ss")</div>
-                                @{
-                                    var timeSince = DateTime.UtcNow - node.LastHeartbeat;
-                                    var timeSinceStr = timeSince.TotalMinutes > 60 ? $"{(int)timeSince.TotalHours}h ago" : $"{(int)timeSince.TotalMinutes}m ago";
-                                    if(timeSince.TotalMinutes < 1) timeSinceStr = "just now";
-                                }
-                                <div class="text-secondary" style="font-size: 0.75rem;">@timeSinceStr</div>
-                            </td>
-                            <td class="text-end">
-                                @if(node.IsOffline)
-                                {
-                                    <form asp-action="DeleteNode" asp-route-id="@node.Id" method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to remove this offline node?');">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill px-3 shadow-sm" title="Remove Offline Node">
-                                            <i class="fa-solid fa-trash-can"></i> Remove
-                                        </button>
-                                    </form>
-                                }
-                            </td>
-                        </tr>
-                    }
-                }
-            </tbody>
-        </table>
-    </div>
+                </tbody>
+            </table>
+        </div>
+    </section>
+    <div hidden><form id="kj-antiforgery-template">@Html.AntiForgeryToken()</form></div>
 </div>
+
+<script>
+(() => {
+    const cell = (value, className) => { const el = document.createElement("td"); if (className) el.className = className; if (value instanceof Node) el.append(value); else el.textContent = value; return el; };
+    const pill = (text, className) => { const el = document.createElement("span"); el.className = `kj-pill ${className}`; el.textContent = text; return el; };
+    const labelsCell = labels => {
+        const wrap = document.createElement("div");
+        Object.entries(labels || {}).forEach(([key, value]) => wrap.append(pill(`${key}:${value}`)));
+        if (!wrap.childNodes.length) wrap.append(document.createTextNode("No labels"));
+        return wrap;
+    };
+    const deleteForm = (root, id) => {
+        const form = document.createElement("form");
+        form.method = "post"; form.action = root.dataset.kjDeleteUrlTemplate.replace("__NODE_ID__", encodeURIComponent(id));
+        form.onsubmit = () => confirm("Remove this offline server?");
+        const token = document.querySelector("#kj-antiforgery-template input");
+        if (token) { const input = document.createElement("input"); input.type = "hidden"; input.name = token.name; input.value = token.value; form.append(input); }
+        const button = document.createElement("button"); button.type = "submit"; button.className = "kj-btn kj-btn-danger"; button.textContent = "Remove"; form.append(button);
+        return form;
+    };
+    window.kubeJobDashboardRender = (root, data) => {
+        const body = root.querySelector("#kj-nodes"); if (!body) return;
+        body.replaceChildren();
+        const nodes = Array.isArray(data) ? data : [];
+        if (!nodes.length) { const row = document.createElement("tr"); const empty = cell("No servers are registered.", "kj-empty"); empty.colSpan = 6; row.append(empty); body.append(row); return; }
+        nodes.forEach(node => {
+            let labels = {};
+            try { labels = JSON.parse(node.labels || "{}"); } catch (_) { }
+            const current = Number(node.currentLoad || 0), max = Number(node.maxCapacity || 0);
+            const percentage = max > 0 ? Math.min(100, Math.round(current * 100 / max)) : 0;
+            const row = document.createElement("tr");
+            const server = document.createElement("td"); server.append(Object.assign(document.createElement("div"), { className: "kj-mono", textContent: node.id || "" }), Object.assign(document.createElement("div"), { className: "kj-muted", textContent: node.ipAddress || "" }));
+            const load = document.createElement("div"); load.textContent = `${current} / ${max}`; const bar = document.createElement("div"); bar.className = `kj-load ${percentage >= 90 ? "is-danger" : percentage >= 70 ? "is-warning" : ""}`; const fill = document.createElement("span"); fill.style.width = `${percentage}%`; bar.append(fill); load.append(bar);
+            row.append(server, cell(pill(node.isOffline ? "Offline" : "Online", node.isOffline ? "status-canceled" : "status-succeeded")), cell(load), cell(labelsCell(labels)), cell(window.kubeJobDashboardUtils.safeLocalDateTime(node.lastHeartbeat)));
+            const actions = document.createElement("td"); if (node.isOffline) actions.append(deleteForm(root, String(node.id || ""))); row.append(actions);
+            body.append(row);
+        });
+    };
+})();
+</script>

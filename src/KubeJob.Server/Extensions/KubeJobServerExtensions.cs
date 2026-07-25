@@ -14,6 +14,7 @@ namespace KubeJob.Server.Extensions
         {
             var options = new KubeJobServerOptions();
             configure?.Invoke(options);
+            services.AddSingleton(options);
 
             services.AddSingleton<IServerIdentity, DefaultServerIdentity>();
 

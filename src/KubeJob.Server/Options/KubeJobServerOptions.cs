@@ -25,6 +25,12 @@ namespace KubeJob.Server.Options
         public Action<IServiceCollection>? LockConfigurator { get; set; }
 
         /// <summary>
+        /// Enables the seed endpoint used for demo data injection.
+        /// Should remain disabled outside local demos.
+        /// </summary>
+        public bool EnableSeedEndpoint { get; set; } = false;
+
+        /// <summary>
         /// Configures the KubeJob Server to use In-Memory storage and locking.
         /// Suitable for development or single-node deployments.
         /// </summary>

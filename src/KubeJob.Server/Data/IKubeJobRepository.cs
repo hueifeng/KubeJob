@@ -24,10 +24,20 @@ namespace KubeJob.Server.Data
         Task<List<JobRun>> GetAssignedRunsForNodeAsync(string nodeId);
         Task MarkRunStatusAsync(string runId, JobStatus status, string resultMsg = "", DateTime? startTime = null, DateTime? endTime = null);
         Task<List<JobRun>> GetRecentRunsAsync(int limit = 50);
-        Task<int> GetRunsCountAsync();
+        Task<int> GetRunsCountAsync(JobStatus? status = null);
         Task<JobRun?> GetJobRunAsync(string runId);
         Task<int> GetFailedRunsCountAsync(string batchId, int shardIndex);
-        Task<List<JobRun>> GetRunsPagedAsync(int limit, int offset);
+        Task<List<JobRun>> GetRunsPagedAsync(int limit, int offset, JobStatus? status = null);
+
+        /// <summary>
+        /// Returns the total number of runs for every status, used by the dashboard status tabs.
+        /// </summary>
+        Task<Dictionary<JobStatus, int>> GetRunStatusCountsAsync();
+
+        /// <summary>
+        /// Returns run counts grouped by hour and status since the given UTC timestamp.
+        /// </summary>
+        Task<List<JobRunHistogramBucket>> GetRunHistogramAsync(DateTime sinceUtc);
         Task<int> DeleteOldRunsAsync(DateTime cutoffTime);
         Task<int> CleanupHistoryBySpecLimitsAsync();
         Task UpsertWorkerNodeAsync(WorkerNode node);
