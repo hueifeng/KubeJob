@@ -60,6 +60,38 @@ Open `http://localhost:5041/admin/jobs` for the Dashboard. The unified sample
 continues to use the in-memory store when no `ConnectionStrings__KubeJob`
 setting is supplied, so it remains usable without containers.
 
+## Seed real Dashboard acceptance data
+
+After the unified sample has started, run this in another terminal:
+
+```bash
+bash scripts/seed-dashboard-demo.sh
+```
+
+```powershell
+pwsh scripts/seed-dashboard-demo.ps1
+```
+
+The script submits real jobs through the public `IJobClient`, and the Worker
+claims and executes them normally:
+
+- a successful first Attempt;
+- a transient failure followed by a successful retry;
+- retryable failures that exhaust `MaxAttempts` and become `Dead`;
+- payload validation that becomes a permanent failure;
+- two timed-out Attempts that become `Dead`;
+- a long-running `cancel-me` job for testing cooperative cancellation from the Dashboard.
+
+These are not rows inserted directly into the database. Every Run goes through
+submission, Claim, Attempt, Lease, retry, and Completion behavior, so the batch
+is suitable for validating Jobs, Failures, execution timelines, Worker capacity,
+and cancellation. Failure and timeout scenarios take several seconds to settle;
+the Dashboard pages refresh automatically.
+
+A log platform or distributed tracing backend is not required. Applications may
+optionally use Run IDs, Attempt IDs, or Trace IDs to build links into their own
+observability system, while the KubeJob Dashboard remains independently useful.
+
 To configure another application manually:
 
 ```bash
