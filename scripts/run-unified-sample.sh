@@ -10,6 +10,8 @@ ConnectionStrings__KubeJob="$("$ROOT_DIR/scripts/dev-stack.sh" connection-string
 echo
 echo "Starting the unified sample with PostgreSQL persistence."
 echo "Dashboard: http://localhost:5041/admin/jobs"
+echo "After startup, seed real success/failure/retry/timeout scenarios with:"
+echo "  bash scripts/seed-dashboard-demo.sh"
 echo
 
 exec dotnet run \
