@@ -8,6 +8,7 @@
     var overview = Model.Overview;
     var hasFilters = !string.IsNullOrWhiteSpace(permanentQuery.Queue)
                      || !string.IsNullOrWhiteSpace(permanentQuery.JobKey);
+    var needsReview = permanent.TotalCount + exhausted.TotalCount;
 }
 <meta http-equiv="refresh" content="30">
 
@@ -18,32 +19,57 @@
             Permanent failures cannot be retried automatically. “No retries left” means retryable errors, timeouts, or lost leases exhausted the configured Attempts.
         </div>
     </div>
-    <a asp-action="Runs" class="btn btn-sm btn-outline-secondary">Back to all jobs</a>
+    <a asp-action="Runs" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" class="btn btn-sm btn-outline-secondary">Back to jobs</a>
 </div>
+
+@if (hasFilters)
+{
+    <div class="alert alert-secondary mb-3">
+        Summary counts and both tables reflect the active Queue and Job key filters. Recent one-hour activity is hidden while the view is scoped.
+    </div>
+}
 
 <div class="metric-grid">
     <section class="metric-card">
         <div class="metric-head"><span>Needs review</span><span class="metric-glyph" aria-hidden="true">!</span></div>
-        <div class="metric-value @(overview.FailedRuns + overview.DeadRuns > 0 ? "text-danger" : "")">@(overview.FailedRuns + overview.DeadRuns)</div>
-        <div class="metric-detail"><span>All terminal failures retained by the runtime</span></div>
+        <div class="metric-value @(needsReview > 0 ? "text-danger" : "")">@needsReview</div>
+        <div class="metric-detail"><span>Terminal failures in the current view</span></div>
     </section>
     <section class="metric-card">
         <div class="metric-head"><span>Permanent failures</span><span class="metric-glyph" aria-hidden="true">×</span></div>
-        <div class="metric-value @(overview.FailedRuns > 0 ? "text-danger" : "")">@overview.FailedRuns</div>
+        <div class="metric-value @(permanent.TotalCount > 0 ? "text-danger" : "")">@permanent.TotalCount</div>
         <div class="metric-detail"><span>The handler marked these errors as non-retryable</span></div>
     </section>
     <section class="metric-card">
         <div class="metric-head"><span>No retries left</span><span class="metric-glyph" aria-hidden="true">■</span></div>
-        <div class="metric-value @(overview.DeadRuns > 0 ? "text-danger" : "")">@overview.DeadRuns</div>
+        <div class="metric-value @(exhausted.TotalCount > 0 ? "text-danger" : "")">@exhausted.TotalCount</div>
         <div class="metric-detail"><span>Retryable failures exhausted MaxAttempts</span></div>
     </section>
     <section class="metric-card">
-        <div class="metric-head"><span>Failed in the last hour</span><span class="metric-glyph" aria-hidden="true">◷</span></div>
-        <div class="metric-value @(overview.LastHour.UnsuccessfulRuns > 0 ? "text-danger" : "")">@overview.LastHour.UnsuccessfulRuns</div>
-        <div class="metric-detail">
-            <span><strong>@overview.LastHour.FailedRuns</strong> permanent</span>
-            <span><strong>@overview.LastHour.DeadRuns</strong> exhausted</span>
-        </div>
+        @if (hasFilters)
+        {
+            <div class="metric-head"><span>Current scope</span><span class="metric-glyph" aria-hidden="true">⌕</span></div>
+            <div class="metric-value fs-5">Filtered</div>
+            <div class="metric-detail">
+                @if (!string.IsNullOrWhiteSpace(permanentQuery.Queue))
+                {
+                    <span>Queue <strong>@permanentQuery.Queue</strong></span>
+                }
+                @if (!string.IsNullOrWhiteSpace(permanentQuery.JobKey))
+                {
+                    <span>Job key starts with <strong>@permanentQuery.JobKey</strong></span>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="metric-head"><span>Failed in the last hour</span><span class="metric-glyph" aria-hidden="true">◷</span></div>
+            <div class="metric-value @(overview.LastHour.UnsuccessfulRuns > 0 ? "text-danger" : "")">@overview.LastHour.UnsuccessfulRuns</div>
+            <div class="metric-detail">
+                <span><strong>@overview.LastHour.FailedRuns</strong> permanent</span>
+                <span><strong>@overview.LastHour.DeadRuns</strong> exhausted</span>
+            </div>
+        }
     </section>
 </div>
 
