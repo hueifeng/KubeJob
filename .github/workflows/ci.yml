@@ -26,10 +26,17 @@ jobs:
     - name: Validate local development tooling
       shell: bash
       run: |
-        bash -n scripts/dev-stack.sh scripts/run-unified-sample.sh
+        bash -n \
+          scripts/dev-stack.sh \
+          scripts/run-unified-sample.sh \
+          scripts/seed-dashboard-demo.sh
         docker compose -f compose.yaml config >/dev/null
         pwsh -NoProfile -Command '
-          $files = @("scripts/dev-stack.ps1", "scripts/run-unified-sample.ps1")
+          $files = @(
+            "scripts/dev-stack.ps1",
+            "scripts/run-unified-sample.ps1",
+            "scripts/seed-dashboard-demo.ps1"
+          )
           foreach ($file in $files) {
             $tokens = $null
             $errors = $null
