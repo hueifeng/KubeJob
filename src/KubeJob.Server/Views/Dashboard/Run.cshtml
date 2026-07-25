@@ -144,9 +144,12 @@
                     {
                         JobAttemptPhase.Running => "Running",
                         JobAttemptPhase.Succeeded => "Succeeded",
-                        JobAttemptPhase.Failed => "Failed",
+                        JobAttemptPhase.RetryableFailure => "Failed; retry allowed",
+                        JobAttemptPhase.PermanentFailure => "Permanent failure",
                         JobAttemptPhase.Canceled => "Canceled",
+                        JobAttemptPhase.TimedOut => "Timed out",
                         JobAttemptPhase.LeaseLost => "Worker lease lost",
+                        JobAttemptPhase.Rejected => "Result rejected",
                         _ => attempt.Phase.ToString()
                     };
                     <tr>
