@@ -249,6 +249,7 @@
         .progress-bar { height: 100%; background: var(--primary); border-radius: inherit; }
         .fa-solid { display: inline-block; width: 1.1em; text-align: center; font-style: normal; }
         .fa-cubes-stacked::before { content: "K"; }
+        .fa-code-branch::before { content: "⋈"; }
         .fa-gauge-high::before { content: "◫"; }
         .fa-list-check::before { content: "≡"; }
         .fa-server::before { content: "▤"; }
@@ -309,6 +310,10 @@
         <a asp-controller="Dashboard" asp-action="Workers" class="nav-link @(action == "Workers" ? "active" : "")"
            aria-label="Workers" aria-current="@(action == "Workers" ? "page" : null)" title="Workers">
             <i class="fa-solid fa-server" aria-hidden="true"></i><span class="label">Workers</span>
+        </a>
+        <a asp-controller="Dashboard" asp-action="JobTypes" class="nav-link @(action == "JobTypes" ? "active" : "")"
+           aria-label="Job Types" aria-current="@(action == "JobTypes" ? "page" : null)" title="Job Types">
+            <i class="fa-solid fa-code-branch" aria-hidden="true"></i><span class="label">Job Types</span>
         </a>
         <a asp-controller="Dashboard" asp-action="Schedules" class="nav-link @(action == "Schedules" ? "active" : "")"
            aria-label="Schedules" aria-current="@(action == "Schedules" ? "page" : null)" title="Schedules">

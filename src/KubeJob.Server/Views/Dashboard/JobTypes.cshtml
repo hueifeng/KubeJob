@@ -1,0 +1,105 @@
+@using KubeJob.Core.Runtime
+@model DashboardJobTypesViewModel
+@{
+    ViewData["Title"] = "Job Types";
+}
+<meta http-equiv="refresh" content="15">
+
+<div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
+    <div>
+        <h5 class="mb-1 fw-bold">Job Types</h5>
+        <div class="small text-muted">
+            This catalog is built from Worker capabilities, recent Runs, and configured Schedules. A type with no Ready Worker cannot execute until a matching Worker connects.
+        </div>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>Refresh now</button>
+</div>
+
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Job key</th>
+                    <th>Availability</th>
+                    <th>Workers</th>
+                    <th>Queues</th>
+                    <th>Recent activity</th>
+                    <th>Schedules</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            @if (Model.JobTypes.Count == 0)
+            {
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-5">
+                        <div class="fw-semibold text-dark mb-1">No Job Types have been observed.</div>
+                        <div>Connect a Worker, submit a Run, or create a Schedule to populate this catalog.</div>
+                    </td>
+                </tr>
+            }
+            else
+            {
+                @foreach (var jobType in Model.JobTypes)
+                {
+                    var availabilityClass = jobType.IsAvailable
+                        ? "bg-success-subtle text-success"
+                        : "bg-warning-subtle text-warning-emphasis";
+                    var availabilityText = jobType.IsAvailable
+                        ? "Ready"
+                        : "No ready Worker";
+                    var lastPhaseText = jobType.LastPhase?.ToString() ?? "No recent Run";
+                    <tr>
+                        <td>
+                            <div class="fw-bold mono">@jobType.JobKey</div>
+                            <div class="small text-muted">Stable handler identity; not a Run ID.</div>
+                        </td>
+                        <td><span class="badge @availabilityClass">@availabilityText</span></td>
+                        <td>
+                            <div><strong>@jobType.ReadyWorkerCount</strong> ready / @jobType.WorkerCount total</div>
+                            @if (jobType.WorkerIds.Count > 0)
+                            {
+                                <div class="small text-muted">@string.Join(", ", jobType.WorkerIds)</div>
+                            }
+                        </td>
+                        <td>
+                            @if (jobType.Queues.Count == 0)
+                            {
+                                <span class="text-muted small">None advertised</span>
+                            }
+                            else
+                            {
+                                <div class="d-flex flex-wrap gap-1">
+                                    @foreach (var queue in jobType.Queues)
+                                    {
+                                        <span class="badge bg-light text-dark border">@queue</span>
+                                    }
+                                </div>
+                            }
+                        </td>
+                        <td>
+                            <div><strong>@jobType.RecentRunCount</strong> Run(s)</div>
+                            <div class="small text-muted">@lastPhaseText · last @((jobType.LastRunAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")) ?? "never")</div>
+                            <div class="small text-muted">Recent window: last @Model.RecentRunLimit Runs</div>
+                        </td>
+                        <td>
+                            @if (jobType.ScheduleCount == 0)
+                            {
+                                <span class="text-muted">None</span>
+                            }
+                            else
+                            {
+                                <a asp-action="Schedules" class="text-decoration-none">@jobType.ScheduleCount configured</a>
+                            }
+                        </td>
+                        <td class="text-end">
+                            <a asp-action="Runs" asp-route-jobKey="@jobType.JobKey" class="btn btn-sm btn-outline-primary">View Runs</a>
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

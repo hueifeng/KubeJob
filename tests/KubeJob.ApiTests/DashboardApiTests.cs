@@ -153,6 +153,7 @@ public sealed class DashboardApiTests
         overviewHtml.Should().Contain("Read-only dashboard");
         overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
         overviewHtml.Should().Contain("aria-current=\"page\"");
+        overviewHtml.Should().Contain("Job Types");
         overviewHtml.Should().Contain("Jobs are waiting, but no worker is ready.");
         overviewHtml.Should().Contain("Check workers");
         overviewHtml.Should().Contain("Jobs in progress");
@@ -291,6 +292,17 @@ public sealed class DashboardApiTests
         failedDetailHtml.Should().Contain("smtp_rejected");
         failedDetailHtml.Should().Contain("Failure workbench");
         failedDetailHtml.Should().NotContain("top-secret-value");
+
+        using var jobTypesRequest = CreateAuthorizedRequest("/admin/jobs/job-types");
+        using var jobTypesResponse = await client.SendAsync(jobTypesRequest);
+        var jobTypesHtml = await jobTypesResponse.Content.ReadAsStringAsync();
+
+        jobTypesResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        jobTypesHtml.Should().Contain("Job Types");
+        jobTypesHtml.Should().Contain("mail.send");
+        jobTypesHtml.Should().Contain("Ready");
+        jobTypesHtml.Should().Contain("worker-dashboard");
+        jobTypesHtml.Should().Contain("View Runs");
     }
 
     private static HttpRequestMessage CreateAuthorizedRequest(string uri)

@@ -156,7 +156,76 @@ public sealed class DashboardController : Controller
         var sessions = await _dashboard.GetWorkerSessionsAsync(limit, cancellationToken);
         return View(
             "~/Views/Dashboard/Workers.cshtml",
-            new DashboardWorkersViewModel(sessions, DateTimeOffset.UtcNow, limit));
+                new DashboardWorkersViewModel(sessions, DateTimeOffset.UtcNow, limit));
+    }
+
+    [HttpGet("job-types")]
+    public async Task<IActionResult> JobTypes(CancellationToken cancellationToken)
+    {
+        const int workerLimit = 1000;
+        const int recentRunLimit = 100;
+        var sessions = await _dashboard.GetWorkerSessionsAsync(workerLimit, cancellationToken);
+        var recentRuns = await _dashboard.GetRunsAsync(
+            new DashboardRunQuery(PageSize: recentRunLimit),
+            cancellationToken);
+        var schedules = await _dashboard.GetSchedulesAsync(
+            _options.GetNormalizedMaximumSchedules(),
+            cancellationToken);
+
+        var jobKeys = sessions
+            .SelectMany(session => session.Capabilities)
+            .Concat(recentRuns.Items.Select(run => run.JobKey))
+            .Concat(schedules.Select(schedule => schedule.JobKey))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
+
+        var summaries = jobKeys
+            .Select(jobKey =>
+            {
+                var matchingSessions = sessions
+                    .Where(session => session.Capabilities.Contains(jobKey, StringComparer.Ordinal))
+                    .ToArray();
+                var matchingRuns = recentRuns.Items
+                    .Where(run => string.Equals(run.JobKey, jobKey, StringComparison.Ordinal))
+                    .OrderByDescending(run => run.CreatedAt)
+                    .ToArray();
+                var matchingSchedules = schedules
+                    .Where(schedule => string.Equals(schedule.JobKey, jobKey, StringComparison.Ordinal))
+                    .ToArray();
+
+                return new DashboardJobTypeSummary(
+                    jobKey,
+                    matchingSessions.Select(session => session.WorkerId).Distinct(StringComparer.Ordinal).Count(),
+                    matchingSessions
+                        .Where(session => session.State == WorkerSessionState.Ready)
+                        .Select(session => session.WorkerId)
+                        .Distinct(StringComparer.Ordinal)
+                        .Count(),
+                    matchingSessions
+                        .Select(session => session.WorkerId)
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(workerId => workerId, StringComparer.Ordinal)
+                        .ToArray(),
+                    matchingSessions
+                        .SelectMany(session => session.Queues)
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(queue => queue, StringComparer.Ordinal)
+                        .ToArray(),
+                    matchingRuns.Length,
+                    matchingRuns.FirstOrDefault()?.CreatedAt,
+                    matchingRuns.FirstOrDefault()?.Phase,
+                    matchingSchedules.Length);
+            })
+            .ToArray();
+
+        return View(
+            "~/Views/Dashboard/JobTypes.cshtml",
+            new DashboardJobTypesViewModel(
+                summaries,
+                recentRunLimit,
+                DateTimeOffset.UtcNow));
     }
 
     [HttpGet("schedules")]
