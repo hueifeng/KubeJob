@@ -1,0 +1,181 @@
+@model DashboardFailuresViewModel
+@{
+    ViewData["Title"] = "Failure Workbench";
+    var permanent = Model.PermanentFailures;
+    var exhausted = Model.ExhaustedRetries;
+    var permanentQuery = Model.PermanentFailureQuery;
+    var exhaustedQuery = Model.ExhaustedRetryQuery;
+    var overview = Model.Overview;
+    var hasFilters = !string.IsNullOrWhiteSpace(permanentQuery.Queue)
+                     || !string.IsNullOrWhiteSpace(permanentQuery.JobKey);
+}
+<meta http-equiv="refresh" content="30">
+
+<div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
+    <div>
+        <h5 class="mb-1 fw-bold">Failures that need operator review</h5>
+        <div class="small text-muted">
+            Permanent failures cannot be retried automatically. “No retries left” means retryable errors, timeouts, or lost leases exhausted the configured Attempts.
+        </div>
+    </div>
+    <a asp-action="Runs" class="btn btn-sm btn-outline-secondary">Back to all jobs</a>
+</div>
+
+<div class="metric-grid">
+    <section class="metric-card">
+        <div class="metric-head"><span>Needs review</span><span class="metric-glyph" aria-hidden="true">!</span></div>
+        <div class="metric-value @(overview.FailedRuns + overview.DeadRuns > 0 ? "text-danger" : "")">@(overview.FailedRuns + overview.DeadRuns)</div>
+        <div class="metric-detail"><span>All terminal failures retained by the runtime</span></div>
+    </section>
+    <section class="metric-card">
+        <div class="metric-head"><span>Permanent failures</span><span class="metric-glyph" aria-hidden="true">×</span></div>
+        <div class="metric-value @(overview.FailedRuns > 0 ? "text-danger" : "")">@overview.FailedRuns</div>
+        <div class="metric-detail"><span>The handler marked these errors as non-retryable</span></div>
+    </section>
+    <section class="metric-card">
+        <div class="metric-head"><span>No retries left</span><span class="metric-glyph" aria-hidden="true">■</span></div>
+        <div class="metric-value @(overview.DeadRuns > 0 ? "text-danger" : "")">@overview.DeadRuns</div>
+        <div class="metric-detail"><span>Retryable failures exhausted MaxAttempts</span></div>
+    </section>
+    <section class="metric-card">
+        <div class="metric-head"><span>Failed in the last hour</span><span class="metric-glyph" aria-hidden="true">◷</span></div>
+        <div class="metric-value @(overview.LastHour.UnsuccessfulRuns > 0 ? "text-danger" : "")">@overview.LastHour.UnsuccessfulRuns</div>
+        <div class="metric-detail">
+            <span><strong>@overview.LastHour.FailedRuns</strong> permanent</span>
+            <span><strong>@overview.LastHour.DeadRuns</strong> exhausted</span>
+        </div>
+    </section>
+</div>
+
+<div class="section-header">
+    <form method="get" class="row g-2 align-items-end" aria-label="Filter failures">
+        <div class="col-auto">
+            <label class="form-label small mb-1">Queue</label>
+            <input name="queue" value="@permanentQuery.Queue" class="form-control form-control-sm" placeholder="for example: default" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label small mb-1">Job key starts with</label>
+            <input name="jobKey" value="@permanentQuery.JobKey" class="form-control form-control-sm" placeholder="for example: mail." />
+        </div>
+        <input type="hidden" name="pageSize" value="@permanentQuery.PageSize" />
+        <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1" aria-hidden="true"></i>Apply filters</button></div>
+        @if (hasFilters)
+        {
+            <div class="col-auto"><a asp-action="Failures" asp-route-pageSize="@permanentQuery.PageSize" class="btn btn-sm btn-outline-secondary">Clear</a></div>
+        }
+    </form>
+</div>
+
+<section class="panel mb-4">
+    <div class="panel-header">
+        <div>
+            <h5>Permanent failures</h5>
+            <div class="panel-subtitle">The handler returned PermanentFailure. These jobs will not be retried without a new submission.</div>
+        </div>
+        <span class="badge bg-danger-subtle text-danger">@permanent.TotalCount total</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table mb-0">
+            <thead><tr><th>Job run</th><th>Job type / queue</th><th>Attempts</th><th>Completed / duration</th><th>Failure</th></tr></thead>
+            <tbody>
+            @if (permanent.Items.Count == 0)
+            {
+                <tr><td colspan="5" class="text-center text-muted py-5">
+                    <div class="fw-semibold text-dark mb-1">No permanent failures match this view.</div>
+                    <div>Handlers use this state for errors that should not be retried automatically.</div>
+                </td></tr>
+            }
+            else
+            {
+                @foreach (var run in permanent.Items)
+                {
+                    var duration = run.StartedAt is null || run.CompletedAt is null
+                        ? (TimeSpan?)null
+                        : run.CompletedAt.Value - run.StartedAt.Value;
+                    <tr>
+                        <td><a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none">@run.Id[..Math.Min(12, run.Id.Length)]</a></td>
+                        <td><div class="fw-semibold">@run.JobKey</div><span class="badge bg-light text-dark border">@run.Queue</span></td>
+                        <td>@run.AttemptCount / @run.MaxAttempts</td>
+                        <td class="small text-muted">
+                            <div>@(run.CompletedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "Not completed")</div>
+                            <div>@(duration is null ? "Unknown duration" : $"{duration.Value.TotalSeconds:0.0}s")</div>
+                        </td>
+                        <td>
+                            <div class="text-danger small fw-semibold">@(run.FailureCode ?? "permanent_failure")</div>
+                            <div class="small text-muted text-truncate" style="max-width: 420px" title="@run.FailureMessage">@(run.FailureMessage ?? "No failure message was recorded.")</div>
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
+        <div class="small text-muted">Page @permanent.Page of @(Math.Max(1, permanent.TotalPages))</div>
+        <div class="d-flex gap-2" aria-label="Permanent failure pagination">
+            <a class="btn btn-sm btn-outline-secondary @(permanent.Page <= 1 ? "disabled" : "")"
+               asp-action="Failures" asp-route-failedPage="@(permanent.Page - 1)" asp-route-deadPage="@exhausted.Page"
+               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey">Previous page</a>
+            <a class="btn btn-sm btn-outline-secondary @(permanent.TotalPages == 0 || permanent.Page >= permanent.TotalPages ? "disabled" : "")"
+               asp-action="Failures" asp-route-failedPage="@(permanent.Page + 1)" asp-route-deadPage="@exhausted.Page"
+               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey">Next page</a>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <div>
+            <h5>No retries left</h5>
+            <div class="panel-subtitle">Retryable failures, timeouts, or lost leases reached MaxAttempts and became Dead.</div>
+        </div>
+        <span class="badge bg-dark-subtle text-dark">@exhausted.TotalCount total</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table mb-0">
+            <thead><tr><th>Job run</th><th>Job type / queue</th><th>Attempts</th><th>Completed / duration</th><th>Last failure</th></tr></thead>
+            <tbody>
+            @if (exhausted.Items.Count == 0)
+            {
+                <tr><td colspan="5" class="text-center text-muted py-5">
+                    <div class="fw-semibold text-dark mb-1">No jobs have exhausted their retries.</div>
+                    <div>When retryable errors reach MaxAttempts, they will appear here.</div>
+                </td></tr>
+            }
+            else
+            {
+                @foreach (var run in exhausted.Items)
+                {
+                    var duration = run.StartedAt is null || run.CompletedAt is null
+                        ? (TimeSpan?)null
+                        : run.CompletedAt.Value - run.StartedAt.Value;
+                    <tr>
+                        <td><a asp-action="Run" asp-route-id="@run.Id" class="mono fw-semibold text-decoration-none">@run.Id[..Math.Min(12, run.Id.Length)]</a></td>
+                        <td><div class="fw-semibold">@run.JobKey</div><span class="badge bg-light text-dark border">@run.Queue</span></td>
+                        <td><strong>@run.AttemptCount</strong> / @run.MaxAttempts</td>
+                        <td class="small text-muted">
+                            <div>@(run.CompletedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "Not completed")</div>
+                            <div>@(duration is null ? "Unknown duration" : $"{duration.Value.TotalSeconds:0.0}s")</div>
+                        </td>
+                        <td>
+                            <div class="text-danger small fw-semibold">@(run.FailureCode ?? "attempts_exhausted")</div>
+                            <div class="small text-muted text-truncate" style="max-width: 420px" title="@run.FailureMessage">@(run.FailureMessage ?? "No failure message was recorded.")</div>
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
+        <div class="small text-muted">Page @exhausted.Page of @(Math.Max(1, exhausted.TotalPages))</div>
+        <div class="d-flex gap-2" aria-label="Exhausted retry pagination">
+            <a class="btn btn-sm btn-outline-secondary @(exhausted.Page <= 1 ? "disabled" : "")"
+               asp-action="Failures" asp-route-failedPage="@permanent.Page" asp-route-deadPage="@(exhausted.Page - 1)"
+               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey">Previous page</a>
+            <a class="btn btn-sm btn-outline-secondary @(exhausted.TotalPages == 0 || exhausted.Page >= exhausted.TotalPages ? "disabled" : "")"
+               asp-action="Failures" asp-route-failedPage="@permanent.Page" asp-route-deadPage="@(exhausted.Page + 1)"
+               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey">Next page</a>
+        </div>
+    </div>
+</section>

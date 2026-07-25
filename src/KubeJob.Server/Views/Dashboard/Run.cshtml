@@ -30,7 +30,7 @@
         JobPhase.Pending => "Waiting",
         JobPhase.Running => "Running",
         JobPhase.Succeeded => "Succeeded",
-        JobPhase.Failed => "Failed",
+        JobPhase.Failed => "Permanent failure",
         JobPhase.Canceled => "Canceled",
         JobPhase.Dead => "No retries left",
         _ => run.Phase.ToString()
@@ -44,6 +44,10 @@
         <div class="text-muted small">Job type <strong>@run.JobKey</strong> · queue <strong>@run.Queue</strong></div>
     </div>
     <div class="d-flex align-items-center gap-2">
+        @if (run.Phase is JobPhase.Failed or JobPhase.Dead)
+        {
+            <a asp-action="Failures" class="btn btn-sm btn-outline-danger">Failure workbench</a>
+        }
         <span class="badge @runBadge fs-6" title="KubeJob phase: @run.Phase">@runStatus</span>
         @if (Model.AllowMutatingActions && run.Phase is JobPhase.Pending or JobPhase.Running)
         {
@@ -83,7 +87,11 @@
                 <div class="alert alert-danger mb-0">
                     <strong>Latest error: @run.FailureCode</strong>
                     <div class="mt-1" style="white-space: pre-wrap">@run.FailureMessage</div>
-                    @if (run.Phase == JobPhase.Dead)
+                    @if (run.Phase == JobPhase.Failed)
+                    {
+                        <div class="mt-2 small">The handler marked this as permanent, so KubeJob did not schedule another Attempt.</div>
+                    }
+                    else if (run.Phase == JobPhase.Dead)
                     {
                         <div class="mt-2 small">This job has no retries left. Review the Attempt history before submitting it again.</div>
                     }
@@ -114,6 +122,39 @@
         </div>
     </div>
 </div>
+
+<section class="panel mb-4">
+    <div class="panel-header">
+        <div>
+            <h5>Execution timeline</h5>
+            <div class="panel-subtitle">A chronological view of submission, worker claims, attempt outcomes, and scheduled retries.</div>
+        </div>
+        <span class="badge bg-light text-dark border">@Model.Timeline.Count events</span>
+    </div>
+    <div>
+        @foreach (var item in Model.Timeline)
+        {
+            var marker = item.Tone switch
+            {
+                "success" => "bg-success",
+                "danger" => "bg-danger-subtle text-danger",
+                "warning" => "bg-warning-subtle text-warning-emphasis",
+                "primary" => "bg-primary",
+                _ => "bg-secondary-subtle text-secondary"
+            };
+            <div class="d-flex gap-3 p-3 border-bottom">
+                <div class="small text-muted mono" style="width: 150px; flex: none;">@item.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                <div style="width: 14px; flex: none; padding-top: 4px;">
+                    <span class="badge @marker" style="width: 10px; min-height: 10px; height: 10px; padding: 0;" aria-hidden="true"></span>
+                </div>
+                <div style="min-width: 0;">
+                    <div class="fw-semibold">@item.Title</div>
+                    <div class="small text-muted mt-1" style="white-space: pre-wrap; word-break: break-word;">@item.Detail</div>
+                </div>
+            </div>
+        }
+    </div>
+</section>
 
 <div class="section-header">
     <h5 class="mb-1 fw-bold">Execution attempts</h5>

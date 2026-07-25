@@ -46,9 +46,50 @@ public sealed class DashboardController : Controller
     {
         var query = new DashboardRunQuery(page, pageSize, phase, queue, jobKey).Normalize();
         var runs = await _dashboard.GetRunsAsync(query, cancellationToken);
+        var overview = await _dashboard.GetOverviewAsync(1, cancellationToken);
         return View(
             "~/Views/Dashboard/Runs.cshtml",
-            new DashboardRunsViewModel(runs, query));
+            new DashboardRunsViewModel(runs, query, overview));
+    }
+
+    [HttpGet("failures")]
+    public async Task<IActionResult> Failures(
+        int failedPage = 1,
+        int deadPage = 1,
+        int pageSize = 25,
+        string? queue = null,
+        string? jobKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        var permanentFailureQuery = new DashboardRunQuery(
+            failedPage,
+            pageSize,
+            JobPhase.Failed,
+            queue,
+            jobKey).Normalize();
+        var exhaustedRetryQuery = new DashboardRunQuery(
+            deadPage,
+            pageSize,
+            JobPhase.Dead,
+            queue,
+            jobKey).Normalize();
+
+        var permanentFailures = await _dashboard.GetRunsAsync(
+            permanentFailureQuery,
+            cancellationToken);
+        var exhaustedRetries = await _dashboard.GetRunsAsync(
+            exhaustedRetryQuery,
+            cancellationToken);
+        var overview = await _dashboard.GetOverviewAsync(1, cancellationToken);
+
+        return View(
+            "~/Views/Dashboard/Failures.cshtml",
+            new DashboardFailuresViewModel(
+                permanentFailures,
+                exhaustedRetries,
+                permanentFailureQuery,
+                exhaustedRetryQuery,
+                overview));
     }
 
     [HttpGet("runs/{id}")]
@@ -68,7 +109,7 @@ public sealed class DashboardController : Controller
         var attempts = await _dashboard.GetAttemptSummariesAsync(id, cancellationToken);
         return View(
             "~/Views/Dashboard/Run.cshtml",
-            new DashboardRunDetailsViewModel(
+            DashboardRunDetailsViewModel.Create(
                 run,
                 attempts,
                 _options.ShowPayloads,

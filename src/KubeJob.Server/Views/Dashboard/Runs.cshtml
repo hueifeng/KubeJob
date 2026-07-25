@@ -3,9 +3,20 @@
     ViewData["Title"] = "Jobs";
     var results = Model.Runs;
     var query = Model.Query;
+    var overview = Model.Overview;
     var hasFilters = query.Phase is not null
                      || !string.IsNullOrWhiteSpace(query.Queue)
                      || !string.IsNullOrWhiteSpace(query.JobKey);
+    var totalRuns = overview.PendingRuns
+                    + overview.RunningRuns
+                    + overview.SucceededRuns
+                    + overview.FailedRuns
+                    + overview.CanceledRuns
+                    + overview.DeadRuns;
+
+    string StatusButtonClass(JobPhase? phase) => query.Phase == phase
+        ? "btn-primary"
+        : "btn-outline-secondary";
 }
 <meta http-equiv="refresh" content="30">
 
@@ -17,50 +28,73 @@
                 Each submitted job is one <strong>Run</strong>. A retry creates another <strong>Attempt</strong> under that same Run.
             </div>
         </div>
-        <form method="get" class="row g-2 align-items-end" aria-label="Filter jobs">
-            <div class="col-auto">
-                <label class="form-label small mb-1">Status</label>
-                <select name="phase" class="form-select form-select-sm" title="The underlying KubeJob Run phase">
-                    <option value="">All statuses</option>
-                    @foreach (var phase in Enum.GetValues<JobPhase>())
-                    {
-                        var label = phase switch
-                        {
-                            JobPhase.Pending => "Waiting",
-                            JobPhase.Running => "Running",
-                            JobPhase.Succeeded => "Succeeded",
-                            JobPhase.Failed => "Failed",
-                            JobPhase.Canceled => "Canceled",
-                            JobPhase.Dead => "No retries left",
-                            _ => phase.ToString()
-                        };
-                        if (query.Phase == phase)
-                        {
-                            <option value="@phase" selected>@label</option>
-                        }
-                        else
-                        {
-                            <option value="@phase">@label</option>
-                        }
-                    }
-                </select>
-            </div>
-            <div class="col-auto">
-                <label class="form-label small mb-1">Queue</label>
-                <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="for example: default" />
-            </div>
-            <div class="col-auto">
-                <label class="form-label small mb-1">Job key starts with</label>
-                <input name="jobKey" value="@query.JobKey" class="form-control form-control-sm" placeholder="for example: mail." />
-            </div>
-            <input type="hidden" name="pageSize" value="@query.PageSize" />
-            <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1" aria-hidden="true"></i>Apply filters</button></div>
-            @if (hasFilters)
-            {
-                <div class="col-auto"><a asp-action="Runs" asp-route-pageSize="@query.PageSize" class="btn btn-sm btn-outline-secondary">Clear</a></div>
-            }
-        </form>
+        <div class="d-flex flex-wrap gap-2">
+            <a asp-action="Failures" class="btn btn-sm btn-outline-danger">
+                Review failures <span class="badge bg-danger-subtle text-danger ms-1">@(overview.FailedRuns + overview.DeadRuns)</span>
+            </a>
+        </div>
     </div>
+</div>
+
+<div class="d-flex flex-wrap gap-2 mb-3" aria-label="Filter jobs by status">
+    <a asp-action="Runs" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(null)">All <span class="badge bg-light text-dark ms-1">@totalRuns</span></a>
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Pending" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(JobPhase.Pending)">Waiting <span class="badge bg-warning-subtle text-warning-emphasis ms-1">@overview.PendingRuns</span></a>
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Running" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(JobPhase.Running)">Running <span class="badge bg-primary-subtle text-primary ms-1">@overview.RunningRuns</span></a>
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Failed" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(JobPhase.Failed)">Permanent failures <span class="badge bg-danger-subtle text-danger ms-1">@overview.FailedRuns</span></a>
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Dead" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(JobPhase.Dead)">No retries left <span class="badge bg-dark-subtle text-dark ms-1">@overview.DeadRuns</span></a>
+    <a asp-action="Runs" asp-route-phase="@JobPhase.Succeeded" asp-route-pageSize="@query.PageSize" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey"
+       class="btn btn-sm @StatusButtonClass(JobPhase.Succeeded)">Succeeded <span class="badge bg-success-subtle text-success ms-1">@overview.SucceededRuns</span></a>
+</div>
+
+<div class="section-header">
+    <form method="get" class="row g-2 align-items-end" aria-label="Filter jobs">
+        <div class="col-auto">
+            <label class="form-label small mb-1">Status</label>
+            <select name="phase" class="form-select form-select-sm" title="The underlying KubeJob Run phase">
+                <option value="">All statuses</option>
+                @foreach (var phase in Enum.GetValues<JobPhase>())
+                {
+                    var label = phase switch
+                    {
+                        JobPhase.Pending => "Waiting",
+                        JobPhase.Running => "Running",
+                        JobPhase.Succeeded => "Succeeded",
+                        JobPhase.Failed => "Permanent failure",
+                        JobPhase.Canceled => "Canceled",
+                        JobPhase.Dead => "No retries left",
+                        _ => phase.ToString()
+                    };
+                    if (query.Phase == phase)
+                    {
+                        <option value="@phase" selected>@label</option>
+                    }
+                    else
+                    {
+                        <option value="@phase">@label</option>
+                    }
+                }
+            </select>
+        </div>
+        <div class="col-auto">
+            <label class="form-label small mb-1">Queue</label>
+            <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="for example: default" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label small mb-1">Job key starts with</label>
+            <input name="jobKey" value="@query.JobKey" class="form-control form-control-sm" placeholder="for example: mail." />
+        </div>
+        <input type="hidden" name="pageSize" value="@query.PageSize" />
+        <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1" aria-hidden="true"></i>Apply filters</button></div>
+        @if (hasFilters)
+        {
+            <div class="col-auto"><a asp-action="Runs" asp-route-pageSize="@query.PageSize" class="btn btn-sm btn-outline-secondary">Clear</a></div>
+        }
+    </form>
 </div>
 
 <div class="table-card">
@@ -103,7 +137,7 @@
                         JobPhase.Pending => "Waiting",
                         JobPhase.Running => "Running",
                         JobPhase.Succeeded => "Succeeded",
-                        JobPhase.Failed => "Failed",
+                        JobPhase.Failed => "Permanent failure",
                         JobPhase.Canceled => "Canceled",
                         JobPhase.Dead => "No retries left",
                         _ => run.Phase.ToString()

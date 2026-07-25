@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using FluentAssertions;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
 using KubeJob.Server.Runtime;
@@ -51,7 +52,7 @@ public sealed class DashboardApiTests
         await app.StartAsync();
 
         var store = app.Services.GetRequiredService<InMemoryJobRuntimeStore>();
-        var run = (await store.SubmitAsync(
+        var permanentRun = (await store.SubmitAsync(
             new SubmitJobCommand(
                 "mail.send",
                 "{\"apiKey\":\"top-secret-value\"}",
@@ -88,17 +89,124 @@ public sealed class DashboardApiTests
         overviewHtml.Should().NotContain("cdn.jsdelivr.net");
         overviewHtml.Should().NotContain("cdnjs.cloudflare.com");
 
-        using var detailRequest = CreateAuthorizedRequest($"/admin/jobs/runs/{run.Id}");
-        using var detailResponse = await client.SendAsync(detailRequest);
-        var detailHtml = await detailResponse.Content.ReadAsStringAsync();
+        using var initialDetailRequest = CreateAuthorizedRequest($"/admin/jobs/runs/{permanentRun.Id}");
+        using var initialDetailResponse = await client.SendAsync(initialDetailRequest);
+        var initialDetailHtml = await initialDetailResponse.Content.ReadAsStringAsync();
 
-        detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-        detailHtml.Should().Contain("Job Details");
-        detailHtml.Should().Contain("A Run is one logical job");
-        detailHtml.Should().Contain("Payload display is disabled");
-        detailHtml.Should().NotContain("top-secret-value");
-        detailHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
-        detailHtml.Should().NotContain("Request cancellation");
+        initialDetailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        initialDetailHtml.Should().Contain("Job Details");
+        initialDetailHtml.Should().Contain("A Run is one logical job");
+        initialDetailHtml.Should().Contain("Execution timeline");
+        initialDetailHtml.Should().Contain("Job submitted");
+        initialDetailHtml.Should().Contain("Payload display is disabled");
+        initialDetailHtml.Should().NotContain("top-secret-value");
+        initialDetailHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+        initialDetailHtml.Should().NotContain("Request cancellation");
+
+        var exhaustedRun = (await store.SubmitAsync(
+            new SubmitJobCommand(
+                "mail.send",
+                "{}",
+                "mail",
+                0,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                1,
+                60),
+            CancellationToken.None)).Run;
+        var session = await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "worker-dashboard",
+                "session-dashboard",
+                "test",
+                "localhost",
+                2,
+                new[] { "mail" },
+                new[] { "mail.send" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        var claims = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                session.WorkerId,
+                session.SessionId,
+                session.Epoch,
+                2,
+                new[] { "mail" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+        var permanentClaim = claims.Single(item => item.RunId == permanentRun.Id);
+        var exhaustedClaim = claims.Single(item => item.RunId == exhaustedRun.Id);
+
+        var permanentCompletion = await store.CompleteAsync(
+            new CompleteAttemptRequest(
+                session.WorkerId,
+                session.SessionId,
+                session.Epoch,
+                permanentClaim.RunId,
+                permanentClaim.AttemptId,
+                permanentClaim.AttemptNumber,
+                permanentClaim.LeaseToken,
+                JobAttemptOutcome.PermanentFailure,
+                "smtp_rejected",
+                "The recipient was rejected."),
+            TimeSpan.Zero,
+            CancellationToken.None);
+        var exhaustedCompletion = await store.CompleteAsync(
+            new CompleteAttemptRequest(
+                session.WorkerId,
+                session.SessionId,
+                session.Epoch,
+                exhaustedClaim.RunId,
+                exhaustedClaim.AttemptId,
+                exhaustedClaim.AttemptNumber,
+                exhaustedClaim.LeaseToken,
+                JobAttemptOutcome.RetryableFailure,
+                "socket_timeout",
+                "The upstream service did not respond."),
+            TimeSpan.Zero,
+            CancellationToken.None);
+
+        permanentCompletion.Phase.Should().Be(JobPhase.Failed);
+        exhaustedCompletion.Phase.Should().Be(JobPhase.Dead);
+
+        using var jobsRequest = CreateAuthorizedRequest("/admin/jobs/runs");
+        using var jobsResponse = await client.SendAsync(jobsRequest);
+        var jobsHtml = await jobsResponse.Content.ReadAsStringAsync();
+
+        jobsResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        jobsHtml.Should().Contain("Review failures");
+        jobsHtml.Should().Contain("Permanent failures");
+        jobsHtml.Should().Contain("No retries left");
+        jobsHtml.Should().Contain("smtp_rejected");
+        jobsHtml.Should().Contain("socket_timeout");
+
+        using var failuresRequest = CreateAuthorizedRequest("/admin/jobs/failures");
+        using var failuresResponse = await client.SendAsync(failuresRequest);
+        var failuresHtml = await failuresResponse.Content.ReadAsStringAsync();
+
+        failuresResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        failuresHtml.Should().Contain("Failure Workbench");
+        failuresHtml.Should().Contain("Permanent failures");
+        failuresHtml.Should().Contain("No retries left");
+        failuresHtml.Should().Contain("smtp_rejected");
+        failuresHtml.Should().Contain("socket_timeout");
+        failuresHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+        failuresHtml.Should().NotContain("top-secret-value");
+
+        using var failedDetailRequest = CreateAuthorizedRequest($"/admin/jobs/runs/{permanentRun.Id}");
+        using var failedDetailResponse = await client.SendAsync(failedDetailRequest);
+        var failedDetailHtml = await failedDetailResponse.Content.ReadAsStringAsync();
+
+        failedDetailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        failedDetailHtml.Should().Contain("Execution timeline");
+        failedDetailHtml.Should().Contain("Attempt 1 claimed");
+        failedDetailHtml.Should().Contain("Attempt 1 permanently failed");
+        failedDetailHtml.Should().Contain("smtp_rejected");
+        failedDetailHtml.Should().Contain("Failure workbench");
+        failedDetailHtml.Should().NotContain("top-secret-value");
     }
 
     private static HttpRequestMessage CreateAuthorizedRequest(string uri)
