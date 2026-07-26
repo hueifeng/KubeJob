@@ -1,19 +1,19 @@
 @using KubeJob.Core.Runtime
 @model DashboardJobTypesViewModel
 @{
-    ViewData["Title"] = "Job Types";
+    ViewData["Title"] = "Job keys";
 }
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-        <h5 class="mb-1 fw-bold">Observed Job Types</h5>
+        <h2 class="mb-1 fw-bold">Observed job keys</h2>
         <div class="small text-muted">
-            This live catalog is observed from Worker capabilities, recent Runs, and configured Schedules. It is not a permanent registry; a type with no Ready Worker cannot execute until a matching Worker connects.
+            This live catalog is observed from Worker capabilities, recent Runs, and configured Schedules. It is not a permanent registry; a key with no Ready Worker cannot execute until a matching Worker connects.
         </div>
     </div>
-    <a class="btn btn-sm btn-outline-secondary" href="@Context.Request.Path@Context.Request.QueryString"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>Refresh now</a>
 </div>
 
 <div class="table-card">
+    <div class="table-scroll-hint">Scroll sideways to see worker coverage, activity, and schedules →</div>
     <div class="table-responsive">
         <table class="table table-hover mb-0">
             <thead>
@@ -32,7 +32,7 @@
             {
                 <tr>
                     <td colspan="7" class="text-center text-muted py-5">
-                        <div class="fw-semibold text-dark mb-1">No Job Types have been observed.</div>
+                        <div class="fw-semibold text-dark mb-1">No job keys have been observed.</div>
                         <div>Connect a Worker, submit a Run, or create a Schedule to populate this observation view.</div>
                     </td>
                 </tr>

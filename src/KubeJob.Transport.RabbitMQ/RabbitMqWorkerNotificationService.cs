@@ -1,4 +1,5 @@
 using KubeJob.Worker.Options;
+using KubeJob.Worker.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,18 +12,18 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
 {
     private readonly RabbitMqNotificationOptions _rabbitMq;
     private readonly KubeJobWorkerOptions _worker;
-    private readonly WorkerWakeSignal _signal;
+    private readonly IWorkerClaimTriggerSource _claimTrigger;
     private readonly ILogger<RabbitMqWorkerNotificationService> _logger;
 
     public RabbitMqWorkerNotificationService(
         IOptions<RabbitMqNotificationOptions> rabbitMq,
         IOptions<KubeJobWorkerOptions> worker,
-        WorkerWakeSignal signal,
+        IWorkerClaimTriggerSource claimTrigger,
         ILogger<RabbitMqWorkerNotificationService> logger)
     {
         _rabbitMq = rabbitMq.Value;
         _worker = worker.Value;
-        _signal = signal;
+        _claimTrigger = claimTrigger;
         _logger = logger;
         _rabbitMq.Validate();
         _worker.Validate();
@@ -67,37 +68,44 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
             autoDelete: false,
             arguments: null);
 
-        var declared = channel.QueueDeclare(
-            queue: string.Empty,
-            durable: false,
-            exclusive: true,
-            autoDelete: true,
-            arguments: null);
+        channel.BasicQos(
+            prefetchSize: 0,
+            prefetchCount: 1,
+            global: false);
 
-        foreach (var queue in _worker.Queues)
+        foreach (var logicalQueue in _worker.Queues)
         {
-            channel.QueueBind(
-                queue: declared.QueueName,
-                exchange: _rabbitMq.ExchangeName,
-                routingKey: queue,
+            var consumerQueue = _rabbitMq.GetConsumerQueueName(logicalQueue);
+            channel.QueueDeclare(
+                queue: consumerQueue,
+                durable: false,
+                exclusive: false,
+                autoDelete: true,
                 arguments: null);
+            channel.QueueBind(
+                queue: consumerQueue,
+                exchange: _rabbitMq.ExchangeName,
+                routingKey: logicalQueue,
+                arguments: null);
+
+            var consumer = new AsyncEventingBasicConsumer(channel);
+            consumer.Received += (_, delivery) =>
+            {
+                _claimTrigger.Pulse();
+                channel.BasicAck(delivery.DeliveryTag, multiple: false);
+                return Task.CompletedTask;
+            };
+
+            channel.BasicConsume(
+                queue: consumerQueue,
+                autoAck: false,
+                consumer: consumer);
         }
 
-        var consumer = new AsyncEventingBasicConsumer(channel);
-        consumer.Received += (_, _) =>
-        {
-            _signal.Pulse();
-            return Task.CompletedTask;
-        };
-
-        channel.BasicConsume(
-            queue: declared.QueueName,
-            autoAck: true,
-            consumer: consumer);
-
         _logger.LogInformation(
-            "RabbitMQ KubeJob notifications active for worker {WorkerId} and queues {Queues}",
+            "RabbitMQ KubeJob notifications active for worker {WorkerId}, group {ConsumerGroup}, and queues {Queues}",
             _worker.WorkerId,
+            _rabbitMq.ConsumerGroup,
             string.Join(",", _worker.Queues));
 
         await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);

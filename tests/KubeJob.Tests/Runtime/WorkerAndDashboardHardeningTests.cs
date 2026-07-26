@@ -74,10 +74,12 @@ public sealed class WorkerAndDashboardHardeningTests
             LeaseRenewalInterval = TimeSpan.FromMilliseconds(20),
             DrainTimeout = TimeSpan.Zero
         });
+        using var claimTrigger = new WorkerClaimTrigger();
         using var worker = new WorkerRuntimeService(
             services.GetRequiredService<IServiceScopeFactory>(),
             registry,
             runtime,
+            claimTrigger,
             options,
             NullLogger<WorkerRuntimeService>.Instance);
 
@@ -295,6 +297,11 @@ public sealed class WorkerAndDashboardHardeningTests
             ClaimJobsRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(
             new ClaimJobsResponse(Array.Empty<ClaimedJob>()));
+
+        public ValueTask<AdmitExecutionResponse> AdmitAsync(
+            AdmitExecutionRequest request,
+            CancellationToken cancellationToken) => ValueTask.FromResult(
+            new AdmitExecutionResponse(ExecutionAdmissionStatus.Retry));
 
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
             RenewLeasesRequest request,

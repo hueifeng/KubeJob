@@ -176,7 +176,8 @@ public sealed record DashboardSchedulesViewModel(
     bool AllowMutatingActions,
     int MaximumItems,
     DashboardScheduleCreateForm CreateForm,
-    bool ShowCreateForm);
+    bool ShowCreateForm,
+    IReadOnlyList<string> ReadyJobKeys);
 
 public sealed class DashboardScheduleCreateForm
 {

@@ -1,5 +1,6 @@
 using System.Text;
-using KubeJob.Server.Runtime;
+using System.Text.Json;
+using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 
@@ -23,13 +24,16 @@ public sealed class RabbitMqWorkAvailableNotifier : IWorkAvailableNotifier, IDis
     }
 
     public ValueTask PublishAsync(
-        string queue,
-        string payloadJson,
+        WorkAvailableSignal signal,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ArgumentException.ThrowIfNullOrWhiteSpace(queue);
-        ArgumentException.ThrowIfNullOrWhiteSpace(payloadJson);
+        ArgumentNullException.ThrowIfNull(signal);
+        if (Encoding.UTF8.GetByteCount(signal.Queue) >= 255)
+        {
+            throw new InvalidOperationException(
+                "RabbitMQ routing keys must be shorter than 255 UTF-8 bytes.");
+        }
 
         lock (_gate)
         {
@@ -43,10 +47,17 @@ public sealed class RabbitMqWorkAvailableNotifier : IWorkAvailableNotifier, IDis
 
                 channel.BasicPublish(
                     exchange: _options.ExchangeName,
-                    routingKey: queue,
+                    routingKey: signal.Queue,
                     mandatory: false,
                     basicProperties: properties,
-                    body: Encoding.UTF8.GetBytes(payloadJson));
+                    body: Encoding.UTF8.GetBytes(JsonSerializer.Serialize(signal)));
+
+                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                {
+                    throw new IOException(
+                        $"RabbitMQ did not confirm KubeJob signal '{signal.EventId}' " +
+                        $"within {_options.PublisherConfirmTimeout}.");
+                }
             }
             catch
             {
@@ -89,6 +100,7 @@ public sealed class RabbitMqWorkAvailableNotifier : IWorkAvailableNotifier, IDis
             durable: true,
             autoDelete: false,
             arguments: null);
+        _channel.ConfirmSelect();
         return _channel;
     }
 

@@ -120,6 +120,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         string scheduleId,
         bool enabled,
         DateTimeOffset? nextFireAt,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -131,12 +132,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 ClaimUntil = NULL,
                 UpdatedAt = clock_timestamp(),
                 Version = Version + 1
-            WHERE Id = @ScheduleId;",
+            WHERE Id = @ScheduleId
+              AND (@ExpectedVersion IS NULL OR Version = @ExpectedVersion);",
             new
             {
                 ScheduleId = scheduleId,
                 Enabled = enabled,
-                NextFireAt = nextFireAt?.ToUniversalTime()
+                NextFireAt = nextFireAt?.ToUniversalTime(),
+                ExpectedVersion = expectedVersion
             },
             cancellationToken: cancellationToken));
         return affected > 0;
@@ -144,12 +147,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     public async ValueTask<bool> DeleteAsync(
         string scheduleId,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return await connection.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM Kj2_JobSchedules WHERE Id = @ScheduleId;",
-            new { ScheduleId = scheduleId },
+            "DELETE FROM Kj2_JobSchedules WHERE Id = @ScheduleId AND (@ExpectedVersion IS NULL OR Version = @ExpectedVersion);",
+            new { ScheduleId = scheduleId, ExpectedVersion = expectedVersion },
             cancellationToken: cancellationToken)) > 0;
     }
 

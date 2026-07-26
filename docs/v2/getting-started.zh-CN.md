@@ -207,7 +207,8 @@ builder.Services.UseRabbitMqKubeJobNotifications(options =>
 
 远程 Worker 可使用 `AddRabbitMqKubeJobWorkerNotifications`。RabbitMQ 消息只表示“某个
 Queue 可能有工作”，Worker 收到后仍然执行数据库 Claim。重复消息只会多一次 Claim，消息
-丢失则由周期性 Pull 兜底。
+丢失则由周期性 Pull 兜底。同一 `ConsumerGroup` 中的 Worker 竞争消费提示，避免每个
+Worker 都被同时唤醒并请求数据库。
 
 ## 9. 交付保证
 

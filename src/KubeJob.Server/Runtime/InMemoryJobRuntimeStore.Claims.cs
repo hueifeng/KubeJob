@@ -128,6 +128,7 @@ public sealed partial class InMemoryJobRuntimeStore
             var allowedCapabilities = request.Capabilities
                 .Where(registeredCapabilities.Contains)
                 .ToHashSet(StringComparer.Ordinal);
+            var requestedRunIds = request.RunIds?.ToHashSet(StringComparer.Ordinal);
 
             var running = CountRunningAttempts(request.WorkerId, request.SessionId, request.SessionEpoch);
             var serverAvailable = Math.Max(0, session.MaxConcurrency - running);
@@ -135,7 +136,10 @@ public sealed partial class InMemoryJobRuntimeStore
             var claimCount = Math.Min(
                 Math.Min(reportedAvailable, serverAvailable),
                 Math.Max(maxBatchSize, 0));
-            if (claimCount == 0 || allowedQueues.Count == 0 || allowedCapabilities.Count == 0)
+            if (claimCount == 0
+                || allowedQueues.Count == 0
+                || allowedCapabilities.Count == 0
+                || requestedRunIds is { Count: 0 })
             {
                 session.AvailableSlots = serverAvailable;
                 return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(Array.Empty<ClaimedJob>());
@@ -148,6 +152,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 .Where(run => run.AvailableAt <= now)
                 .Where(run => allowedQueues.Contains(run.Queue))
                 .Where(run => allowedCapabilities.Contains(run.JobKey))
+                .Where(run => requestedRunIds is null || requestedRunIds.Contains(run.Id))
                 .OrderByDescending(run => run.Priority)
                 .ThenBy(run => run.AvailableAt)
                 .ThenBy(run => run.CreatedAt)

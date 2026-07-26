@@ -58,6 +58,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "KubeJob schedule reconciliation iteration failed");
+                await Task.Delay(_options.ScheduleFailureDelay, stoppingToken);
             }
         }
     }

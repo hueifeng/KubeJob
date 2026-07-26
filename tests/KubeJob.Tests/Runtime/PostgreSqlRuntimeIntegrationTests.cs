@@ -189,6 +189,96 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Stale_outbox_failure_cannot_overwrite_reclaimed_message()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        await store.SubmitAsync(NewSubmission(), CancellationToken.None);
+        var first = (await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(100),
+            1,
+            CancellationToken.None)).Single();
+        var firstClaimToken = first.ClaimToken!;
+
+        await Task.Delay(150);
+        var second = (await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(30),
+            1,
+            CancellationToken.None)).Single();
+
+        await store.MarkFailedAsync(
+            new OutboxFailure(
+                second.Id,
+                firstClaimToken,
+                "stale publisher",
+                DateTimeOffset.UtcNow.AddSeconds(-1)),
+            CancellationToken.None);
+
+        var beforeCurrentLeaseExpiry = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(30),
+            1,
+            CancellationToken.None);
+
+        beforeCurrentLeaseExpiry.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Batch_outbox_publication_requires_each_matching_claim_token()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        await store.SubmitAsync(NewSubmission(idempotencyKey: "outbox-batch:one"), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(idempotencyKey: "outbox-batch:two"), CancellationToken.None);
+        var claimed = (await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None)).ToArray();
+
+        await store.MarkPublishedAsync(
+            new[]
+            {
+                new OutboxPublication(claimed[0].Id, claimed[0].ClaimToken!),
+                new OutboxPublication(claimed[1].Id, "wrong-token")
+            },
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        var reclaimed = await store.ClaimPendingAsync(
+            claimed[1].AvailableAt.AddMilliseconds(1),
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        reclaimed.Should().ContainSingle(message => message.Id == claimed[1].Id);
+    }
+
+    [Fact]
+    public async Task Targeted_claim_admits_only_the_requested_run()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var target = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "targeted:postgres"),
+            CancellationToken.None)).Run;
+        await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "other:postgres"),
+            CancellationToken.None);
+        var worker = await RegisterAsync(store, "targeted-worker", "targeted-session");
+
+        var claimed = await store.ClaimAsync(
+            Claim(worker) with { RunIds = new[] { target.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+
+        claimed.Should().ContainSingle(job => job.RunId == target.Id);
+    }
+
+    [Fact]
     public async Task Concurrent_idempotent_submission_returns_one_logical_run()
     {
         if (!Enabled) return;

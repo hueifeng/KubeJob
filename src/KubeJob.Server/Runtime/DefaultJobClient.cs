@@ -1,6 +1,8 @@
 using System.Text.Json;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
+using KubeJob.Core.Runtime;
+using KubeJob.Server.ControlPlane;
 
 namespace KubeJob.Server.Runtime;
 
@@ -8,15 +10,11 @@ public sealed class DefaultJobClient : IJobClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
-    private readonly IJobSubmissionStore _submissionStore;
-    private readonly IJobQueryStore _queryStore;
+    private readonly JobControlPlane _controlPlane;
 
-    public DefaultJobClient(
-        IJobSubmissionStore submissionStore,
-        IJobQueryStore queryStore)
+    public DefaultJobClient(JobControlPlane controlPlane)
     {
-        _submissionStore = submissionStore;
-        _queryStore = queryStore;
+        _controlPlane = controlPlane;
     }
 
     public ValueTask<JobHandle> EnqueueAsync<TPayload>(
@@ -42,23 +40,21 @@ public sealed class DefaultJobClient : IJobClient
         }
 
         var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
-        var availableAt = (options.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime();
         var timeoutSeconds = checked((int)Math.Ceiling(options.Timeout.TotalSeconds));
-
-        var result = await _submissionStore.SubmitAsync(
-            new SubmitJobCommand(
+        var receipt = await _controlPlane.SubmitAsync(
+            new EnqueueJobRequest(
                 job.Value,
                 payloadJson,
                 options.Queue,
                 options.Priority,
-                availableAt,
+                options.NotBefore?.ToUniversalTime(),
                 options.IdempotencyKey,
                 options.ConcurrencyKey,
                 options.MaxAttempts,
                 timeoutSeconds),
             cancellationToken);
 
-        return new JobHandle(result.Run.Id);
+        return receipt.Handle;
     }
 
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(
@@ -67,22 +63,7 @@ public sealed class DefaultJobClient : IJobClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
 
-        var run = await _queryStore.GetRunAsync(jobId, cancellationToken);
-        if (run is null)
-        {
-            return null;
-        }
-
-        return new JobStatusSnapshot(
-            run.Id,
-            run.Phase,
-            run.AttemptCount,
-            run.CreatedAt,
-            run.StartedAt,
-            run.CompletedAt,
-            run.CurrentWorkerId,
-            run.FailureCode,
-            run.FailureMessage);
+        return await _controlPlane.GetStatusAsync(jobId, cancellationToken);
     }
 
     public ValueTask<bool> CancelAsync(
@@ -91,6 +72,6 @@ public sealed class DefaultJobClient : IJobClient
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
-        return _submissionStore.RequestCancelAsync(jobId, reason, cancellationToken);
+        return _controlPlane.RequestCancelAsync(jobId, reason, cancellationToken);
     }
 }

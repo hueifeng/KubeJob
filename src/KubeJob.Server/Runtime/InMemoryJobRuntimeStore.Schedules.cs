@@ -68,12 +68,14 @@ public sealed partial class InMemoryJobRuntimeStore
         string scheduleId,
         bool enabled,
         DateTimeOffset? nextFireAt,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (!_schedules.TryGetValue(scheduleId, out var schedule))
+            if (!_schedules.TryGetValue(scheduleId, out var schedule)
+                || (expectedVersion is not null && schedule.Version != expectedVersion))
             {
                 return ValueTask.FromResult(false);
             }
@@ -93,11 +95,18 @@ public sealed partial class InMemoryJobRuntimeStore
 
     public ValueTask<bool> DeleteAsync(
         string scheduleId,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
+            if (!_schedules.TryGetValue(scheduleId, out var schedule)
+                || (expectedVersion is not null && schedule.Version != expectedVersion))
+            {
+                return ValueTask.FromResult(false);
+            }
+
             return ValueTask.FromResult(_schedules.Remove(scheduleId));
         }
     }

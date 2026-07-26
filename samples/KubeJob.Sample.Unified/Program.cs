@@ -1,14 +1,17 @@
 using KubeJob;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
+using KubeJob.Core.Runtime;
 using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Sample.Unified.Jobs;
 using KubeJob.Server.Extensions;
 using KubeJob.Storage.PostgreSQL.Extensions;
+using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 var postgresConnectionString = builder.Configuration.GetConnectionString("KubeJob");
+var rabbitMqConnectionString = builder.Configuration.GetConnectionString("RabbitMQ");
 
 builder.Services.AddKubeJobHandler<SampleDataJob, SampleDataPayload>();
 builder.Services.AddKubeJobHandler<DashboardDemoJob, DashboardDemoPayload>();
@@ -40,6 +43,27 @@ builder.Services.AddKubeJobDashboard(options =>
     // long-running demo job useful for exercising cooperative cancellation.
     options.AllowMutatingActions = true;
 });
+
+if (!string.IsNullOrWhiteSpace(rabbitMqConnectionString))
+{
+    builder.Services.ConfigureKubeJobQueueRouting(options =>
+    {
+        // The sample keeps routing deployment-owned: business callers still
+        // submit only a logical queue and cannot select RabbitMQ per Run.
+        options.QueueProfiles["default"] = ExecutionDeliveryProfile.BrokerDispatch;
+        options.QueueProfiles["samples"] = ExecutionDeliveryProfile.BrokerDispatch;
+    });
+
+    void ConfigureRabbitMq(RabbitMqExecutionOptions options)
+    {
+        options.ConnectionString = rabbitMqConnectionString;
+        options.ConsumerGroup = "unified-sample";
+        options.PrefetchCount = 10;
+    }
+
+    builder.Services.UseRabbitMqKubeJobExecutionDispatcher(ConfigureRabbitMq);
+    builder.Services.AddRabbitMqKubeJobExecutionConsumer(ConfigureRabbitMq);
+}
 
 var app = builder.Build();
 if (!string.IsNullOrWhiteSpace(postgresConnectionString))

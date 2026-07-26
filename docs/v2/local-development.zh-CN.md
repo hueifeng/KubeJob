@@ -91,8 +91,17 @@ export ConnectionStrings__KubeJob="$(bash scripts/dev-stack.sh connection-string
 dotnet run --project path/to/your-app.csproj
 ```
 
-RabbitMQ 仍然是可选加速层。配置 `UseRabbitMqKubeJobNotifications` 和
-`AddRabbitMqKubeJobWorkerNotifications` 时，使用开发栈输出的 AMQP 地址即可。
+RabbitMQ 仍然是可选加速层。统一示例通过 `ConnectionStrings__RabbitMQ` 启用
+`default` 与 `samples` 队列的 BrokerDispatch，并启动 RabbitMQ Execution Consumer：
+
+```bash
+export ConnectionStrings__RabbitMQ='amqp://kubejob:kubejob-dev@localhost:5672/'
+bash scripts/run-unified-sample.sh
+```
+
+启动后，RabbitMQ 管理页面会出现 `kubejob.execution` exchange，以及按
+`unified-sample` Consumer Group 和逻辑队列创建的持久化队列。未配置该连接串时，
+统一示例仍使用默认 Pull 模式，不依赖 RabbitMQ。
 
 ## 常用操作
 

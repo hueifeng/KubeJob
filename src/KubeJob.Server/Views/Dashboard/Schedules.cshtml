@@ -27,12 +27,16 @@
         .schedule-dialog-close { min-width: 32px; padding: 4px 8px; font-size: 18px; line-height: 1; }
         .schedule-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
         .schedule-help { color: var(--muted); font-size: 12px; line-height: 1.45; }
+        .schedule-preview { padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
+        .schedule-preview-title { font-size: 12px; font-weight: 700; }
+        .schedule-preview-list { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+        .schedule-preview-error { color: var(--danger); }
     </style>
 }
 
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-        <h5 class="mb-1 fw-bold">Recurring jobs</h5>
+        <h2 class="mb-1 fw-bold">Recurring jobs</h2>
         <div class="small text-muted">
             A Schedule creates a new job Run whenever its cron expression is due. Time zone, missed-run behavior, retries, and overlap rules belong to the Schedule.
             Showing up to @Model.MaximumItems schedules.
@@ -59,7 +63,7 @@
     <dialog id="create-schedule-dialog" class="schedule-dialog" data-open="@(Model.ShowCreateForm ? "true" : "false")" aria-labelledby="create-schedule-title">
         <div class="schedule-dialog-header">
             <div>
-                <h5 id="create-schedule-title" class="mb-1 fw-bold">New recurring job</h5>
+                <h2 id="create-schedule-title" class="mb-1 fw-bold">New recurring job</h2>
                 <div class="schedule-help">
                     Create a Schedule that emits a new Run when its Cron expression is due. The Job key identifies the registered handler; it is not a Run ID.
                 </div>
@@ -77,13 +81,27 @@
                 </div>
                 <div class="col-md-4">
                     <label asp-for="CreateForm.JobKey" class="form-label">Job key</label>
-                    <input asp-for="CreateForm.JobKey" class="form-control" placeholder="sample.data" />
-                    <div class="schedule-help mt-1">Use a registered handler key such as <code>sample.data</code> or <code>sample.dashboard-demo</code>. Do not enter a Run ID. See <a asp-action="JobTypes">Observed Job Types</a> for currently advertised keys.</div>
+                    <input asp-for="CreateForm.JobKey" class="form-control" list="schedule-job-key-suggestions" placeholder="sample.data" />
+                    @if (Model.ReadyJobKeys.Count > 0)
+                    {
+                        <datalist id="schedule-job-key-suggestions">
+                            @foreach (var jobKey in Model.ReadyJobKeys)
+                            {
+                                <option value="@jobKey"></option>
+                            }
+                        </datalist>
+                        <div class="schedule-help mt-1">Keys advertised by Ready Workers are suggested. You can still enter a key manually. Do not enter a Run ID. See <a asp-action="JobTypes">observed job keys</a> for the bounded catalog.</div>
+                    }
+                    else
+                    {
+                        <div class="schedule-help mt-1">No Ready Worker is advertising a key yet. You can still enter one manually; do not enter a Run ID. See <a asp-action="JobTypes">observed job keys</a> for the bounded catalog.</div>
+                    }
                     <span asp-validation-for="CreateForm.JobKey" class="text-danger small"></span>
                 </div>
                 <div class="col-md-4">
                     <label asp-for="CreateForm.CronExpression" class="form-label">Cron expression</label>
                     <input asp-for="CreateForm.CronExpression" class="form-control mono" placeholder="*/5 * * * *" />
+                    <div class="schedule-help mt-1">Use five fields: minute, hour, day of month, month, and day of week.</div>
                     <span asp-validation-for="CreateForm.CronExpression" class="text-danger small"></span>
                 </div>
                 <div class="col-md-4">
@@ -100,12 +118,16 @@
                     <label asp-for="CreateForm.Priority" class="form-label">Priority</label>
                     <input asp-for="CreateForm.Priority" class="form-control" type="number" />
                 </div>
+                <div class="col-12 schedule-preview" id="schedule-preview" aria-live="polite" hidden>
+                    <div class="schedule-preview-title" id="schedule-preview-title">Next three runs</div>
+                    <ul class="schedule-preview-list" id="schedule-preview-list"></ul>
+                </div>
                 <div class="col-md-6">
                     <label asp-for="CreateForm.MisfirePolicy" class="form-label">Missed-run behavior</label>
                     <select asp-for="CreateForm.MisfirePolicy" class="form-select">
                         @foreach (var policy in Enum.GetValues<MisfirePolicy>())
                         {
-                            <option value="@((int)policy)">@policy</option>
+                            <option value="@((int)policy)">@(policy == MisfirePolicy.FireOnce ? "Run once after downtime" : "Skip missed times")</option>
                         }
                     </select>
                 </div>
@@ -114,7 +136,7 @@
                     <select asp-for="CreateForm.ConcurrencyPolicy" class="form-select">
                         @foreach (var policy in Enum.GetValues<ScheduleConcurrencyPolicy>())
                         {
-                            <option value="@((int)policy)">@policy</option>
+                            <option value="@((int)policy)">@(policy == ScheduleConcurrencyPolicy.Allow ? "Allow overlapping runs" : "Skip while the previous run is active")</option>
                         }
                     </select>
                 </div>
@@ -154,28 +176,80 @@
             const dialog = document.getElementById('create-schedule-dialog');
             const openButton = document.getElementById('open-create-schedule');
             if (!dialog || !openButton) return;
+            const form = dialog.querySelector('form');
+            const cronInput = form?.querySelector("[name='CreateForm.CronExpression']");
+            const timeZoneInput = form?.querySelector("[name='CreateForm.TimeZoneId']");
+            const preview = document.getElementById('schedule-preview');
+            const previewTitle = document.getElementById('schedule-preview-title');
+            const previewList = document.getElementById('schedule-preview-list');
+            const previewUrl = '@Url.Action("PreviewSchedule")';
+            let previewTimer;
             const openDialog = () => typeof dialog.showModal === 'function'
                 ? dialog.showModal()
                 : dialog.setAttribute('open', '');
             const closeDialog = () => typeof dialog.close === 'function'
                 ? dialog.close()
                 : dialog.removeAttribute('open');
-            openButton.addEventListener('click', openDialog);
+            const renderPreview = (title, lines, isError = false) => {
+                if (!preview || !previewTitle || !previewList) return;
+                preview.hidden = false;
+                previewTitle.textContent = title;
+                previewTitle.classList.toggle('schedule-preview-error', isError);
+                previewList.replaceChildren(...lines.map(line => {
+                    const item = document.createElement('li');
+                    item.textContent = line;
+                    return item;
+                }));
+            };
+            const updatePreview = async () => {
+                const cronExpression = cronInput?.value.trim();
+                const timeZoneId = timeZoneInput?.value.trim();
+                if (!cronExpression || !timeZoneId) {
+                    if (preview) preview.hidden = true;
+                    return;
+                }
+                const parameters = new URLSearchParams({ cronExpression, timeZoneId });
+                try {
+                    const response = await fetch(`${previewUrl}?${parameters.toString()}`);
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        renderPreview('Cron expression needs attention', [payload.message || 'Unable to preview this schedule.'], true);
+                        return;
+                    }
+                    renderPreview('Next three runs', payload.occurrences.map(occurrence => occurrence.display));
+                } catch {
+                    renderPreview('Preview is unavailable', ['Check the cron expression and time zone, then try again.'], true);
+                }
+            };
+            const queuePreview = () => {
+                window.clearTimeout(previewTimer);
+                previewTimer = window.setTimeout(updatePreview, 220);
+            };
+            openButton.addEventListener('click', () => {
+                openDialog();
+                updatePreview();
+            });
+            cronInput?.addEventListener('input', queuePreview);
+            timeZoneInput?.addEventListener('input', queuePreview);
             dialog.querySelectorAll('.schedule-dialog-close').forEach(button => {
                 button.addEventListener('click', closeDialog);
             });
             dialog.addEventListener('click', event => {
                 if (event.target === dialog) closeDialog();
             });
-            if (dialog.dataset.open === 'true') openDialog();
+            if (dialog.dataset.open === 'true') {
+                openDialog();
+                updatePreview();
+            }
         })();
     </script>
 }
 
 <div class="table-card">
+    <div class="table-scroll-hint">Scroll sideways to see scheduling policy and actions →</div>
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th scope="col">Schedule</th><th scope="col">Job type / queue</th><th scope="col">When it runs</th><th scope="col">Missed runs / overlap</th><th scope="col">Next / previous run</th><th scope="col">Status</th>@if (Model.AllowMutatingActions){<th scope="col" class="text-end">Action</th>}</tr></thead>
+            <thead><tr><th scope="col">Schedule</th><th scope="col">Job key / queue</th><th scope="col">When it runs</th><th scope="col">Missed runs / overlap</th><th scope="col">Next / previous run</th><th scope="col">Status</th>@if (Model.AllowMutatingActions){<th scope="col" class="text-end">Action</th>}</tr></thead>
             <tbody>
             @if (Model.Schedules.Count == 0)
             {
@@ -256,12 +330,14 @@
                                 <form asp-action="SetScheduleEnabled" asp-route-id="@schedule.Id" method="post" onsubmit="return confirm('@(schedule.Enabled ? "Pause this schedule? No new runs will be created until it is resumed." : "Resume this schedule?")');">
                                     @Html.AntiForgeryToken()
                                     <input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
+                                    <input type="hidden" name="expectedVersion" value="@schedule.Version" />
                                     <button class="btn btn-sm @(schedule.Enabled ? "btn-outline-warning" : "btn-outline-success")">
                                         <i class="fa-solid @(schedule.Enabled ? "fa-pause" : "fa-play") me-1" aria-hidden="true"></i>@(schedule.Enabled ? "Pause" : "Resume")
                                     </button>
                                 </form>
                                 <form asp-action="DeleteSchedule" asp-route-id="@schedule.Id" method="post" class="mt-2" onsubmit="return confirm('Delete this recurring job?');">
                                     @Html.AntiForgeryToken()
+                                    <input type="hidden" name="expectedVersion" value="@schedule.Version" />
                                     <button class="btn btn-sm btn-outline-danger">
                                         <i class="fa-solid fa-trash me-1" aria-hidden="true"></i>Delete
                                     </button>

@@ -21,10 +21,27 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
         services.TryAddSingleton<JobHandlerRegistry>();
+        services.AddKubeJobWorkerClaimTrigger();
         services.TryAddSingleton<HttpWorkerRuntimeClient>();
         services.TryAddSingleton<IWorkerRuntimeClient>(sp =>
             sp.GetRequiredService<HttpWorkerRuntimeClient>());
-        services.AddHostedService<WorkerRuntimeService>();
+        services.TryAddSingleton<WorkerRuntimeService>();
+        services.AddHostedService(sp => sp.GetRequiredService<WorkerRuntimeService>());
+        return services;
+    }
+
+    /// <summary>
+    /// Adds the single broker-neutral wait seam shared by the worker claim loop
+    /// and optional local transport listeners.
+    /// </summary>
+    public static IServiceCollection AddKubeJobWorkerClaimTrigger(
+        this IServiceCollection services)
+    {
+        services.TryAddSingleton<WorkerClaimTrigger>();
+        services.TryAddSingleton<IWorkerClaimTrigger>(
+            sp => sp.GetRequiredService<WorkerClaimTrigger>());
+        services.TryAddSingleton<IWorkerClaimTriggerSource>(
+            sp => sp.GetRequiredService<WorkerClaimTrigger>());
         return services;
     }
 

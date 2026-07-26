@@ -25,13 +25,19 @@ public sealed record WorkerHeartbeatRequest(
     int AvailableSlots,
     WorkerSessionState State);
 
+/// <summary>
+/// Claims eligible work for a Worker session. When <paramref name="RunIds"/>
+/// is supplied, the claim is targeted and cannot fall back to another Run;
+/// this is used by broker execution consumers after Admission.
+/// </summary>
 public sealed record ClaimJobsRequest(
     string WorkerId,
     string SessionId,
     long SessionEpoch,
     int AvailableSlots,
     IReadOnlyList<string> Queues,
-    IReadOnlyList<string> Capabilities);
+    IReadOnlyList<string> Capabilities,
+    IReadOnlyList<string>? RunIds = null);
 
 public sealed record ClaimedJob(
     string RunId,

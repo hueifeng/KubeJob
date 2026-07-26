@@ -108,7 +108,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction: transaction,
             cancellationToken: cancellationToken));
 
-        var candidates = (await connection.QueryAsync<JobRunRecord>(new CommandDefinition(@"
+        var runFilter = request.RunIds is { Count: > 0 }
+            ? "              AND r.Id = ANY(@RunIds)\n"
+            : string.Empty;
+        var candidates = (await connection.QueryAsync<JobRunRecord>(new CommandDefinition($@"
             SELECT r.*
             FROM Kj2_JobRuns r
             WHERE r.Phase = @Pending
@@ -117,6 +120,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
               AND r.AvailableAt <= @Now
               AND r.Queue = ANY(@Queues)
               AND r.JobKey = ANY(@Capabilities)
+{runFilter}
             ORDER BY r.Priority DESC, r.AvailableAt, r.CreatedAt, r.Id
             FOR UPDATE SKIP LOCKED
             LIMIT @CandidateLimit;",
@@ -126,6 +130,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 Now = now,
                 Queues = allowedQueues,
                 Capabilities = allowedCapabilities,
+                RunIds = request.RunIds?.ToArray(),
                 CandidateLimit = Math.Min(checked(limit * 4), 4096)
             },
             transaction,

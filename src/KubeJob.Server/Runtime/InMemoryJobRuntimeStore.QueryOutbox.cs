@@ -63,6 +63,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 message.State = OutboxDeliveryState.Publishing;
                 message.AvailableAt = now.Add(claimDuration);
                 message.PublishAttempts++;
+                message.ClaimToken = Guid.NewGuid().ToString("N");
             }
 
             return ValueTask.FromResult<IReadOnlyList<OutboxMessageRecord>>(messages);
@@ -70,18 +71,24 @@ public sealed partial class InMemoryJobRuntimeStore
     }
 
     public ValueTask MarkPublishedAsync(
-        string messageId,
+        IReadOnlyList<OutboxPublication> publications,
         DateTimeOffset publishedAt,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_outbox.TryGetValue(messageId, out var message))
+            foreach (var publication in publications)
             {
-                message.State = OutboxDeliveryState.Published;
-                message.PublishedAt = publishedAt;
-                message.LastError = null;
+                if (_outbox.TryGetValue(publication.MessageId, out var message)
+                    && message.State == OutboxDeliveryState.Publishing
+                    && message.ClaimToken == publication.ClaimToken)
+                {
+                    message.State = OutboxDeliveryState.Published;
+                    message.PublishedAt = publishedAt;
+                    message.LastError = null;
+                    message.ClaimToken = null;
+                }
             }
         }
 
@@ -89,19 +96,20 @@ public sealed partial class InMemoryJobRuntimeStore
     }
 
     public ValueTask MarkFailedAsync(
-        string messageId,
-        string error,
-        DateTimeOffset nextAttemptAt,
+        OutboxFailure failure,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_outbox.TryGetValue(messageId, out var message))
+            if (_outbox.TryGetValue(failure.MessageId, out var message)
+                && message.State == OutboxDeliveryState.Publishing
+                && message.ClaimToken == failure.ClaimToken)
             {
                 message.State = OutboxDeliveryState.Failed;
-                message.LastError = error;
-                message.AvailableAt = nextAttemptAt;
+                message.LastError = failure.Error;
+                message.AvailableAt = failure.NextAttemptAt;
+                message.ClaimToken = null;
             }
         }
 

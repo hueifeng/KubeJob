@@ -1,5 +1,6 @@
 using Dapper;
 using KubeJob.Core.Runtime;
+using KubeJob.Server.Runtime;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;
 
@@ -79,26 +80,38 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         if (messages.Length > 0)
         {
+            var claimTokens = messages
+                .Select(_ => NewId())
+                .ToArray();
+
             await connection.ExecuteAsync(new CommandDefinition(@"
-                UPDATE Kj2_Outbox
+                UPDATE Kj2_Outbox outbox
                 SET State = @Publishing,
                     AvailableAt = @ClaimUntil,
-                    PublishAttempts = PublishAttempts + 1
-                WHERE Id = ANY(@Ids);",
+                    PublishAttempts = outbox.PublishAttempts + 1,
+                    ClaimToken = claimed.ClaimToken
+                FROM unnest(
+                    CAST(@Ids AS text[]),
+                    CAST(@ClaimTokens AS text[]))
+                    AS claimed(Id, ClaimToken)
+                WHERE outbox.Id = claimed.Id;",
                 new
                 {
                     Publishing = (int)OutboxDeliveryState.Publishing,
                     ClaimUntil = claimUntil,
-                    Ids = messages.Select(x => x.Id).ToArray()
+                    Ids = messages.Select(x => x.Id).ToArray(),
+                    ClaimTokens = claimTokens
                 },
                 transaction,
                 cancellationToken: cancellationToken));
 
-            foreach (var message in messages)
+            for (var index = 0; index < messages.Length; index++)
             {
+                var message = messages[index];
                 message.State = OutboxDeliveryState.Publishing;
                 message.AvailableAt = claimUntil;
                 message.PublishAttempts++;
+                message.ClaimToken = claimTokens[index];
             }
         }
 
@@ -107,30 +120,42 @@ public sealed partial class PostgreSqlJobRuntimeStore
     }
 
     public async ValueTask MarkPublishedAsync(
-        string messageId,
+        IReadOnlyList<OutboxPublication> publications,
         DateTimeOffset publishedAt,
         CancellationToken cancellationToken)
     {
+        if (publications.Count == 0)
+        {
+            return;
+        }
+
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
-            UPDATE Kj2_Outbox
+            UPDATE Kj2_Outbox outbox
             SET State = @Published,
                 PublishedAt = @PublishedAt,
-                LastError = NULL
-            WHERE Id = @MessageId;",
+                LastError = NULL,
+                ClaimToken = NULL
+            FROM unnest(
+                CAST(@Ids AS text[]),
+                CAST(@ClaimTokens AS text[]))
+                AS completed(Id, ClaimToken)
+            WHERE outbox.Id = completed.Id
+              AND outbox.State = @Publishing
+              AND outbox.ClaimToken = completed.ClaimToken;",
             new
             {
-                MessageId = messageId,
                 Published = (int)OutboxDeliveryState.Published,
-                PublishedAt = publishedAt.ToUniversalTime()
+                Publishing = (int)OutboxDeliveryState.Publishing,
+                PublishedAt = publishedAt.ToUniversalTime(),
+                Ids = publications.Select(x => x.MessageId).ToArray(),
+                ClaimTokens = publications.Select(x => x.ClaimToken).ToArray()
             },
             cancellationToken: cancellationToken));
     }
 
     public async ValueTask MarkFailedAsync(
-        string messageId,
-        string error,
-        DateTimeOffset nextAttemptAt,
+        OutboxFailure failure,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -138,14 +163,19 @@ public sealed partial class PostgreSqlJobRuntimeStore
             UPDATE Kj2_Outbox
             SET State = @Failed,
                 LastError = @Error,
-                AvailableAt = @NextAttemptAt
-            WHERE Id = @MessageId;",
+                AvailableAt = @NextAttemptAt,
+                ClaimToken = NULL
+            WHERE Id = @MessageId
+              AND State = @Publishing
+              AND ClaimToken = @ClaimToken;",
             new
             {
-                MessageId = messageId,
+                MessageId = failure.MessageId,
                 Failed = (int)OutboxDeliveryState.Failed,
-                Error = error,
-                NextAttemptAt = nextAttemptAt.ToUniversalTime()
+                Publishing = (int)OutboxDeliveryState.Publishing,
+                ClaimToken = failure.ClaimToken,
+                Error = failure.Error,
+                NextAttemptAt = failure.NextAttemptAt.ToUniversalTime()
             },
             cancellationToken: cancellationToken));
     }

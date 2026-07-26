@@ -2,17 +2,18 @@ using System.Text.Json;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
+using KubeJob.Server.ControlPlane;
 
 namespace KubeJob.Server.Runtime;
 
 public sealed class DefaultJobScheduleClient : IJobScheduleClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly IJobScheduleStore _store;
+    private readonly ScheduleControlPlane _controlPlane;
 
-    public DefaultJobScheduleClient(IJobScheduleStore store)
+    public DefaultJobScheduleClient(ScheduleControlPlane controlPlane)
     {
-        _store = store;
+        _controlPlane = controlPlane;
     }
 
     public async ValueTask<JobScheduleHandle> UpsertCronAsync<TPayload>(
@@ -32,30 +33,21 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
 
         options ??= new CronScheduleOptions();
         options.Validate();
-        var now = DateTimeOffset.UtcNow;
-        var nextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
-            cronExpression,
-            options.TimeZoneId,
-            now);
-
-        await _store.UpsertAsync(new JobScheduleRecord
-        {
-            Id = scheduleId,
-            JobKey = job.Value,
-            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions),
-            CronExpression = cronExpression,
-            TimeZoneId = options.TimeZoneId,
-            Queue = options.Queue,
-            Priority = options.Priority,
-            MisfirePolicy = options.MisfirePolicy,
-            ConcurrencyPolicy = options.ConcurrencyPolicy,
-            MaxAttempts = options.MaxAttempts,
-            TimeoutSeconds = checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
-            Enabled = options.Enabled,
-            NextFireAt = nextFireAt.ToUniversalTime(),
-            CreatedAt = now,
-            UpdatedAt = now
-        }, cancellationToken);
+        await _controlPlane.UpsertCronAsync(
+            scheduleId,
+            new UpsertCronScheduleRequest(
+                job.Value,
+                JsonSerializer.Serialize(payload, SerializerOptions),
+                cronExpression,
+                options.TimeZoneId,
+                options.Queue,
+                options.Priority,
+                options.MisfirePolicy,
+                options.ConcurrencyPolicy,
+                options.MaxAttempts,
+                checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
+                options.Enabled),
+            cancellationToken);
 
         return new JobScheduleHandle(scheduleId);
     }
@@ -65,8 +57,7 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scheduleId);
-        var schedule = await _store.GetAsync(scheduleId, cancellationToken);
-        return schedule is null ? null : ToSnapshot(schedule);
+        return await _controlPlane.GetAsync(scheduleId, cancellationToken);
     }
 
     public async ValueTask<bool> SetEnabledAsync(
@@ -75,26 +66,10 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scheduleId);
-        var schedule = await _store.GetAsync(scheduleId, cancellationToken);
-        if (schedule is null)
-        {
-            return false;
-        }
-
-        DateTimeOffset? nextFireAt = null;
-        if (enabled)
-        {
-            nextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
-                schedule.CronExpression,
-                schedule.TimeZoneId,
-                DateTimeOffset.UtcNow);
-        }
-
-        return await _store.SetEnabledAsync(
+        return await _controlPlane.SetEnabledAsync(
             scheduleId,
             enabled,
-            nextFireAt,
-            cancellationToken);
+            cancellationToken: cancellationToken);
     }
 
     public ValueTask<bool> DeleteAsync(
@@ -102,17 +77,8 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scheduleId);
-        return _store.DeleteAsync(scheduleId, cancellationToken);
+        return _controlPlane.DeleteAsync(
+            scheduleId,
+            cancellationToken: cancellationToken);
     }
-
-    internal static JobScheduleSnapshot ToSnapshot(JobScheduleRecord schedule) => new(
-        schedule.Id,
-        schedule.JobKey,
-        schedule.CronExpression,
-        schedule.TimeZoneId,
-        schedule.Enabled,
-        schedule.NextFireAt,
-        schedule.LastFireAt,
-        schedule.MisfirePolicy,
-        schedule.ConcurrencyPolicy);
 }

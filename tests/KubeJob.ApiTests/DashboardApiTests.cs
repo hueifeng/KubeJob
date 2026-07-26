@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using FluentAssertions;
@@ -73,6 +74,17 @@ public sealed class DashboardApiTests
                 UpdatedAt = now
             },
             CancellationToken.None);
+        await app.Services.GetRequiredService<InMemoryJobRuntimeStore>().RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "schedule-preview-worker",
+                "schedule-preview-session",
+                "test",
+                "localhost",
+                1,
+                new[] { "default" },
+                new[] { "demo.print" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
 
         using var request = CreateAuthorizedRequest("/admin/jobs/schedules");
         using var response = await app.GetTestClient().SendAsync(request);
@@ -86,9 +98,40 @@ public sealed class DashboardApiTests
         html.Should().Contain("name=\"CreateForm.Id\"");
         html.Should().Contain("name=\"CreateForm.PayloadJson\"");
         html.Should().Contain("name=\"CreateForm.CronExpression\"");
+        html.Should().Contain("schedule-job-key-suggestions");
+        html.Should().Contain("<option value=\"demo.print\"");
+        html.Should().Contain("schedule-preview");
         html.Should().Contain("Delete");
         html.Should().Contain("Pause");
+        html.Should().Contain("Job key / queue");
+        html.Should().Contain("name=\"expectedVersion\"");
         html.Should().Contain("__RequestVerificationToken");
+
+        using var previewRequest = CreateAuthorizedRequest(
+            "/admin/jobs/schedules/preview?cronExpression=*/5%20*%20*%20*%20*&timeZoneId=UTC");
+        using var previewResponse = await app.GetTestClient().SendAsync(previewRequest);
+        var previewJson = await previewResponse.Content.ReadAsStringAsync();
+
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        previewJson.Should().Contain("occurrences");
+        previewJson.Should().Contain("display");
+        previewJson.Should().Contain("timeZoneId");
+        previewJson.Should().Contain("+00:00");
+
+        using var invalidPolicyRequest = new HttpRequestMessage(
+            HttpMethod.Put,
+            "/api/kubejob/schedules/invalid-policy")
+        {
+            Content = JsonContent.Create(new UpsertCronScheduleRequest(
+                "demo.print",
+                "{}",
+                "*/5 * * * *",
+                MisfirePolicy: (MisfirePolicy)99,
+                ConcurrencyPolicy: (ScheduleConcurrencyPolicy)99))
+        };
+        using var invalidPolicyResponse = await app.GetTestClient().SendAsync(invalidPolicyRequest);
+
+        invalidPolicyResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -153,9 +196,14 @@ public sealed class DashboardApiTests
         overviewHtml.Should().Contain("Read-only");
         overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
         overviewHtml.Should().Contain("aria-current=\"page\"");
-        overviewHtml.Should().Contain("Job Types");
-        overviewHtml.Should().Contain("Jobs are waiting, but no worker is ready.");
+        overviewHtml.Should().Contain("id=\"dashboard-nav-toggle\"");
+        overviewHtml.Should().Contain("aria-expanded=\"false\"");
+        overviewHtml.Should().Contain("Job keys");
+        overviewHtml.Should().Contain("Ready jobs are waiting, but no worker is ready.");
         overviewHtml.Should().Contain("Check workers");
+        overviewHtml.Should().Contain("Needs attention");
+        overviewHtml.Should().Contain("Waiting jobs have no available capacity");
+        overviewHtml.Should().Contain("Control-plane shortcuts");
         overviewHtml.Should().Contain("Jobs in progress");
         overviewHtml.Should().Contain("Run</strong> means one logical job");
         overviewHtml.Should().NotContain("Control plane online");
@@ -348,7 +396,7 @@ public sealed class DashboardApiTests
         var jobTypesHtml = await jobTypesResponse.Content.ReadAsStringAsync();
 
         jobTypesResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-        jobTypesHtml.Should().Contain("Job Types");
+        jobTypesHtml.Should().Contain("Job keys");
         jobTypesHtml.Should().Contain("mail.send");
         jobTypesHtml.Should().Contain("Ready");
         jobTypesHtml.Should().Contain("worker-dashboard");

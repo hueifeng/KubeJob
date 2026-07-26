@@ -215,7 +215,26 @@ builder.Services.UseRabbitMqKubeJobNotifications(options =>
 Remote workers can add `AddRabbitMqKubeJobWorkerNotifications` with the same
 broker settings. Notifications are only queue-specific wake-up hints. Workers
 still claim from PostgreSQL, so duplicate or missing messages cannot create
-another valid Attempt.
+another valid Attempt. Workers with the same `ConsumerGroup` compete for each
+hint, avoiding a claim storm across every worker.
+
+If RabbitMQ is also the business-message source, register its ingress queue
+separately:
+
+```csharp
+builder.Services.AddRabbitMqKubeJobIngress(options =>
+{
+    options.ConnectionString = "amqp://kubejob:secret@rabbitmq:5672/";
+    options.QueueName = "mailer-ingress";
+    options.RoutingKey = "mail.#";
+    options.Source = "rabbitmq.mailer";
+});
+```
+
+Ingress ACK happens after the durable Run hand-off. Invalid messages are
+rejected for dead-letter handling; transient persistence or connectivity
+failures are requeued. This business-message path is independent from the
+notification exchange.
 
 ## 9. Delivery guarantee
 
