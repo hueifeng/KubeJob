@@ -13,6 +13,44 @@ public sealed record DashboardRunsViewModel(
     DashboardRunQuery Query,
     DashboardOverview Overview);
 
+public sealed record DashboardPaginationModel(
+    int TotalCount,
+    int Page,
+    int PageSize,
+    string Action,
+    string PageParameter,
+    IReadOnlyDictionary<string, object?> RouteValues)
+{
+    public DashboardPaginationModel(
+        DashboardPage<DashboardRunSummary> page,
+        string action,
+        string pageParameter,
+        IReadOnlyDictionary<string, object?> routeValues)
+        : this(
+            page.TotalCount,
+            page.Page,
+            page.PageSize,
+            action,
+            pageParameter,
+            routeValues)
+    {
+    }
+
+    public int TotalPages => TotalCount == 0
+        ? 0
+        : (int)Math.Ceiling(TotalCount / (double)PageSize);
+
+    public int DisplayPage => Math.Clamp(Page, 1, Math.Max(1, TotalPages));
+
+    public int FirstItem => TotalCount == 0 ? 0 : ((DisplayPage - 1) * PageSize) + 1;
+
+    public int LastItem => TotalCount == 0
+        ? 0
+        : Math.Min(DisplayPage * PageSize, TotalCount);
+
+    public static IReadOnlyList<int> PageSizeOptions { get; } = new[] { 10, 25, 50, 100 };
+}
+
 public sealed record DashboardFailuresViewModel(
     DashboardPage<DashboardRunSummary> PermanentFailures,
     DashboardPage<DashboardRunSummary> ExhaustedRetries,

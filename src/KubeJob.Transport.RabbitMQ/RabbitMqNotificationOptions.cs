@@ -70,6 +70,6 @@ public sealed class RabbitMqNotificationOptions
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
         var segment = RabbitMqExecutionOptions.SanitizeSegment(logicalQueue);
-        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}";
+        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}.queue";
     }
 }

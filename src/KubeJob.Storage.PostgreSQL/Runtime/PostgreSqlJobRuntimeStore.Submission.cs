@@ -12,6 +12,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         SubmitJobCommand command,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
@@ -111,6 +112,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
@@ -175,6 +177,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         string? consumerGroup,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 

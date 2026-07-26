@@ -16,8 +16,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return Array.Empty<LeaseRenewalResult>();
         }
 
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
+            new { request.WorkerId },
+            transaction,
+            cancellationToken: cancellationToken));
 
         var sessionValid = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
             SELECT EXISTS (
@@ -73,6 +80,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                   AND attempt.SessionId = @SessionId
                   AND attempt.SessionEpoch = @SessionEpoch
                   AND attempt.LeaseToken = @LeaseToken
+                  AND EXISTS (
+                      SELECT 1
+                      FROM Kj2_WorkerSessions worker_session
+                      WHERE worker_session.WorkerId = @WorkerId
+                        AND worker_session.SessionId = @SessionId
+                        AND worker_session.Epoch = @SessionEpoch
+                        AND worker_session.State IN (@Ready, @Draining)
+                  )
                   AND run.Phase = @RunRunning
                   AND run.CurrentAttemptId = attempt.Id
                 RETURNING run.CancelRequested;",
@@ -85,6 +100,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     request.WorkerId,
                     request.SessionId,
                     request.SessionEpoch,
+                    Ready = (int)WorkerSessionState.Ready,
+                    Draining = (int)WorkerSessionState.Draining,
                     AttemptRunning = (int)JobAttemptPhase.Running,
                     RunRunning = (int)JobPhase.Running
                 },
@@ -110,8 +127,17 @@ public sealed partial class PostgreSqlJobRuntimeStore
             SET LastHeartbeatAt = @Now
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
-              AND Epoch = @SessionEpoch;",
-            new { Now = now, request.WorkerId, request.SessionId, request.SessionEpoch },
+              AND Epoch = @SessionEpoch
+              AND State IN (@Ready, @Draining);",
+            new
+            {
+                Now = now,
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                Ready = (int)WorkerSessionState.Ready,
+                Draining = (int)WorkerSessionState.Draining
+            },
             transaction,
             cancellationToken: cancellationToken));
 

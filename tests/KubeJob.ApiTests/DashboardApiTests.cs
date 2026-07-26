@@ -305,6 +305,18 @@ public sealed class DashboardApiTests
         jobsHtml.Should().Contain("Canceled");
         jobsHtml.Should().Contain("smtp_rejected");
         jobsHtml.Should().Contain("socket_timeout");
+        jobsHtml.Should().Contain("Rows per page");
+        jobsHtml.Should().Contain("name=\"pageSize\"");
+        jobsHtml.Should().Contain("aria-label=\"First page\"");
+        jobsHtml.Should().Contain("aria-label=\"Last page\"");
+        jobsHtml.Should().Contain("Go to");
+
+        using var resizedJobsRequest = CreateAuthorizedRequest("/admin/jobs/runs?pageSize=50");
+        using var resizedJobsResponse = await client.SendAsync(resizedJobsRequest);
+        var resizedJobsHtml = await resizedJobsResponse.Content.ReadAsStringAsync();
+
+        resizedJobsResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        resizedJobsHtml.Should().Contain("option value=\"50\" selected");
 
         using var scopedJobsRequest = CreateAuthorizedRequest("/admin/jobs/runs?queue=mail&phase=Failed");
         using var scopedJobsResponse = await client.SendAsync(scopedJobsRequest);
@@ -326,6 +338,10 @@ public sealed class DashboardApiTests
         failuresHtml.Should().Contain("No retries left");
         failuresHtml.Should().Contain("smtp_rejected");
         failuresHtml.Should().Contain("socket_timeout");
+        failuresHtml.Should().Contain("id=\"page-size-failedPage\"");
+        failuresHtml.Should().Contain("id=\"page-size-deadPage\"");
+        failuresHtml.Should().Contain("name=\"failedPage\"");
+        failuresHtml.Should().Contain("name=\"deadPage\"");
         failuresHtml.Contains("LeaseToken", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
         failuresHtml.Should().NotContain("top-secret-value");
 

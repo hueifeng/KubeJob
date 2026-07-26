@@ -69,6 +69,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
 
         using var connection = factory.CreateConnection("KubeJob.RabbitMq.Ingress");
         using var channel = connection.CreateModel();
+        using var connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         channel.ExchangeDeclare(
             exchange: _options.ExchangeName,
             type: ExchangeType.Topic,
@@ -101,7 +102,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         var consumer = new AsyncEventingBasicConsumer(channel);
         consumer.Received += async (_, delivery) =>
         {
-            await ProcessDeliveryAsync(channel, delivery, stoppingToken);
+            await ProcessDeliveryAsync(channel, delivery, connectionLifetime.Token);
         };
         channel.BasicConsume(
             queue: _options.QueueName,
@@ -116,10 +117,15 @@ public sealed class RabbitMqJobIngressService : BackgroundService
 
         var disconnected = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        connection.ConnectionShutdown += (_, _) => disconnected.TrySetResult();
+        connection.ConnectionShutdown += (_, _) =>
+        {
+            connectionLifetime.Cancel();
+            disconnected.TrySetResult();
+        };
         await Task.WhenAny(
             disconnected.Task,
             Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken));
+        connectionLifetime.Cancel();
         stoppingToken.ThrowIfCancellationRequested();
     }
 
@@ -169,7 +175,9 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            Nack(channel, delivery.DeliveryTag);
+            _logger.LogDebug(
+                "RabbitMQ ingress delivery {DeliveryTag} was interrupted by connection or host shutdown; broker will requeue the unacked delivery",
+                delivery.DeliveryTag);
         }
         catch (ControlPlaneValidationException exception)
         {

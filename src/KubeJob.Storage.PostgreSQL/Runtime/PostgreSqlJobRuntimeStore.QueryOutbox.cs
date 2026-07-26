@@ -1,7 +1,6 @@
 using Dapper;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
-using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;
 
@@ -11,6 +10,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         string runId,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return await connection.QuerySingleOrDefaultAsync<JobRunRecord>(new CommandDefinition(@"
             SELECT *
@@ -25,6 +25,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         string runId,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return (await connection.QueryAsync<JobAttemptRecord>(new CommandDefinition(@"
             SELECT *
@@ -51,6 +52,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return Array.Empty<OutboxMessageRecord>();
         }
 
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var databaseNow = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
@@ -132,6 +134,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return;
         }
 
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox outbox
@@ -161,6 +164,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         OutboxFailure failure,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox
@@ -187,6 +191,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         OutboxFailure failure,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox
@@ -234,8 +239,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var dispatched = new List<string>(batchSize);
         var failed = new List<string>(batchSize);
         var abandoned = new List<string>(batchSize);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-
         for (var iteration = 0; iteration < batchSize; iteration++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -245,8 +248,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
             // Claim and commit before touching the broker. The database lock is
             // therefore held only for the short state transition, not for the
             // network round-trip or publisher confirm.
-            await using (var claimTransaction = await connection.BeginTransactionAsync(cancellationToken))
             {
+                await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
+                await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+                await using var claimTransaction = await connection.BeginTransactionAsync(cancellationToken);
                 message = await connection.QuerySingleOrDefaultAsync<OutboxMessageRecord>(new CommandDefinition(@"
                     SELECT *
                     FROM Kj2_Outbox
@@ -304,26 +309,30 @@ public sealed partial class PostgreSqlJobRuntimeStore
             try
             {
                 await dispatch(message, cancellationToken).ConfigureAwait(false);
-                await using var publishTransaction = await connection.BeginTransactionAsync(cancellationToken);
-                await connection.ExecuteAsync(new CommandDefinition(@"
-                    UPDATE Kj2_Outbox
-                    SET State = @Published,
-                        PublishedAt = clock_timestamp(),
-                        LastError = NULL,
-                        ClaimToken = NULL
-                    WHERE Id = @MessageId
-                      AND State = @Publishing
-                      AND ClaimToken = @ClaimToken;",
-                    new
-                    {
-                        MessageId = message.Id,
-                        Published = (int)OutboxDeliveryState.Published,
-                        Publishing = (int)OutboxDeliveryState.Publishing,
-                        ClaimToken = claimToken
-                    },
-                    publishTransaction,
-                    cancellationToken: cancellationToken));
-                await publishTransaction.CommitAsync(cancellationToken);
+                await using (var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken))
+                await using (var connection = await _dataSource.OpenConnectionAsync(cancellationToken))
+                await using (var publishTransaction = await connection.BeginTransactionAsync(cancellationToken))
+                {
+                    await connection.ExecuteAsync(new CommandDefinition(@"
+                        UPDATE Kj2_Outbox
+                        SET State = @Published,
+                            PublishedAt = clock_timestamp(),
+                            LastError = NULL,
+                            ClaimToken = NULL
+                        WHERE Id = @MessageId
+                          AND State = @Publishing
+                          AND ClaimToken = @ClaimToken;",
+                        new
+                        {
+                            MessageId = message.Id,
+                            Published = (int)OutboxDeliveryState.Published,
+                            Publishing = (int)OutboxDeliveryState.Publishing,
+                            ClaimToken = claimToken
+                        },
+                        publishTransaction,
+                        cancellationToken: cancellationToken));
+                    await publishTransaction.CommitAsync(cancellationToken);
+                }
                 dispatched.Add(message.Id);
             }
             catch (PermanentOutboxException ex)
@@ -340,7 +349,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 await MarkDispatchFailedAsync(
-                    connection,
                     message.Id,
                     claimToken,
                     "publisher_canceled",
@@ -351,7 +359,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             catch (Exception ex)
             {
                 await MarkDispatchFailedAsync(
-                    connection,
                     message.Id,
                     claimToken,
                     ex.Message,
@@ -363,13 +370,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
         return new OutboxDispatchBatch(dispatched, failed, abandoned);
     }
 
-    private static async ValueTask MarkDispatchFailedAsync(
-        NpgsqlConnection connection,
+    private async ValueTask MarkDispatchFailedAsync(
         string messageId,
         string claimToken,
         string error,
         TimeSpan retryDelay)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(CancellationToken.None);
+        await using var connection = await _dataSource.OpenConnectionAsync(CancellationToken.None);
         await using var transaction = await connection.BeginTransactionAsync(CancellationToken.None);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox

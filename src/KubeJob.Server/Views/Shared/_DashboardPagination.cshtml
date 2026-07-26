@@ -1,0 +1,133 @@
+@model DashboardPaginationModel
+@{
+    var totalPages = Math.Max(1, Model.TotalPages);
+    var currentPage = Math.Clamp(Model.Page, 1, totalPages);
+    var hasPrevious = Model.TotalCount > 0 && currentPage > 1;
+    var hasNext = Model.TotalCount > 0 && currentPage < totalPages;
+    var pageNumbers = new List<int?>();
+    var pageSizeOptions = DashboardPaginationModel.PageSizeOptions.ToList();
+    if (!pageSizeOptions.Contains(Model.PageSize))
+    {
+        pageSizeOptions.Add(Model.PageSize);
+        pageSizeOptions.Sort();
+    }
+
+    if (totalPages <= 7)
+    {
+        for (var page = 1; page <= totalPages; page++)
+        {
+            pageNumbers.Add(page);
+        }
+    }
+    else
+    {
+        pageNumbers.Add(1);
+        var windowStart = Math.Max(2, currentPage - 2);
+        var windowEnd = Math.Min(totalPages - 1, currentPage + 2);
+        if (currentPage <= 4)
+        {
+            windowStart = 2;
+            windowEnd = 5;
+        }
+        else if (currentPage >= totalPages - 3)
+        {
+            windowStart = totalPages - 4;
+            windowEnd = totalPages - 1;
+        }
+
+        if (windowStart > 2)
+        {
+            pageNumbers.Add(null);
+        }
+
+        for (var page = windowStart; page <= windowEnd; page++)
+        {
+            pageNumbers.Add(page);
+        }
+
+        if (windowEnd < totalPages - 1)
+        {
+            pageNumbers.Add(null);
+        }
+
+        pageNumbers.Add(totalPages);
+    }
+
+    string PageUrl(int page)
+    {
+        var routeValues = new Dictionary<string, object?>(Model.RouteValues)
+        {
+            [Model.PageParameter] = page,
+            ["pageSize"] = Model.PageSize
+        };
+        return Url.Action(Model.Action, routeValues) ?? "#";
+    }
+}
+
+<div class="dashboard-pagination" aria-label="Pagination">
+    <div class="dashboard-pagination-summary">
+        <strong>@Model.FirstItem–@Model.LastItem</strong> of <strong>@Model.TotalCount</strong>
+        <span class="dashboard-pagination-page">Page @currentPage of @totalPages</span>
+    </div>
+
+    <form method="get" action="@Url.Action(Model.Action)" class="dashboard-page-size-form">
+        @foreach (var route in Model.RouteValues)
+        {
+            if (route.Value is not null && route.Key != Model.PageParameter && route.Key != "pageSize")
+            {
+                <input type="hidden" name="@route.Key" value="@route.Value" />
+            }
+        }
+        <input type="hidden" name="@Model.PageParameter" value="1" />
+        <label for="page-size-@Model.PageParameter">Rows per page</label>
+        <select id="page-size-@Model.PageParameter" name="pageSize" class="form-select form-select-sm" onchange="this.form.submit()" aria-label="Rows per page">
+            @foreach (var pageSize in pageSizeOptions)
+            {
+                <option value="@pageSize" selected="@(pageSize == Model.PageSize)">@pageSize</option>
+            }
+        </select>
+    </form>
+
+    <nav class="dashboard-pagination-nav" aria-label="Page navigation">
+        <a class="pagination-link @(hasPrevious ? "" : "disabled")"
+           href="@(hasPrevious ? PageUrl(1) : null)"
+           aria-label="First page" aria-disabled="@(!hasPrevious)">«</a>
+        <a class="pagination-link @(hasPrevious ? "" : "disabled")"
+           href="@(hasPrevious ? PageUrl(currentPage - 1) : null)"
+           aria-label="Previous page" aria-disabled="@(!hasPrevious)">‹</a>
+        @foreach (var page in pageNumbers)
+        {
+            if (page is null)
+            {
+                <span class="pagination-ellipsis" aria-hidden="true">…</span>
+            }
+            else
+            {
+                <a class="pagination-link @(page == currentPage ? "current" : "")"
+                   href="@PageUrl(page.Value)"
+                   aria-current="@(page == currentPage ? "page" : null)">@(page)</a>
+            }
+        }
+        <a class="pagination-link @(hasNext ? "" : "disabled")"
+           href="@(hasNext ? PageUrl(currentPage + 1) : null)"
+           aria-label="Next page" aria-disabled="@(!hasNext)">›</a>
+        <a class="pagination-link @(hasNext ? "" : "disabled")"
+           href="@(hasNext ? PageUrl(totalPages) : null)"
+           aria-label="Last page" aria-disabled="@(!hasNext)">»</a>
+    </nav>
+
+    <form method="get" action="@Url.Action(Model.Action)" class="dashboard-pagination-jump">
+        @foreach (var route in Model.RouteValues)
+        {
+            if (route.Value is not null && route.Key != Model.PageParameter && route.Key != "pageSize")
+            {
+                <input type="hidden" name="@route.Key" value="@route.Value" />
+            }
+        }
+        <input type="hidden" name="pageSize" value="@Model.PageSize" />
+        <label for="page-jump-@Model.PageParameter">Go to</label>
+        <input id="page-jump-@Model.PageParameter" class="form-control form-control-sm" type="number"
+               name="@Model.PageParameter" min="1" max="@totalPages" value="@currentPage" aria-label="Page number" />
+        <button type="submit" class="btn btn-sm btn-outline-secondary">Go</button>
+    </form>
+</div>

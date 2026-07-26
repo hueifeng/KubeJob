@@ -24,12 +24,11 @@ public sealed class WorkerRuntimeService : BackgroundService
     private readonly IWorkerClaimTrigger _claimTrigger;
     private readonly KubeJobWorkerOptions _options;
     private readonly ILogger<WorkerRuntimeService> _logger;
-    private readonly Channel<ClaimedJob> _channel;
+    private Channel<ClaimedJob> _channel;
     private readonly ConcurrentDictionary<string, OwnedAttempt> _owned = new(StringComparer.Ordinal);
-    private readonly string _sessionId = Guid.NewGuid().ToString("N");
+    private string _sessionId = Guid.NewGuid().ToString("N");
     private readonly string _hostName = Environment.MachineName;
-    private readonly TaskCompletionSource<WorkerSessionContext> _sessionReady =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<WorkerSessionContext> _sessionReady = CreateSessionReadySource();
 
     private CancellationTokenSource? _sessionLifetime;
     private long _sessionEpoch;
@@ -52,14 +51,20 @@ public sealed class WorkerRuntimeService : BackgroundService
         _logger = logger;
         _options.Validate();
 
-        _channel = Channel.CreateBounded<ClaimedJob>(new BoundedChannelOptions(_options.MaxConcurrentJobs)
+        _channel = CreateExecutionChannel();
+    }
+
+    private static TaskCompletionSource<WorkerSessionContext> CreateSessionReadySource() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private Channel<ClaimedJob> CreateExecutionChannel() =>
+        Channel.CreateBounded<ClaimedJob>(new BoundedChannelOptions(_options.MaxConcurrentJobs)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleWriter = true,
             SingleReader = false,
             AllowSynchronousContinuations = false
         });
-    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -71,6 +76,38 @@ public sealed class WorkerRuntimeService : BackgroundService
             throw exception;
         }
 
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            PrepareNextSession();
+            try
+            {
+                await RunSessionAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "KubeJob worker session loop failed; restarting session");
+            }
+
+            if (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    private async Task RunSessionAsync(CancellationToken stoppingToken)
+    {
         using var sessionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         _sessionLifetime = sessionLifetime;
         var runtimeToken = sessionLifetime.Token;
@@ -105,6 +142,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
         finally
         {
+            sessionLifetime.Cancel();
             _channel.Writer.TryComplete();
             if (!_sessionReady.Task.IsCompleted)
             {
@@ -112,6 +150,21 @@ public sealed class WorkerRuntimeService : BackgroundService
             }
             Interlocked.CompareExchange(ref _sessionLifetime, null, sessionLifetime);
         }
+    }
+
+    private void PrepareNextSession()
+    {
+        foreach (var owned in _owned.Values)
+        {
+            TryCancelOwnedAttempt(owned);
+        }
+
+        Volatile.Write(ref _reservedSlots, 0);
+        Volatile.Write(ref _sessionEpoch, 0);
+        Interlocked.Exchange(ref _draining, 0);
+        _sessionId = Guid.NewGuid().ToString("N");
+        _sessionReady = CreateSessionReadySource();
+        _channel = CreateExecutionChannel();
     }
 
     public string SessionId => _sessionId;
@@ -124,7 +177,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         {
             if (string.Equals(owned.Job.RunId, runId, StringComparison.Ordinal))
             {
-                owned.CancellationSource.Cancel();
+                TryCancelOwnedAttempt(owned);
                 canceled = true;
             }
         }
@@ -157,7 +210,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         if (!_options.Queues.Contains(envelope.Queue, StringComparer.Ordinal))
         {
             return new ExecutionEnvelopeProcessingResult(
-                ExecutionEnvelopeProcessingStatus.Reject,
+                ExecutionEnvelopeProcessingStatus.Retry,
                 "worker_not_configured_for_queue");
         }
 
@@ -205,7 +258,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                     // Session was canceled mid-enqueue; the broker must not
                     // redeliver to this worker.
                     return new ExecutionEnvelopeProcessingResult(
-                        ExecutionEnvelopeProcessingStatus.Reject,
+                        ExecutionEnvelopeProcessingStatus.Retry,
                         "worker_session_canceled");
                 }
             default:
@@ -219,7 +272,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         ClaimedJob job,
         CancellationToken cancellationToken)
     {
-        var owned = new OwnedAttempt(job);
+        var owned = new OwnedAttempt(job, _sessionId);
         if (!_owned.TryAdd(job.AttemptId, owned))
         {
             owned.CancellationSource.Dispose();
@@ -249,11 +302,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
         finally
         {
-            if (_owned.TryRemove(job.AttemptId, out var removed))
-            {
-                removed.CancellationSource.Dispose();
-                Interlocked.Decrement(ref _reservedSlots);
-            }
+            ReleaseOwnedAttempt(job.AttemptId);
         }
     }
 
@@ -362,7 +411,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                         continue;
                     }
 
-                    var owned = new OwnedAttempt(job);
+                    var owned = new OwnedAttempt(job, _sessionId);
                     if (!_owned.TryAdd(job.AttemptId, owned))
                     {
                         owned.CancellationSource.Dispose();
@@ -376,11 +425,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                     }
                     catch
                     {
-                        if (_owned.TryRemove(job.AttemptId, out var removed))
-                        {
-                            removed.CancellationSource.Dispose();
-                            Interlocked.Decrement(ref _reservedSlots);
-                        }
+                        ReleaseOwnedAttempt(job.AttemptId);
 
                         throw;
                     }
@@ -508,11 +553,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 finally
                 {
                     owned.Completion.TrySetResult(completionReported);
-                    if (_owned.TryRemove(job.AttemptId, out var removed))
-                    {
-                        removed.CancellationSource.Dispose();
-                        Interlocked.Decrement(ref _reservedSlots);
-                    }
+                    ReleaseOwnedAttempt(job.AttemptId);
                 }
             }
         }
@@ -598,10 +639,13 @@ public sealed class WorkerRuntimeService : BackgroundService
 
                 if (!accepted)
                 {
+                    _logger.LogWarning(
+                        "KubeJob worker session {WorkerId}/{SessionId}/{Epoch} was rejected; restarting session",
+                        _options.WorkerId,
+                        _sessionId,
+                        Volatile.Read(ref _sessionEpoch));
                     FenceSession();
-                    throw new InvalidOperationException(
-                        $"KubeJob worker session '{_options.WorkerId}/{_sessionId}/{Volatile.Read(ref _sessionEpoch)}' " +
-                        "was rejected by the control plane and must restart with a new SessionId.");
+                    return;
                 }
             }
         }
@@ -658,7 +702,33 @@ public sealed class WorkerRuntimeService : BackgroundService
     {
         foreach (var owned in _owned.Values)
         {
+            TryCancelOwnedAttempt(owned);
+        }
+    }
+
+    private void TryCancelOwnedAttempt(OwnedAttempt owned)
+    {
+        try
+        {
             owned.CancellationSource.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Completion already won the race with cancellation cleanup.
+        }
+    }
+
+    private void ReleaseOwnedAttempt(string attemptId)
+    {
+        if (!_owned.TryRemove(attemptId, out var removed))
+        {
+            return;
+        }
+
+        removed.CancellationSource.Dispose();
+        if (string.Equals(removed.SessionId, _sessionId, StringComparison.Ordinal))
+        {
+            Interlocked.Decrement(ref _reservedSlots);
         }
     }
 
@@ -756,12 +826,15 @@ public sealed class WorkerRuntimeService : BackgroundService
 
     private sealed class OwnedAttempt
     {
-        public OwnedAttempt(ClaimedJob job)
+        public OwnedAttempt(ClaimedJob job, string sessionId)
         {
             Job = job;
+            SessionId = sessionId;
         }
 
         public ClaimedJob Job { get; }
+
+        public string SessionId { get; }
 
         public CancellationTokenSource CancellationSource { get; } = new();
 

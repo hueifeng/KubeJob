@@ -81,6 +81,30 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
+    public ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
+        IReadOnlyList<CompleteAttemptRequest> requests,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        cancellationToken.ThrowIfCancellationRequested();
+        return CompleteBatchCoreAsync(requests, retryDelay, cancellationToken);
+    }
+
+    private async ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchCoreAsync(
+        IReadOnlyList<CompleteAttemptRequest> requests,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken)
+    {
+        var results = new CompleteAttemptResponse[requests.Count];
+        for (var index = 0; index < requests.Count; index++)
+        {
+            results[index] = await CompleteAsync(requests[index], retryDelay, cancellationToken);
+        }
+
+        return results;
+    }
+
     public ValueTask<int> RequeueExpiredLeasesAsync(
         DateTimeOffset now,
         TimeSpan retryDelay,

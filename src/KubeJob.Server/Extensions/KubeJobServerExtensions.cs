@@ -37,6 +37,7 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<JobControlPlane>();
         services.TryAddSingleton<IJobMessageIngress, JobMessageIngress>();
+        services.TryAddSingleton<CompletionBatcher>();
         services.TryAddSingleton<WorkerControlPlane>();
         services.TryAddSingleton<ScheduleControlPlane>();
         services.TryAddSingleton<IWorkAvailableNotifier, PollingWorkAvailableNotifier>();

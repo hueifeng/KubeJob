@@ -12,6 +12,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         JobScheduleRecord schedule,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return await connection.QuerySingleOrDefaultAsync<JobScheduleRecord>(new CommandDefinition(@"
             INSERT INTO Kj2_JobSchedules
@@ -51,6 +52,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         JobScheduleRecord schedule,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         var stored = await connection.QuerySingleAsync<JobScheduleRecord>(new CommandDefinition(@"
             INSERT INTO Kj2_JobSchedules
@@ -107,6 +109,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         string scheduleId,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return await connection.QuerySingleOrDefaultAsync<JobScheduleRecord>(new CommandDefinition(@"
             SELECT *
@@ -124,6 +127,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         long? expectedVersion,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         var affected = await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobSchedules
@@ -151,6 +155,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         long? expectedVersion,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return await connection.ExecuteAsync(new CommandDefinition(
             "DELETE FROM Kj2_JobSchedules WHERE Id = @ScheduleId AND (@ExpectedVersion IS NULL OR Version = @ExpectedVersion);",
@@ -175,6 +180,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return Array.Empty<ClaimedSchedule>();
         }
 
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var databaseNow = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
@@ -236,6 +242,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CommitScheduleFireCommand command,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
@@ -382,6 +389,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         DateTimeOffset retryAt,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobSchedules

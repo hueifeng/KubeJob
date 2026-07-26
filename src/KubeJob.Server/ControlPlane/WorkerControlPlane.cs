@@ -16,6 +16,7 @@ public sealed class WorkerControlPlane
     private readonly IJobCompletionStore _completions;
     private readonly IJobQueryStore _queries;
     private readonly IJobSubmissionStore _submissions;
+    private readonly CompletionBatcher? _completionBatcher;
     private readonly JobRuntimeOptions _options;
 
     public WorkerControlPlane(
@@ -24,13 +25,15 @@ public sealed class WorkerControlPlane
         IJobCompletionStore completions,
         IJobQueryStore queries,
         IJobSubmissionStore submissions,
-        IOptions<JobRuntimeOptions> options)
+        IOptions<JobRuntimeOptions> options,
+        CompletionBatcher? completionBatcher = null)
     {
         _sessions = sessions;
         _claims = claims;
         _completions = completions;
         _queries = queries;
         _submissions = submissions;
+        _completionBatcher = completionBatcher;
         _options = options.Value;
     }
 
@@ -109,6 +112,29 @@ public sealed class WorkerControlPlane
                 Reason: "worker_capacity_exhausted");
         }
 
+        var jobs = await _claims.ClaimAsync(
+            new ClaimJobsRequest(
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                request.AvailableSlots,
+                request.Queues,
+                request.Capabilities,
+                new[] { request.RunId }),
+            _options.LeaseDuration,
+            _options.MaxClaimBatchSize,
+            cancellationToken);
+        if (jobs.Count == 1)
+        {
+            return new AdmitExecutionResponse(
+                ExecutionAdmissionStatus.Admitted,
+                jobs[0]);
+        }
+
+        // The normal BrokerDispatch path has already attempted the targeted
+        // Claim. Only duplicate, terminal, not-found, or temporarily
+        // unclaimable envelopes need the diagnostic read below. This removes
+        // one PostgreSQL round-trip from every successfully admitted message.
         var run = await _queries.GetRunAsync(request.RunId, cancellationToken);
         if (run is null)
         {
@@ -143,30 +169,9 @@ public sealed class WorkerControlPlane
                 Reason: "worker_not_capable");
         }
 
-        var jobs = await _claims.ClaimAsync(
-            new ClaimJobsRequest(
-                request.WorkerId,
-                request.SessionId,
-                request.SessionEpoch,
-                request.AvailableSlots,
-                request.Queues,
-                request.Capabilities,
-                new[] { request.RunId }),
-            _options.LeaseDuration,
-            _options.MaxClaimBatchSize,
-            cancellationToken);
-        if (jobs.Count == 1)
-        {
-            return new AdmitExecutionResponse(
-                ExecutionAdmissionStatus.Admitted,
-                jobs[0]);
-        }
-
         return new AdmitExecutionResponse(
             ExecutionAdmissionStatus.Retry,
-            Reason: run.Phase == JobPhase.Running
-                ? "run_already_running"
-                : "run_not_claimable");
+            Reason: "run_not_claimable");
     }
 
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(
@@ -183,10 +188,9 @@ public sealed class WorkerControlPlane
     public ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
         CancellationToken cancellationToken = default) =>
-        _completions.CompleteAsync(
-            request,
-            _options.RetryDelay,
-            cancellationToken);
+        _completionBatcher is null
+            ? _completions.CompleteAsync(request, _options.RetryDelay, cancellationToken)
+            : _completionBatcher.EnqueueAsync(request, cancellationToken);
 
     public ValueTask<bool> RequeueExecutionAsync(
         RequeueExecutionRequest request,

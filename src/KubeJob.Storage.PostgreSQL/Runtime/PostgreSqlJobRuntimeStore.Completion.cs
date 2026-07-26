@@ -13,6 +13,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         TimeSpan retryDelay,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
@@ -199,6 +200,258 @@ public sealed partial class PostgreSqlJobRuntimeStore
         return new CompleteAttemptResponse(true, phase, requeued);
     }
 
+    public async ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
+        IReadOnlyList<CompleteAttemptRequest> requests,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        if (requests.Count == 0)
+        {
+            return Array.Empty<CompleteAttemptResponse>();
+        }
+
+        var results = new CompleteAttemptResponse[requests.Count];
+        var groups = requests
+            .Select((request, index) => (request, index))
+            .GroupBy(x => (x.request.WorkerId, x.request.SessionId, x.request.SessionEpoch));
+
+        foreach (var group in groups)
+        {
+            var items = group.ToArray();
+            if (items.Length > 1 && items.All(x => x.request.Outcome == JobAttemptOutcome.Succeeded))
+            {
+                var batchResults = await CompleteSucceededBatchAsync(items, cancellationToken);
+                foreach (var item in items)
+                {
+                    results[item.index] = batchResults[item.index];
+                }
+            }
+            else
+            {
+                foreach (var item in items)
+                {
+                    results[item.index] = await CompleteAsync(item.request, retryDelay, cancellationToken);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    private async ValueTask<Dictionary<int, CompleteAttemptResponse>> CompleteSucceededBatchAsync(
+        IReadOnlyList<(CompleteAttemptRequest request, int index)> items,
+        CancellationToken cancellationToken)
+    {
+        var first = items[0].request;
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
+            new { first.WorkerId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var sessionActive = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT EXISTS (
+                SELECT 1
+                FROM Kj2_WorkerSessions
+                WHERE WorkerId = @WorkerId
+                  AND SessionId = @SessionId
+                  AND Epoch = @SessionEpoch
+                  AND State IN (@Ready, @Draining)
+            );",
+            new
+            {
+                first.WorkerId,
+                first.SessionId,
+                first.SessionEpoch,
+                Ready = (int)WorkerSessionState.Ready,
+                Draining = (int)WorkerSessionState.Draining
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
+            "SELECT clock_timestamp();",
+            transaction: transaction,
+            cancellationToken: cancellationToken));
+
+        var states = (await connection.QueryAsync<CompletionStateRow>(new CommandDefinition(@"
+            SELECT
+                attempt.Id AS AttemptId,
+                attempt.RunId AS AttemptRunId,
+                attempt.AttemptNumber,
+                attempt.WorkerId,
+                attempt.SessionId,
+                attempt.SessionEpoch,
+                attempt.LeaseToken,
+                attempt.LeaseExpiresAt,
+                attempt.Phase AS AttemptPhase,
+                run.Phase AS RunPhase,
+                run.CurrentAttemptId,
+                run.CancelRequested,
+                run.AttemptCount,
+                run.MaxAttempts,
+                run.Queue
+            FROM Kj2_JobAttempts attempt
+            JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
+            WHERE attempt.Id = ANY(@AttemptIds)
+            FOR UPDATE OF attempt, run;",
+            new { AttemptIds = items.Select(x => x.request.AttemptId).Distinct().ToArray() },
+            transaction,
+            cancellationToken: cancellationToken))).ToDictionary(x => x.AttemptId, StringComparer.Ordinal);
+
+        var results = new Dictionary<int, CompleteAttemptResponse>();
+        var seenAttempts = new HashSet<string>(StringComparer.Ordinal);
+        var valid = new List<(CompleteAttemptRequest request, CompletionStateRow state)>();
+        foreach (var item in items)
+        {
+            var state = states.GetValueOrDefault(item.request.AttemptId);
+            if (!sessionActive
+                || state is null
+                || !seenAttempts.Add(item.request.AttemptId)
+                || !MatchesFence(state, item.request, now))
+            {
+                results[item.index] = new CompleteAttemptResponse(
+                    false,
+                    state?.RunPhase ?? JobPhase.Failed,
+                    false,
+                    "stale_session_attempt_expired_or_fencing_token_mismatch");
+                continue;
+            }
+
+            valid.Add((item.request, state));
+        }
+
+        if (valid.Count > 0)
+        {
+            var attemptIds = valid.Select(x => x.request.AttemptId).ToArray();
+            var canceled = valid.Where(x => x.state.CancelRequested).ToArray();
+            var succeeded = valid.Where(x => !x.state.CancelRequested).ToArray();
+
+            await connection.ExecuteAsync(new CommandDefinition(@"
+                UPDATE Kj2_JobAttempts
+                SET Phase = @Succeeded,
+                    CompletedAt = @CompletedAt,
+                    FailureCode = NULL,
+                    FailureMessage = NULL
+                WHERE Id = ANY(@AttemptIds)
+                  AND Phase = @Running;",
+                new
+                {
+                    Succeeded = (int)JobAttemptPhase.Succeeded,
+                    Running = (int)JobAttemptPhase.Running,
+                    CompletedAt = now,
+                    AttemptIds = attemptIds
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+
+            await CompleteSucceededRunsAsync(
+                connection,
+                transaction,
+                succeeded,
+                now,
+                cancellationToken);
+            await CompleteCanceledRunsAsync(
+                connection,
+                transaction,
+                canceled,
+                now,
+                cancellationToken);
+
+            foreach (var item in valid)
+            {
+                var index = items.First(x => x.request.AttemptId == item.request.AttemptId).index;
+                results[index] = new CompleteAttemptResponse(
+                    true,
+                    item.state.CancelRequested ? JobPhase.Canceled : JobPhase.Succeeded,
+                    false);
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return results;
+    }
+
+    private static async ValueTask CompleteSucceededRunsAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        IReadOnlyList<(CompleteAttemptRequest request, CompletionStateRow state)> items,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = @Succeeded,
+                CompletedAt = @CompletedAt,
+                CurrentAttemptId = NULL,
+                CurrentWorkerId = NULL,
+                CurrentSessionId = NULL,
+                FailureCode = NULL,
+                FailureMessage = NULL,
+                Version = Version + 1
+            WHERE Id = ANY(@RunIds)
+              AND Phase = @Running
+              AND CurrentAttemptId = ANY(@AttemptIds);",
+            new
+            {
+                Succeeded = (int)JobPhase.Succeeded,
+                Running = (int)JobPhase.Running,
+                CompletedAt = completedAt,
+                RunIds = items.Select(x => x.request.RunId).Distinct().ToArray(),
+                AttemptIds = items.Select(x => x.request.AttemptId).ToArray()
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async ValueTask CompleteCanceledRunsAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        IReadOnlyList<(CompleteAttemptRequest request, CompletionStateRow state)> items,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = @Canceled,
+                CompletedAt = @CompletedAt,
+                CurrentAttemptId = NULL,
+                CurrentWorkerId = NULL,
+                CurrentSessionId = NULL,
+                FailureCode = @FailureCode,
+                FailureMessage = NULL,
+                Version = Version + 1
+            WHERE Id = ANY(@RunIds)
+              AND Phase = @Running
+              AND CurrentAttemptId = ANY(@AttemptIds);",
+            new
+            {
+                Canceled = (int)JobPhase.Canceled,
+                Running = (int)JobPhase.Running,
+                CompletedAt = completedAt,
+                FailureCode = "canceled",
+                RunIds = items.Select(x => x.request.RunId).Distinct().ToArray(),
+                AttemptIds = items.Select(x => x.request.AttemptId).ToArray()
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
     public async ValueTask<int> RequeueExpiredLeasesAsync(
         DateTimeOffset now,
         TimeSpan retryDelay,
@@ -211,6 +464,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return 0;
         }
 
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var databaseNow = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(

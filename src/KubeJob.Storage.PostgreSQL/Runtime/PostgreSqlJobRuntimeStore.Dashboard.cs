@@ -31,6 +31,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         int recentRunCount,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         using var grid = await connection.QueryMultipleAsync(new CommandDefinition($"""
             SELECT
@@ -157,6 +158,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         var normalized = query.Normalize();
         var phase = normalized.Phase is null ? (int?)null : (int)normalized.Phase.Value;
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         using var grid = await connection.QueryMultipleAsync(new CommandDefinition($"""
             SELECT {DashboardRunSummaryColumns}
@@ -203,6 +205,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         bool includePayload,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return await connection.QuerySingleOrDefaultAsync<DashboardRunDetails>(new CommandDefinition(@"
             SELECT Id,
@@ -241,6 +244,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         string runId,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return (await connection.QueryAsync<DashboardAttemptSummary>(new CommandDefinition(@"
             SELECT Id,
@@ -266,6 +270,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         int limit,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         var rows = await connection.QueryAsync<WorkerDashboardRow>(new CommandDefinition(@"
             SELECT WorkerId,
@@ -312,6 +317,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         int limit,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         return (await connection.QueryAsync<JobScheduleRecord>(new CommandDefinition(@"
             SELECT *

@@ -8,10 +8,10 @@ namespace KubeJob.Transport.RabbitMQ;
 
 /// <summary>
 /// Declares the Direct Dispatch topology for the configured consumer group
-/// on startup. Each logical queue becomes a durable quorum queue with an
-/// optional <c>x-delivery-limit</c> and a per-queue dead-letter exchange;
-/// transient retries use a separate TTL retry queue.
-/// that routes poison messages to the shared group DLQ. Cancellation is
+/// on startup. Logical queues share one physical quorum execution queue and
+/// one shared TTL retry queue by default; the logical queue remains the
+/// routing key and envelope field. Poison messages route to the shared group
+/// DLQ. Cancellation is
 /// handled through a separate per-group fanout exchange; each worker declares
 /// its own exclusive auto-delete cancel queue so every live worker receives a copy.
 ///
@@ -74,13 +74,7 @@ public sealed class RabbitMqDispatchTopology : IHostedService
         using var connection = factory.CreateConnection("KubeJob.DispatchTopology");
         using var channel = connection.CreateModel();
 
-        DeclareGroupTopology(channel);
-        DeclareRetryTopology(channel);
-        DeclareCancelTopology(channel);
-        foreach (var logicalQueue in _worker.Queues)
-        {
-            DeclareDispatchQueue(channel, logicalQueue);
-        }
+        DeclareTopology(channel);
 
         _logger.LogInformation(
             "RabbitMQ KubeJob Direct Dispatch topology declared for group {ConsumerGroup} across queues {Queues}",
@@ -89,6 +83,20 @@ public sealed class RabbitMqDispatchTopology : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    internal void DeclareTopology(IModel channel)
+    {
+        DeclareGroupTopology(channel);
+        DeclareRetryTopology(channel);
+        if (_options.EnableCancelQueue)
+        {
+            DeclareCancelTopology(channel);
+        }
+        foreach (var logicalQueue in _worker.Queues)
+        {
+            DeclareDispatchQueue(channel, logicalQueue);
+        }
+    }
 
     private void DeclareGroupTopology(IModel channel)
     {

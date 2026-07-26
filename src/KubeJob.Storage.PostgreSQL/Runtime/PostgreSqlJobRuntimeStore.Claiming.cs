@@ -24,6 +24,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return Array.Empty<ClaimedJob>();
         }
 
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 

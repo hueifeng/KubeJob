@@ -9,6 +9,20 @@
     var hasFilters = !string.IsNullOrWhiteSpace(permanentQuery.Queue)
                      || !string.IsNullOrWhiteSpace(permanentQuery.JobKey);
     var needsReview = permanent.TotalCount + exhausted.TotalCount;
+    var permanentPaginationRoutes = new Dictionary<string, object?>
+    {
+        ["deadPage"] = exhausted.Page,
+        ["queue"] = permanentQuery.Queue,
+        ["jobKey"] = permanentQuery.JobKey,
+        ["exactJobKey"] = permanentQuery.ExactJobKey
+    };
+    var exhaustedPaginationRoutes = new Dictionary<string, object?>
+    {
+        ["failedPage"] = permanent.Page,
+        ["queue"] = exhaustedQuery.Queue,
+        ["jobKey"] = exhaustedQuery.JobKey,
+        ["exactJobKey"] = exhaustedQuery.ExactJobKey
+    };
 }
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
@@ -136,17 +150,9 @@
             </tbody>
         </table>
     </div>
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
-        <div class="small text-muted">Page @permanent.Page of @(Math.Max(1, permanent.TotalPages))</div>
-        <div class="d-flex gap-2" aria-label="Permanent failure pagination">
-            <a class="btn btn-sm btn-outline-secondary @(permanent.Page <= 1 ? "disabled" : "")"
-               asp-action="Failures" asp-route-failedPage="@(permanent.Page - 1)" asp-route-deadPage="@exhausted.Page"
-               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" asp-route-exactJobKey="@permanentQuery.ExactJobKey">Previous page</a>
-            <a class="btn btn-sm btn-outline-secondary @(permanent.TotalPages == 0 || permanent.Page >= permanent.TotalPages ? "disabled" : "")"
-               asp-action="Failures" asp-route-failedPage="@(permanent.Page + 1)" asp-route-deadPage="@exhausted.Page"
-               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" asp-route-exactJobKey="@permanentQuery.ExactJobKey">Next page</a>
-        </div>
-    </div>
+    @await Html.PartialAsync(
+        "~/Views/Shared/_DashboardPagination.cshtml",
+        new DashboardPaginationModel(permanent, "Failures", "failedPage", permanentPaginationRoutes))
 </section>
 
 <section class="panel">
@@ -194,15 +200,7 @@
             </tbody>
         </table>
     </div>
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
-        <div class="small text-muted">Page @exhausted.Page of @(Math.Max(1, exhausted.TotalPages))</div>
-        <div class="d-flex gap-2" aria-label="Exhausted retry pagination">
-            <a class="btn btn-sm btn-outline-secondary @(exhausted.Page <= 1 ? "disabled" : "")"
-               asp-action="Failures" asp-route-failedPage="@permanent.Page" asp-route-deadPage="@(exhausted.Page - 1)"
-               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey" asp-route-exactJobKey="@exhaustedQuery.ExactJobKey">Previous page</a>
-            <a class="btn btn-sm btn-outline-secondary @(exhausted.TotalPages == 0 || exhausted.Page >= exhausted.TotalPages ? "disabled" : "")"
-               asp-action="Failures" asp-route-failedPage="@permanent.Page" asp-route-deadPage="@(exhausted.Page + 1)"
-               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey" asp-route-exactJobKey="@exhaustedQuery.ExactJobKey">Next page</a>
-        </div>
-    </div>
+    @await Html.PartialAsync(
+        "~/Views/Shared/_DashboardPagination.cshtml",
+        new DashboardPaginationModel(exhausted, "Failures", "deadPage", exhaustedPaginationRoutes))
 </section>

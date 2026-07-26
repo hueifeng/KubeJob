@@ -26,6 +26,12 @@ public sealed class JobRuntimeOptions
 
     public int OutboxBatchSize { get; set; } = 128;
 
+    public int OutboxPublishConcurrency { get; set; } = 4;
+
+    public int CompletionBatchSize { get; set; } = 32;
+
+    public TimeSpan CompletionFlushInterval { get; set; } = TimeSpan.FromMilliseconds(5);
+
     public int ScheduleBatchSize { get; set; } = 128;
 
     /// Maximum UTF-8 encoded payload size accepted at the control-plane boundary.
@@ -122,6 +128,21 @@ public sealed class JobRuntimeOptions
         if (OutboxBatchSize is < 1 or > 10_000)
         {
             throw new InvalidOperationException("OutboxBatchSize must be between 1 and 10000.");
+        }
+
+        if (OutboxPublishConcurrency is < 1 or > 32)
+        {
+            throw new InvalidOperationException("OutboxPublishConcurrency must be between 1 and 32.");
+        }
+
+        if (CompletionBatchSize is < 1 or > 1_024)
+        {
+            throw new InvalidOperationException("CompletionBatchSize must be between 1 and 1024.");
+        }
+
+        if (CompletionFlushInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("CompletionFlushInterval must be positive.");
         }
 
         if (ScheduleBatchSize is < 1 or > 10_000)

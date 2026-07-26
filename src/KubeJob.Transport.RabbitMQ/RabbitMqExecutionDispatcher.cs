@@ -8,22 +8,24 @@ using RabbitMQ.Client.Events;
 namespace KubeJob.Transport.RabbitMQ;
 
 /// <summary>
-/// Publishes durable execution envelopes. The envelope identifies a logical
-/// Run, but never grants execution authority; the consumer must perform
-/// targeted control-plane Admission before invoking a handler.
+/// Publishes durable execution envelopes through a bounded pool of independent
+/// RabbitMQ channels. RabbitMQ IModel instances are not thread-safe, so each
+/// slot owns its connection, channel, confirm wait, and return handler.
 /// </summary>
 public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly RabbitMqExecutionOptions _options;
-    private readonly object _gate = new();
-    private IConnection? _connection;
-    private IModel? _channel;
+    private readonly PublisherSlot[] _slots;
+    private int _nextSlot;
 
     public RabbitMqExecutionDispatcher(IOptions<RabbitMqExecutionOptions> options)
     {
         _options = options.Value;
         _options.Validate();
+        _slots = Enumerable.Range(0, _options.PublisherConcurrency)
+            .Select(_ => new PublisherSlot())
+            .ToArray();
     }
 
     public ValueTask DispatchAsync(
@@ -38,11 +40,13 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
                 "RabbitMQ execution routing keys must be shorter than 255 UTF-8 bytes.");
         }
 
-        lock (_gate)
+        var slotIndex = (int)((uint)Interlocked.Increment(ref _nextSlot) % (uint)_slots.Length);
+        var slot = _slots[slotIndex];
+        lock (slot.Gate)
         {
             try
             {
-                var channel = EnsureChannel();
+                var channel = EnsureChannel(slot);
                 var properties = channel.CreateBasicProperties();
                 properties.ContentType = "application/json";
                 properties.DeliveryMode = 2;
@@ -89,7 +93,7 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
             }
             catch
             {
-                ResetConnection();
+                ResetConnection(slot);
                 throw;
             }
         }
@@ -99,20 +103,23 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
 
     public void Dispose()
     {
-        lock (_gate)
+        foreach (var slot in _slots)
         {
-            ResetConnection();
+            lock (slot.Gate)
+            {
+                ResetConnection(slot);
+            }
         }
     }
 
-    private IModel EnsureChannel()
+    private IModel EnsureChannel(PublisherSlot slot)
     {
-        if (_channel is { IsOpen: true })
+        if (slot.Channel is { IsOpen: true })
         {
-            return _channel;
+            return slot.Channel;
         }
 
-        ResetConnection();
+        ResetConnection(slot);
         var factory = new ConnectionFactory
         {
             Uri = new Uri(_options.ConnectionString, UriKind.Absolute),
@@ -120,27 +127,23 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
             TopologyRecoveryEnabled = true
         };
 
-        _connection = factory.CreateConnection("KubeJob.ExecutionDispatcher");
-        _channel = _connection.CreateModel();
-        // Publish to the per-group direct exchange that
-        // RabbitMqDispatchTopology binds each queue's quorum queue to. The
-        // control plane declares it itself so a distributed deployment does
-        // not depend on a worker having run the topology first.
-        _channel.ExchangeDeclare(
+        slot.Connection = factory.CreateConnection("KubeJob.ExecutionDispatcher");
+        slot.Channel = slot.Connection.CreateModel();
+        slot.Channel.ExchangeDeclare(
             exchange: _options.GetGroupExchangeName(),
             type: ExchangeType.Direct,
             durable: true,
             autoDelete: false,
             arguments: null);
-        _channel.ConfirmSelect();
-        return _channel;
+        slot.Channel.ConfirmSelect();
+        return slot.Channel;
     }
 
-    private void ResetConnection()
+    private static void ResetConnection(PublisherSlot slot)
     {
         try
         {
-            _channel?.Dispose();
+            slot.Channel?.Dispose();
         }
         catch
         {
@@ -148,13 +151,20 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
 
         try
         {
-            _connection?.Dispose();
+            slot.Connection?.Dispose();
         }
         catch
         {
         }
 
-        _channel = null;
-        _connection = null;
+        slot.Channel = null;
+        slot.Connection = null;
+    }
+
+    private sealed class PublisherSlot
+    {
+        public object Gate { get; } = new();
+        public IConnection? Connection { get; set; }
+        public IModel? Channel { get; set; }
     }
 }

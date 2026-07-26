@@ -24,6 +24,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
     private readonly KubeJobWorkerOptions _worker;
     private readonly WorkerRuntimeService _runtime;
     private readonly IWorkerRuntimeClient _runtimeClient;
+    private readonly RabbitMqDispatchTopology _topology;
     private readonly ILogger<RabbitMqExecutionConsumerService> _logger;
 
     public RabbitMqExecutionConsumerService(
@@ -31,12 +32,14 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         IOptions<KubeJobWorkerOptions> worker,
         WorkerRuntimeService runtime,
         IWorkerRuntimeClient runtimeClient,
+        RabbitMqDispatchTopology topology,
         ILogger<RabbitMqExecutionConsumerService> logger)
     {
         _options = options.Value;
         _worker = worker.Value;
         _runtime = runtime;
         _runtimeClient = runtimeClient;
+        _topology = topology;
         _logger = logger;
         _options.Validate();
         _worker.Validate();
@@ -77,56 +80,56 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
 
         using var connection = factory.CreateConnection($"KubeJob.Execution.{_worker.WorkerId}");
         using var channel = connection.CreateModel();
+        using var connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         channel.BasicQos(0, _options.PrefetchCount, global: false);
         channel.ConfirmSelect();
 
         var channelGate = new object();
-        foreach (var logicalQueue in _worker.Queues)
+        _topology.DeclareTopology(channel);
+        var consumerQueues = _worker.Queues
+            .Select(_options.GetConsumerQueueName)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        foreach (var consumerQueue in consumerQueues)
         {
-            var consumerQueue = _options.GetConsumerQueueName(logicalQueue);
-            // RabbitMqDispatchTopology (co-registered by AddRabbitMqKubeJobExecutionConsumer)
-            // declares the per-group direct exchange, this quorum queue with its
-            // x-dead-letter-exchange and x-delivery-limit, and the binding to the
-            // group exchange with routingKey = logicalQueue. Passive-declare only
-            // asserts the queue exists; re-declaring it here with arguments:null
-            // would clash with the quorum declaration (PRECONDITION_FAILED).
-            channel.QueueDeclarePassive(consumerQueue);
-
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.Received += (_, delivery) => ProcessDeliveryAsync(
                 channel,
                 channelGate,
                 delivery,
-                stoppingToken);
+                connectionLifetime.Token);
             channel.BasicConsume(
                 queue: consumerQueue,
                 autoAck: false,
                 consumer: consumer);
         }
 
-        var cancelQueue = _options.GetCancelQueueName(
-            _options.ConsumerGroup,
-            $"{_worker.WorkerId}.{_runtime.SessionId}");
-        channel.QueueDeclare(
-            queue: cancelQueue,
-            durable: false,
-            exclusive: true,
-            autoDelete: true,
-            arguments: null);
-        channel.QueueBind(
-            queue: cancelQueue,
-            exchange: _options.GetCancelExchangeName(_options.ConsumerGroup),
-            routingKey: string.Empty,
-            arguments: null);
-        var cancelConsumer = new AsyncEventingBasicConsumer(channel);
-        cancelConsumer.Received += (_, delivery) => ProcessCancelDeliveryAsync(
-            channel,
-            channelGate,
-            delivery);
-        channel.BasicConsume(
-            queue: cancelQueue,
-            autoAck: false,
-            consumer: cancelConsumer);
+        if (_options.EnableCancelQueue)
+        {
+            var cancelQueue = _options.GetCancelQueueName(
+                _options.ConsumerGroup,
+                $"{_worker.WorkerId}.{_runtime.SessionId}");
+            channel.QueueDeclare(
+                queue: cancelQueue,
+                durable: false,
+                exclusive: true,
+                autoDelete: true,
+                arguments: null);
+            channel.QueueBind(
+                queue: cancelQueue,
+                exchange: _options.GetCancelExchangeName(_options.ConsumerGroup),
+                routingKey: string.Empty,
+                arguments: null);
+            var cancelConsumer = new AsyncEventingBasicConsumer(channel);
+            cancelConsumer.Received += (_, delivery) => ProcessCancelDeliveryAsync(
+                channel,
+                channelGate,
+                delivery);
+            channel.BasicConsume(
+                queue: cancelQueue,
+                autoAck: false,
+                consumer: cancelConsumer);
+        }
 
         _logger.LogInformation(
             "RabbitMQ KubeJob execution consumer active for worker {WorkerId}, group {ConsumerGroup}, and queues {Queues}",
@@ -136,10 +139,15 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
 
         var disconnected = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        connection.ConnectionShutdown += (_, _) => disconnected.TrySetResult();
+        connection.ConnectionShutdown += (_, _) =>
+        {
+            connectionLifetime.Cancel();
+            disconnected.TrySetResult();
+        };
         await Task.WhenAny(
             disconnected.Task,
             Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken));
+        connectionLifetime.Cancel();
         stoppingToken.ThrowIfCancellationRequested();
     }
 
@@ -236,14 +244,9 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            if (envelope is not null)
-            {
-                RepublishOrNack(channel, channelGate, delivery, envelope.Queue, "consumer_stopping");
-            }
-            else
-            {
-                Nack(channel, channelGate, delivery.DeliveryTag, "consumer_stopping");
-            }
+            _logger.LogDebug(
+                "RabbitMQ execution delivery {DeliveryTag} was interrupted by connection or host shutdown; broker will requeue the unacked delivery",
+                delivery.DeliveryTag);
         }
         catch (Exception exception)
         {

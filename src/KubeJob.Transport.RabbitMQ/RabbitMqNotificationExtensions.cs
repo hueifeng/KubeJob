@@ -56,9 +56,9 @@ public static class RabbitMqNotificationExtensions
     /// <summary>
     /// Adds the RabbitMQ Execution Envelope consumer to a worker. The worker
     /// must already be registered with AddKubeJobWorker. The Direct Dispatch
-    /// topology (group exchange, TTL retry exchange/queues, DLX, DLQ,
-    /// per-queue quorum queues with optional <c>x-delivery-limit</c>, and the
-    /// per-group cancel fanout exchange) is declared automatically on startup.
+    /// topology (group exchange, shared TTL retry queue, DLX, DLQ, shared
+    /// quorum execution queue, and the optional per-group cancel fanout
+    /// exchange) is declared automatically on startup.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobExecutionConsumer(
         this IServiceCollection services,
@@ -66,7 +66,8 @@ public static class RabbitMqNotificationExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
-        services.AddHostedService<RabbitMqDispatchTopology>();
+        services.AddSingleton<RabbitMqDispatchTopology>();
+        services.AddHostedService(services => services.GetRequiredService<RabbitMqDispatchTopology>());
         services.AddHostedService<RabbitMqExecutionConsumerService>();
         return services;
     }
@@ -82,6 +83,7 @@ public static class RabbitMqNotificationExtensions
         Action<RabbitMqExecutionOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
+        services.Configure<RabbitMqExecutionOptions>(options => options.EnableCancelQueue = true);
         services.Configure(configure);
         services.Replace(ServiceDescriptor.Singleton<IExecutionGroupResolver, RabbitMqExecutionGroupResolver>());
         services.Replace(ServiceDescriptor.Singleton<ICancelPublisher, RabbitMqCancelPublisher>());

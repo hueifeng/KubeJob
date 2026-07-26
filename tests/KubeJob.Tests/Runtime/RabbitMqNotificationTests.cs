@@ -193,6 +193,38 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
+    public void Shared_execution_topology_collapses_logical_queues_to_one_physical_queue()
+    {
+        var options = new RabbitMqExecutionOptions
+        {
+            ConsumerGroup = "unified",
+            UseSharedExecutionQueue = true
+        };
+
+        options.GetConsumerQueueName("default")
+            .Should().Be(options.GetConsumerQueueName("samples"))
+            .And.EndWith(".queue");
+        options.GetRetryQueueName("default")
+            .Should().Be(options.GetRetryQueueName("samples"))
+            .And.EndWith(".retry.queue");
+        options.GetGroupDlqName().Should().EndWith(".dlq.queue");
+
+        options.UseSharedExecutionQueue = false;
+        options.GetConsumerQueueName("default")
+            .Should().NotBe(options.GetConsumerQueueName("samples"));
+        options.GetRetryQueueName("default")
+            .Should().NotBe(options.GetRetryQueueName("samples"));
+    }
+
+    [Fact]
+    public void Cancel_queue_is_opt_in_for_execution_consumers()
+    {
+        var options = new RabbitMqExecutionOptions();
+
+        options.EnableCancelQueue.Should().BeFalse();
+    }
+
+    [Fact]
     public void Physical_queue_names_remain_distinct_for_normalization_collisions()
     {
         RabbitMqExecutionOptions.SanitizeSegment("orders.push")

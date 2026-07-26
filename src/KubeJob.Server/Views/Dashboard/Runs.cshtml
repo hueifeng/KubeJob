@@ -7,6 +7,13 @@
     var hasScopeFilters = !string.IsNullOrWhiteSpace(query.Queue)
                           || !string.IsNullOrWhiteSpace(query.JobKey);
     var hasFilters = query.Phase is not null || hasScopeFilters;
+    var paginationRoutes = new Dictionary<string, object?>
+    {
+        ["phase"] = query.Phase,
+        ["queue"] = query.Queue,
+        ["jobKey"] = query.JobKey,
+        ["exactJobKey"] = query.ExactJobKey
+    };
     string StatusButtonClass(JobPhase? phase) => query.Phase == phase
         ? "btn-primary"
         : "btn-outline-secondary";
@@ -186,17 +193,9 @@
             </tbody>
         </table>
     </div>
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 p-3 border-top">
-        <div class="small text-muted">@results.TotalCount job run(s) · page @results.Page of @(Math.Max(1, results.TotalPages))</div>
-        <div class="d-flex gap-2" aria-label="Job list pagination">
-            <a class="btn btn-sm btn-outline-secondary @(results.Page <= 1 ? "disabled" : "")"
-               asp-action="Runs" asp-route-page="@(results.Page - 1)" asp-route-pageSize="@results.PageSize"
-               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey">Previous page</a>
-            <a class="btn btn-sm btn-outline-secondary @(results.TotalPages == 0 || results.Page >= results.TotalPages ? "disabled" : "")"
-               asp-action="Runs" asp-route-page="@(results.Page + 1)" asp-route-pageSize="@results.PageSize"
-               asp-route-phase="@query.Phase" asp-route-queue="@query.Queue" asp-route-jobKey="@query.JobKey" asp-route-exactJobKey="@query.ExactJobKey">Next page</a>
-        </div>
-    </div>
+    @await Html.PartialAsync(
+        "~/Views/Shared/_DashboardPagination.cshtml",
+        new DashboardPaginationModel(results, "Runs", "page", paginationRoutes))
 </div>
 
 @functions {

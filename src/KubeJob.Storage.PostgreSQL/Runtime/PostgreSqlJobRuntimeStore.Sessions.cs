@@ -10,6 +10,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         RegisterWorkerSessionRequest request,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
@@ -135,8 +136,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
         WorkerHeartbeatRequest request,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
+            new { request.WorkerId },
+            transaction,
+            cancellationToken: cancellationToken));
 
         var session = await connection.QuerySingleOrDefaultAsync<SessionCapacityRow>(new CommandDefinition(@"
             SELECT MaxConcurrency, State
@@ -203,6 +211,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         long sessionEpoch,
         CancellationToken cancellationToken)
     {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         var affected = await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_WorkerSessions

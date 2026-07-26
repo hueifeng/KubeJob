@@ -13,6 +13,12 @@ public static class KubeJobPostgresExtensions
     public static KubeJobServerOptions UsePostgreSql(
         this KubeJobServerOptions options,
         string connectionString)
+        => options.UsePostgreSql(connectionString, configure: null);
+
+    public static KubeJobServerOptions UsePostgreSql(
+        this KubeJobServerOptions options,
+        string connectionString,
+        Action<PostgreSqlStorageOptions>? configure)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -22,10 +28,20 @@ public static class KubeJobPostgresExtensions
                 nameof(connectionString));
         }
 
+        var storageOptions = new PostgreSqlStorageOptions();
+        configure?.Invoke(storageOptions);
+        storageOptions.Validate();
+
+        var connectionOptions = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            MaxPoolSize = storageOptions.MaximumPoolSize
+        };
+
         options.StorageConfigurator = services =>
         {
-            services.AddSingleton<IStorageInitializer>(_ => new DbInitializer(connectionString));
-            services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+            services.AddSingleton(storageOptions);
+            services.AddSingleton<IStorageInitializer>(_ => new DbInitializer(connectionOptions.ConnectionString));
+            services.AddSingleton(_ => NpgsqlDataSource.Create(connectionOptions.ConnectionString));
             services.AddSingleton<PostgreSqlJobRuntimeStore>();
             services.AddSingleton<IJobSubmissionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
             services.AddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());

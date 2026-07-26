@@ -73,6 +73,7 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
             prefetchCount: 1,
             global: false);
 
+        var channelGate = new object();
         foreach (var logicalQueue in _worker.Queues)
         {
             var consumerQueue = _rabbitMq.GetConsumerQueueName(logicalQueue);
@@ -92,7 +93,10 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
             consumer.Received += (_, delivery) =>
             {
                 _claimTrigger.Pulse();
-                channel.BasicAck(delivery.DeliveryTag, multiple: false);
+                lock (channelGate)
+                {
+                    channel.BasicAck(delivery.DeliveryTag, multiple: false);
+                }
                 return Task.CompletedTask;
             };
 

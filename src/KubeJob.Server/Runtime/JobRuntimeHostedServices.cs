@@ -84,12 +84,11 @@ public sealed class OutboxPublisherService : BackgroundService
             var dispatchedAny = false;
             try
             {
-                var result = await _store.DispatchOnceAsync(
-                    _options.OutboxClaimDuration,
-                    _options.OutboxFailureDelay,
-                    _options.OutboxBatchSize,
-                    DispatchOneAsync,
-                    stoppingToken);
+                var results = await DispatchParallelAsync(stoppingToken);
+                var result = new OutboxDispatchBatch(
+                    results.SelectMany(x => x.DispatchedIds).ToArray(),
+                    results.SelectMany(x => x.FailedIds).ToArray(),
+                    results.SelectMany(x => x.Abandoned).ToArray());
 
                 dispatchedAny = result.DispatchedIds.Count > 0;
 
@@ -129,6 +128,19 @@ public sealed class OutboxPublisherService : BackgroundService
                 }
             }
         }
+    }
+
+    private Task<OutboxDispatchBatch[]> DispatchParallelAsync(
+        CancellationToken cancellationToken)
+    {
+        var workerCount = Math.Min(_options.OutboxBatchSize, _options.OutboxPublishConcurrency);
+        return Task.WhenAll(Enumerable.Range(0, workerCount).Select(_ =>
+            _store.DispatchOnceAsync(
+                _options.OutboxClaimDuration,
+                _options.OutboxFailureDelay,
+                1,
+                DispatchOneAsync,
+                cancellationToken).AsTask()));
     }
 
     private async ValueTask DispatchOneAsync(

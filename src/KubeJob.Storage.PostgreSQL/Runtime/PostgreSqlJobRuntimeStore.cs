@@ -4,6 +4,7 @@ using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
+using KubeJob.Storage.PostgreSQL.Extensions;
 using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;
@@ -21,6 +22,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly NpgsqlDataSource _dataSource;
+    private readonly SemaphoreSlim _databaseGate;
 
     static PostgreSqlJobRuntimeStore()
     {
@@ -31,8 +33,44 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     }
 
     public PostgreSqlJobRuntimeStore(NpgsqlDataSource dataSource)
+        : this(dataSource, new PostgreSqlStorageOptions())
+    {
+    }
+
+    public PostgreSqlJobRuntimeStore(
+        NpgsqlDataSource dataSource,
+        PostgreSqlStorageOptions options)
     {
         _dataSource = dataSource;
+        _databaseGate = new SemaphoreSlim(options.MaximumConcurrentOperations);
+    }
+
+    private async ValueTask<DatabaseOperationPermit> AcquireDatabaseOperationAsync(
+        CancellationToken cancellationToken)
+    {
+        await _databaseGate.WaitAsync(cancellationToken);
+        return new DatabaseOperationPermit(_databaseGate);
+    }
+
+    private sealed class DatabaseOperationPermit : IAsyncDisposable
+    {
+        private readonly SemaphoreSlim _gate;
+        private int _released;
+
+        public DatabaseOperationPermit(SemaphoreSlim gate)
+        {
+            _gate = gate;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                _gate.Release();
+            }
+
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static string NewId() => Guid.NewGuid().ToString("N");

@@ -68,7 +68,8 @@ This publisher is only the durable, confirmed hand-off. It publishes each
 `ExecutionEnvelope` to the per-group direct exchange
 `{ConsumerQueuePrefix}.{ConsumerGroup}` (default `kubejob.execution.{group}`)
 with the logical queue as routing key; `RabbitMqDispatchTopology` declares that
-exchange and binds each queue's quorum queue to it on worker startup. The
+exchange and binds the logical routes to the shared physical execution queue
+`kubejob.execution.{group}.queue` on worker startup. The
 RabbitMQ Worker Consumer performs targeted Admission for the envelope's RunId,
 reuses the normal WorkerRuntimeService Handler/Lease/Complete path, and
 acknowledges only after durable completion or an explicit terminal/rejection
@@ -81,29 +82,39 @@ on worker startup via `RabbitMqDispatchTopology`:
 
 | Resource | Name | Type | Notes |
 | --- | --- | --- | --- |
-| Group exchange | `kubejob.execution.{group}` | direct, durable | All per-queue dispatch queues bind here with their `Queue` as routing key. Names derive from `RabbitMqExecutionOptions.ConsumerQueuePrefix` (default `kubejob.execution`) + `ConsumerGroup`. |
+| Group exchange | `kubejob.execution.{group}` | direct, durable | The shared execution queue binds once per logical routing key. Names derive from `RabbitMqExecutionOptions.ConsumerQueuePrefix` (default `kubejob.execution`) + `ConsumerGroup`. |
 | Group DLX | `kubejob.execution.{group}.dlx` | fanout, durable | Catches poison envelopes whose `x-delivery-count` has saturated. |
-| Group DLQ | `kubejob.execution.{group}.dlq` | quorum, durable | Bound to the group DLX; inspect here for permanently failed envelopes. |
-| Per-queue dispatch queue | `kubejob.execution.{group}.{sanitized-queue}` | quorum, durable | `x-dead-letter-exchange` set to the group DLX; `x-delivery-limit` is disabled by default and must only be enabled with a Pending-Run DLQ re-drive policy. |
+| Group DLQ | `kubejob.execution.{group}.dlq.queue` | quorum, durable | Bound to the group DLX; inspect here for permanently failed envelopes. |
+| Shared dispatch queue | `kubejob.execution.{group}.queue` | quorum, durable | All logical queue routes in the group bind to this one stable queue; `x-dead-letter-exchange` is set to the group DLX. `x-delivery-limit` is disabled by default and must only be enabled with a Pending-Run DLQ re-drive policy. |
 | Retry exchange | `kubejob.execution.{group}.retry` | direct, durable | Temporary admission/capacity failures are republished here instead of incrementing the dispatch queue delivery count. |
-| Per-queue retry queue | `kubejob.execution.{group}.retry.{sanitized-queue}` | quorum, durable | Uses `x-message-ttl = RetryDelay` and dead-letters back to the group exchange with the logical queue routing key. |
+| Shared retry queue | `kubejob.execution.{group}.retry.queue` | quorum, durable | All logical queue routes bind to this one stable queue. Uses `x-message-ttl = RetryDelay` and dead-letters back to the group exchange with the original logical queue routing key. |
 | Cancel exchange | `kubejob.execution.{group}.cancel` | fanout, durable | Cancel markers fan out to every worker queue in the group. |
 | Per-worker cancel queue | `kubejob.execution.{group}.cancel.{worker-session}` | exclusive, auto-delete | One ephemeral queue per worker session, bound to the cancel exchange; the durable cancel Outbox row and lease fallback provide correctness across restarts. |
 
-`{sanitized-queue}` is the lower-cased, alphanumeric-and-dash form of the
-KubeJob logical queue name (continuous `-` collapsed, capped at 48 characters,
-and always suffixed with a stable 6-character hash to prevent collisions).
-The control plane never sees RabbitMQ-side names; `RabbitMqExecutionOptions.GetConsumerQueueName`
-is the only place a logical queue becomes a physical RabbitMQ queue name.
+### Queue-name migration
+
+The physical queue names are part of the deployment topology. When upgrading from
+an older release that used names without the `.queue` suffix, stop the old
+publisher/consumer, drain or re-drive messages from the old execution/retry/DLQ
+queues, verify `messages_ready=0`, `messages_unacknowledged=0`, and
+`consumers=0`, then remove the old bindings and queues before switching traffic
+to the new names. A name change alone does not move existing RabbitMQ messages.
+
+The stable names are intentionally reused across service restarts; do not append
+process IDs, Pod UIDs, or random GUIDs to durable execution or ingress queues.
+The physical execution, retry, and DLQ names are stable and end in `.queue`.
+The logical queue remains only in the envelope and routing key. The control
+plane never sees RabbitMQ-side names; `RabbitMqExecutionOptions` owns the
+logical-to-physical routing contract.
 
 Per-message header conventions:
 
 - Dispatch envelopes set `properties.Type = "execution-envelope"` and `MessageId = EventId`. Consumers dispatch on type, not on body parsing.
 - Cancel markers set `properties.Type = "cancel"` and `X-KubeJob-Event-Type = "cancel"`. Each worker-session cancel consumer calls the in-flight attempt cancellation hook and ACKs the marker.
-- Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the per-queue TTL retry queue and the original delivery is ACKed only after retry publication is confirmed; direct `Nack(requeue=true)` is reserved for retry-publication failure or shutdown fallback.
+- Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the shared TTL retry queue and the original delivery is ACKed only after retry publication is confirmed; direct `Nack(requeue=true)` is reserved for retry-publication failure or shutdown fallback.
 
 Retry ownership: KubeJob's `MaxAttempts` (enforced by the completion store)
-remains the authoritative terminal-state driver. The per-queue TTL retry queue
+remains the authoritative terminal-state driver. The shared TTL retry queue
 owns only transient broker/worker admission delay; it does not create a new
 Attempt or increment `MaxAttempts`. `x-delivery-limit` is disabled by default;
 if explicitly enabled, the deployment must provide a DLQ re-drive policy for

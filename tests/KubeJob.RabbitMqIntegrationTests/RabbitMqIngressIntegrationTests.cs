@@ -102,6 +102,12 @@ public sealed class RabbitMqIngressIntegrationTests
         finally
         {
             await host.StopAsync();
+            using var cleanupConnection = CreateConnection(connectionString);
+            using var cleanupChannel = cleanupConnection.CreateModel();
+            cleanupChannel.QueueDelete(queue, ifUnused: false, ifEmpty: false);
+            cleanupChannel.QueueDelete(deadLetterQueue, ifUnused: false, ifEmpty: false);
+            cleanupChannel.ExchangeDelete(deadLetterExchange);
+            cleanupChannel.ExchangeDelete(exchange);
         }
     }
 

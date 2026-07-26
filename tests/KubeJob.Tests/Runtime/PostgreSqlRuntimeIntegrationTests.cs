@@ -160,7 +160,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var run = (await store.SubmitAsync(NewSubmission(), CancellationToken.None)).Run;
         var workerA = await RegisterAsync(store, "worker-a", "session-a");
         var workerB = await RegisterAsync(store, "worker-b", "session-b");
-
         var claims = await Task.WhenAll(
             store.ClaimAsync(Claim(workerA), TimeSpan.FromSeconds(30), 1, CancellationToken.None).AsTask(),
             store.ClaimAsync(Claim(workerB), TimeSpan.FromSeconds(30), 1, CancellationToken.None).AsTask());
@@ -192,6 +191,77 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None);
 
         completion.Accepted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Completion_batch_atomically_finishes_multiple_successful_attempts()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        foreach (var index in Enumerable.Range(0, 3))
+        {
+            await store.SubmitAsync(
+                NewSubmission($"batch-completion-{index}"),
+                CancellationToken.None);
+        }
+
+        var worker = await RegisterAsync(store, "batch-worker", "batch-session", 3);
+        var claims = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                3,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            3,
+            CancellationToken.None);
+
+        claims.Should().HaveCount(3);
+        var completions = await store.CompleteBatchAsync(
+            claims.Select(job => Completion(worker, job, JobAttemptOutcome.Succeeded)).ToArray(),
+            TimeSpan.Zero,
+            CancellationToken.None);
+
+        completions.Should().OnlyContain(result => result.Accepted);
+        foreach (var job in claims)
+        {
+            (await store.GetRunAsync(job.RunId, CancellationToken.None))!
+                .Phase.Should().Be(JobPhase.Succeeded);
+        }
+    }
+
+    [Fact]
+    public async Task Completion_batch_honors_cancel_requested_before_success()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var run = (await store.SubmitAsync(
+            NewSubmission("batch-completion-cancel"),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "batch-cancel-worker", "batch-cancel-session");
+        var claim = (await store.ClaimAsync(
+            Claim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+
+        (await store.RequestCancelAsync(
+            run.Id,
+            "cancel while handler is finishing",
+            null,
+            CancellationToken.None)).Requested.Should().BeTrue();
+
+        var response = (await store.CompleteBatchAsync(
+            new[] { Completion(worker, claim, JobAttemptOutcome.Succeeded) },
+            TimeSpan.Zero,
+            CancellationToken.None)).Single();
+
+        response.Accepted.Should().BeTrue();
+        response.Phase.Should().Be(JobPhase.Canceled);
+        (await store.GetRunAsync(run.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Canceled);
     }
 
     [Fact]
@@ -435,13 +505,14 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     private static ValueTask<WorkerSessionRecord> RegisterAsync(
         PostgreSqlJobRuntimeStore store,
         string workerId,
-        string sessionId) => store.RegisterAsync(
+        string sessionId,
+        int maxConcurrency = 1) => store.RegisterAsync(
         new RegisterWorkerSessionRequest(
             workerId,
             sessionId,
             "integration-test",
             "localhost",
-            1,
+            maxConcurrency,
             new[] { "default" },
             new[] { "mail.send" },
             new Dictionary<string, string>()),

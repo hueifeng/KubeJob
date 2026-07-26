@@ -8,7 +8,7 @@ public sealed class RabbitMqJobIngressOptions
 
     public string ExchangeName { get; set; } = "kubejob.job-ingress";
 
-    public string QueueName { get; set; } = "kubejob.job-ingress";
+    public string QueueName { get; set; } = "kubejob.job-ingress.queue";
 
     public string RoutingKey { get; set; } = "#";
 

@@ -1,5 +1,4 @@
 using System.Text;
-using System.Security.Cryptography;
 
 namespace KubeJob.Transport.RabbitMQ;
 
@@ -7,20 +6,23 @@ public sealed class RabbitMqExecutionOptions
 {
     public string ConnectionString { get; set; } = "amqp://guest:guest@localhost:5672/";
 
-    /// <summary>
-    /// Legacy direct exchange name. Execution dispatch now publishes to the
-    /// per-group direct exchange (<see cref="GetGroupExchangeName"/>) that
-    /// <c>RabbitMqDispatchTopology</c> binds each quorum queue to, so this
-    /// value is no longer used for execution dispatch. Retained to avoid
-    /// breaking existing option configurations; will be removed in a future
-    /// version.
-    /// </summary>
-    [Obsolete("Execution dispatch publishes to the per-group direct exchange (GetGroupExchangeName). This value is no longer used for dispatch and will be removed in a future version.")]
-    public string ExchangeName { get; set; } = "kubejob.execution";
-
     public string ConsumerGroup { get; set; } = "default";
 
     public string ConsumerQueuePrefix { get; set; } = "kubejob.execution";
+
+    /// <summary>
+    /// Binds all logical queues in a consumer group to one physical execution
+    /// queue and one retry queue. The logical queue remains in the envelope and
+    /// routing key, so business-level queue identity is preserved without
+    /// multiplying broker queues.
+    /// </summary>
+    public bool UseSharedExecutionQueue { get; set; } = true;
+
+    /// <summary>
+    /// Declares a per-worker cancel queue. Disabled by default because durable
+    /// CancelRequested state plus lease renewal is the correctness path.
+    /// </summary>
+    public bool EnableCancelQueue { get; set; }
 
     public ushort PrefetchCount { get; set; } = 16;
 
@@ -35,6 +37,8 @@ public sealed class RabbitMqExecutionOptions
     public TimeSpan BrokerRetryReconciliationDelay { get; set; } = TimeSpan.FromMinutes(1);
 
     public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    public int PublisherConcurrency { get; set; } = 4;
 
     /// <summary>
     /// The default is 0 (disabled): transient capacity and database failures
@@ -62,6 +66,12 @@ public sealed class RabbitMqExecutionOptions
                 "RabbitMQ execution PublisherConfirmTimeout must be positive.");
         }
 
+        if (PublisherConcurrency is < 1 or > 32)
+        {
+            throw new InvalidOperationException(
+                "RabbitMQ execution PublisherConcurrency must be between 1 and 32.");
+        }
+
         if (ConsumerGroup.Length > 200)
         {
             throw new InvalidOperationException(
@@ -74,16 +84,19 @@ public sealed class RabbitMqExecutionOptions
                 "RabbitMQ execution ConsumerQueuePrefix cannot exceed 180 UTF-8 bytes.");
         }
 
-        var maximumQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{new string('q', 48)}-ffffff";
-        var maximumRetryQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.{new string('q', 48)}-ffffff";
+        var maximumQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{new string('q', 48)}-ffffff.queue";
+        var maximumRetryQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.{new string('q', 48)}-ffffff.queue";
+        var sharedQueueName = GetSharedConsumerQueueName();
+        var sharedRetryQueueName = GetSharedRetryQueueName();
         var maximumCancelQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.cancel.{new string('q', 48)}-ffffff";
         var generatedNames = new[]
         {
             GetGroupExchangeName(),
             GetGroupDlxName(),
             GetGroupDlqName(),
+            sharedQueueName,
+            sharedRetryQueueName,
             GetCancelExchangeName(ConsumerGroup),
-            GetCancelQueueName(ConsumerGroup),
             maximumQueueName,
             maximumRetryQueueName,
             maximumCancelQueueName
@@ -134,15 +147,13 @@ public sealed class RabbitMqExecutionOptions
     internal string GetConsumerQueueName(string logicalQueue)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
-        var segment = SanitizeSegment(logicalQueue);
-        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}";
-    }
+        if (UseSharedExecutionQueue)
+        {
+            return GetSharedConsumerQueueName();
+        }
 
-    internal string GetConsumerQueueDlqName(string logicalQueue)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
         var segment = SanitizeSegment(logicalQueue);
-        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}.dlq";
+        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}.queue";
     }
 
     internal string GetGroupExchangeName() =>
@@ -152,19 +163,24 @@ public sealed class RabbitMqExecutionOptions
         $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry";
 
     internal string GetRetryQueueName(string logicalQueue) =>
-        $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.{SanitizeSegment(logicalQueue)}";
+        UseSharedExecutionQueue
+            ? GetSharedRetryQueueName()
+            : $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.{SanitizeSegment(logicalQueue)}.queue";
+
+    internal string GetSharedConsumerQueueName() =>
+        $"{ConsumerQueuePrefix}.{ConsumerGroup}.queue";
+
+    internal string GetSharedRetryQueueName() =>
+        $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.queue";
 
     internal string GetGroupDlxName() =>
         $"{ConsumerQueuePrefix}.{ConsumerGroup}.dlx";
 
     internal string GetGroupDlqName() =>
-        $"{ConsumerQueuePrefix}.{ConsumerGroup}.dlq";
+        $"{ConsumerQueuePrefix}.{ConsumerGroup}.dlq.queue";
 
     internal string GetCancelExchangeName(string group) =>
         $"{ConsumerQueuePrefix}.{group}.cancel";
-
-    internal string GetCancelQueueName(string group) =>
-        $"{ConsumerQueuePrefix}.{group}.cancel.workers";
 
     internal string GetCancelQueueName(string group, string workerIdentity) =>
         $"{ConsumerQueuePrefix}.{group}.cancel.{SanitizeSegment(workerIdentity)}";

@@ -58,7 +58,7 @@ public sealed class WorkerAndDashboardHardeningTests
     }
 
     [Fact]
-    public async Task Rejected_heartbeat_fails_the_worker_session_instead_of_polling_forever()
+    public async Task Rejected_heartbeat_restarts_the_worker_session_without_stopping_the_host()
     {
         await using var services = new ServiceCollection().BuildServiceProvider();
         var registry = new JobHandlerRegistry(new[] { new NoopInvoker() });
@@ -84,12 +84,16 @@ public sealed class WorkerAndDashboardHardeningTests
             NullLogger<WorkerRuntimeService>.Instance);
 
         await worker.StartAsync(CancellationToken.None);
-        var action = async () => await worker.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(2));
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
+        while (runtime.RegisterCalls < 2 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
 
-        await action.Should()
-            .ThrowAsync<InvalidOperationException>()
-            .WithMessage("*was rejected by the control plane*restart with a new SessionId*");
-        runtime.HeartbeatCalls.Should().Be(1);
+        runtime.RegisterCalls.Should().BeGreaterThanOrEqualTo(2);
+        runtime.HeartbeatCalls.Should().BeGreaterThanOrEqualTo(1);
+        worker.ExecuteTask!.IsCompleted.Should().BeFalse();
+        await worker.StopAsync(CancellationToken.None);
     }
 
     [Fact]
@@ -270,16 +274,20 @@ public sealed class WorkerAndDashboardHardeningTests
 
     private sealed class RejectingHeartbeatRuntimeClient : IWorkerRuntimeClient
     {
+        public int RegisterCalls { get; private set; }
         public int HeartbeatCalls { get; private set; }
 
         public ValueTask<RegisterWorkerSessionResponse> RegisterAsync(
             RegisterWorkerSessionRequest request,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-            new RegisterWorkerSessionResponse(
+            CancellationToken cancellationToken)
+        {
+            RegisterCalls++;
+            return ValueTask.FromResult(new RegisterWorkerSessionResponse(
                 request.WorkerId,
                 request.SessionId,
-                1,
+                RegisterCalls,
                 DateTimeOffset.UtcNow));
+        }
 
         public ValueTask<bool> HeartbeatAsync(
             WorkerHeartbeatRequest request,

@@ -13,6 +13,11 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 var builder = WebApplication.CreateBuilder(args);
 var postgresConnectionString = builder.Configuration.GetConnectionString("KubeJob");
 var rabbitMqConnectionString = builder.Configuration.GetConnectionString("RabbitMQ");
+var workerId = Environment.GetEnvironmentVariable("KUBEJOB_WORKER_ID") ?? "unified-sample";
+var maxConcurrentJobs = ParsePositiveInt("KUBEJOB_MAX_CONCURRENT_JOBS", 100);
+var prefetchCount = ParsePositiveInt("KUBEJOB_PREFETCH_COUNT", maxConcurrentJobs);
+var databasePoolSize = ParsePositiveInt("KUBEJOB_DB_POOL_SIZE", 64);
+var databaseConcurrency = ParsePositiveInt("KUBEJOB_DB_CONCURRENCY", databasePoolSize);
 
 builder.Services.AddKubeJobHandler<SampleDataJob, SampleDataPayload>();
 builder.Services.AddKubeJobHandler<DashboardDemoJob, DashboardDemoPayload>();
@@ -25,13 +30,19 @@ builder.Services.AddKubeJob(
         }
         else
         {
-            options.UsePostgreSql(postgresConnectionString);
+            options.UsePostgreSql(
+                postgresConnectionString,
+                postgres =>
+                {
+                    postgres.MaximumPoolSize = databasePoolSize;
+                    postgres.MaximumConcurrentOperations = databaseConcurrency;
+                });
         }
     },
     configureWorker: options =>
     {
-        options.WorkerId = "unified-sample";
-        options.MaxConcurrentJobs = 10;
+        options.WorkerId = workerId;
+        options.MaxConcurrentJobs = maxConcurrentJobs;
         options.Queues = new List<string> { "default", "samples" };
         options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
         options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
@@ -59,7 +70,7 @@ if (!string.IsNullOrWhiteSpace(rabbitMqConnectionString))
     {
         options.ConnectionString = rabbitMqConnectionString;
         options.ConsumerGroup = "unified-sample";
-        options.PrefetchCount = 10;
+        options.PrefetchCount = (ushort)Math.Min(prefetchCount, ushort.MaxValue);
     }
 
     builder.Services.UseRabbitMqKubeJobExecutionDispatcher(ConfigureRabbitMq);
@@ -186,3 +197,11 @@ app.MapGet("/", context =>
     return Task.CompletedTask;
 });
 app.Run();
+
+static int ParsePositiveInt(string name, int fallback)
+{
+    var value = Environment.GetEnvironmentVariable(name);
+    return int.TryParse(value, out var parsed) && parsed > 0
+        ? parsed
+        : fallback;
+}
