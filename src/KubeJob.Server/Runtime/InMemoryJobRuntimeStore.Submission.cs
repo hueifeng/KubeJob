@@ -1,3 +1,4 @@
+using System.Text.Json;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 
@@ -49,18 +50,50 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
-    public ValueTask<bool> RequestCancelAsync(
+    public ValueTask<bool> RequeueWorkAvailableAsync(
         string runId,
-        string? reason,
+        DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
         {
-            if (!_runs.TryGetValue(runId, out var run) || IsTerminal(run.Phase))
+            if (!_runs.TryGetValue(runId, out var run)
+                || run.Phase != JobPhase.Pending
+                || run.CancelRequested)
             {
                 return ValueTask.FromResult(false);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            run.AvailableAt = run.AvailableAt > availableAt
+                ? run.AvailableAt
+                : availableAt;
+            run.Version++;
+            AddWorkAvailableOutbox(run, now);
+            return ValueTask.FromResult(true);
+        }
+    }
+
+    public ValueTask<CancelJobResult> RequestCancelAsync(
+        string runId,
+        string? reason,
+        string? consumerGroup,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_gate)
+        {
+            if (!_runs.TryGetValue(runId, out var run))
+            {
+                return ValueTask.FromResult(new CancelJobResult(false, null, null));
+            }
+
+            if (IsTerminal(run.Phase) || run.CancelRequested)
+            {
+                return ValueTask.FromResult(new CancelJobResult(false, run.Queue, consumerGroup));
             }
 
             run.CancelRequested = true;
@@ -74,7 +107,22 @@ public sealed partial class InMemoryJobRuntimeStore
                 run.CompletedAt = DateTimeOffset.UtcNow;
             }
 
-            return ValueTask.FromResult(true);
+            if (!string.IsNullOrWhiteSpace(consumerGroup))
+            {
+                var message = new OutboxMessageRecord
+                {
+                    Id = NewId(),
+                    Queue = consumerGroup!,
+                    EventType = OutboxEventTypes.Cancel,
+                    PayloadJson = JsonSerializer.Serialize(new { runId = run.Id }),
+                    AvailableAt = DateTimeOffset.UtcNow,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    State = OutboxDeliveryState.Pending
+                };
+                _outbox.Add(message.Id, message);
+            }
+
+            return ValueTask.FromResult(new CancelJobResult(true, run.Queue, consumerGroup));
         }
     }
 }

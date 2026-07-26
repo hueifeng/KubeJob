@@ -72,6 +72,36 @@ public sealed class ControlPlaneTests
     }
 
     [Fact]
+    public async Task Job_submission_rejects_values_that_exceed_storage_limits()
+    {
+        using var provider = CreateProvider();
+        var controlPlane = provider.GetRequiredService<JobControlPlane>();
+
+        var invalid = async () => await controlPlane.SubmitAsync(
+            new EnqueueJobRequest(
+                new string('j', 301),
+                "{}",
+                "default"));
+
+        var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
+        exception.Which.Code.Should().Be("job_submission_field_too_long");
+    }
+
+    [Fact]
+    public async Task Job_submission_rejects_payloads_that_exceed_the_utf8_limit()
+    {
+        using var provider = CreateProvider();
+        var controlPlane = provider.GetRequiredService<JobControlPlane>();
+        var payload = $"{{\"value\":\"{new string('x', 1_048_576)}\"}}";
+
+        var invalid = async () => await controlPlane.SubmitAsync(
+            new EnqueueJobRequest("sample.data", payload));
+
+        var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
+        exception.Which.Code.Should().Be("job_payload_too_large");
+    }
+
+    [Fact]
     public async Task Worker_claim_policy_is_applied_before_both_transport_adapters()
     {
         var services = new ServiceCollection();

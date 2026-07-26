@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace KubeJob.Transport.RabbitMQ;
@@ -49,6 +48,13 @@ public sealed class RabbitMqNotificationOptions
                 "ConsumerQueuePrefix cannot exceed 180 UTF-8 bytes.");
         }
 
+        var maximumQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{new string('q', 48)}-ffffff";
+        if (Encoding.UTF8.GetByteCount(maximumQueueName) >= 255)
+        {
+            throw new InvalidOperationException(
+                "Generated notification queue names must be shorter than 255 UTF-8 bytes.");
+        }
+
         if (ReconnectDelay <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("ReconnectDelay must be positive.");
@@ -63,10 +69,7 @@ public sealed class RabbitMqNotificationOptions
     internal string GetConsumerQueueName(string logicalQueue)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
-        var identity = $"{ExchangeName}\n{ConsumerGroup}\n{logicalQueue}";
-        var digest = Convert.ToHexString(
-                SHA256.HashData(Encoding.UTF8.GetBytes(identity)))
-            .ToLowerInvariant();
-        return $"{ConsumerQueuePrefix}.{digest}";
+        var segment = RabbitMqExecutionOptions.SanitizeSegment(logicalQueue);
+        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}";
     }
 }

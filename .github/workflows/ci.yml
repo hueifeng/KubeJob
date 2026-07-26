@@ -18,7 +18,38 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      KUBEJOB_TEST_POSTGRES: Host=localhost;Port=5432;Username=kubejob;Password=kubejob-dev;Database=postgres
+      KUBEJOB_REQUIRE_POSTGRES: "1"
+      KUBEJOB_RABBITMQ_TEST_CONNECTION: amqp://kubejob:kubejob-dev@localhost:5672/
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kubejob
+          POSTGRES_USER: kubejob
+          POSTGRES_PASSWORD: kubejob-dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kubejob -d kubejob"
+          --health-interval 3s
+          --health-timeout 5s
+          --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: kubejob
+          RABBITMQ_DEFAULT_PASS: kubejob-dev
+          RABBITMQ_DEFAULT_VHOST: /
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
 
     steps:
     - uses: actions/checkout@v4

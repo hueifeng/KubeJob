@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
@@ -22,17 +23,20 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
     private readonly RabbitMqExecutionOptions _options;
     private readonly KubeJobWorkerOptions _worker;
     private readonly WorkerRuntimeService _runtime;
+    private readonly IWorkerRuntimeClient _runtimeClient;
     private readonly ILogger<RabbitMqExecutionConsumerService> _logger;
 
     public RabbitMqExecutionConsumerService(
         IOptions<RabbitMqExecutionOptions> options,
         IOptions<KubeJobWorkerOptions> worker,
         WorkerRuntimeService runtime,
+        IWorkerRuntimeClient runtimeClient,
         ILogger<RabbitMqExecutionConsumerService> logger)
     {
         _options = options.Value;
         _worker = worker.Value;
         _runtime = runtime;
+        _runtimeClient = runtimeClient;
         _logger = logger;
         _options.Validate();
         _worker.Validate();
@@ -73,29 +77,20 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
 
         using var connection = factory.CreateConnection($"KubeJob.Execution.{_worker.WorkerId}");
         using var channel = connection.CreateModel();
-        channel.ExchangeDeclare(
-            exchange: _options.ExchangeName,
-            type: ExchangeType.Direct,
-            durable: true,
-            autoDelete: false,
-            arguments: null);
         channel.BasicQos(0, _options.PrefetchCount, global: false);
+        channel.ConfirmSelect();
 
         var channelGate = new object();
         foreach (var logicalQueue in _worker.Queues)
         {
             var consumerQueue = _options.GetConsumerQueueName(logicalQueue);
-            channel.QueueDeclare(
-                queue: consumerQueue,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                arguments: null);
-            channel.QueueBind(
-                queue: consumerQueue,
-                exchange: _options.ExchangeName,
-                routingKey: logicalQueue,
-                arguments: null);
+            // RabbitMqDispatchTopology (co-registered by AddRabbitMqKubeJobExecutionConsumer)
+            // declares the per-group direct exchange, this quorum queue with its
+            // x-dead-letter-exchange and x-delivery-limit, and the binding to the
+            // group exchange with routingKey = logicalQueue. Passive-declare only
+            // asserts the queue exists; re-declaring it here with arguments:null
+            // would clash with the quorum declaration (PRECONDITION_FAILED).
+            channel.QueueDeclarePassive(consumerQueue);
 
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.Received += (_, delivery) => ProcessDeliveryAsync(
@@ -108,6 +103,30 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
                 autoAck: false,
                 consumer: consumer);
         }
+
+        var cancelQueue = _options.GetCancelQueueName(
+            _options.ConsumerGroup,
+            $"{_worker.WorkerId}.{_runtime.SessionId}");
+        channel.QueueDeclare(
+            queue: cancelQueue,
+            durable: false,
+            exclusive: true,
+            autoDelete: true,
+            arguments: null);
+        channel.QueueBind(
+            queue: cancelQueue,
+            exchange: _options.GetCancelExchangeName(_options.ConsumerGroup),
+            routingKey: string.Empty,
+            arguments: null);
+        var cancelConsumer = new AsyncEventingBasicConsumer(channel);
+        cancelConsumer.Received += (_, delivery) => ProcessCancelDeliveryAsync(
+            channel,
+            channelGate,
+            delivery);
+        channel.BasicConsume(
+            queue: cancelQueue,
+            autoAck: false,
+            consumer: cancelConsumer);
 
         _logger.LogInformation(
             "RabbitMQ KubeJob execution consumer active for worker {WorkerId}, group {ConsumerGroup}, and queues {Queues}",
@@ -124,15 +143,59 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         stoppingToken.ThrowIfCancellationRequested();
     }
 
+    private Task ProcessCancelDeliveryAsync(
+        IModel channel,
+        object channelGate,
+        BasicDeliverEventArgs delivery)
+    {
+        try
+        {
+            var cancel = JsonSerializer.Deserialize<CancelEnvelope>(
+                delivery.Body.Span,
+                SerializerOptions)
+                ?? throw new JsonException("RabbitMQ cancel envelope was empty.");
+            if (string.IsNullOrWhiteSpace(cancel.RunId))
+            {
+                throw new JsonException("RabbitMQ cancel envelope did not contain a runId.");
+            }
+
+            _runtime.TryCancelRun(cancel.RunId);
+            Ack(channel, channelGate, delivery.DeliveryTag);
+            _logger.LogDebug(
+                "ACKed RabbitMQ cancel signal for Run {RunId}; inFlight={InFlight}",
+                cancel.RunId,
+                true);
+        }
+        catch (JsonException exception)
+        {
+            Reject(channel, channelGate, delivery.DeliveryTag, exception.Message);
+            _logger.LogWarning(
+                exception,
+                "Rejected malformed RabbitMQ cancel envelope {DeliveryTag}",
+                delivery.DeliveryTag);
+        }
+        catch (Exception exception)
+        {
+            Nack(channel, channelGate, delivery.DeliveryTag, exception.Message);
+            _logger.LogError(
+                exception,
+                "Transient failure processing RabbitMQ cancel envelope {DeliveryTag}; requeued",
+                delivery.DeliveryTag);
+        }
+
+        return Task.CompletedTask;
+    }
+
     private async Task ProcessDeliveryAsync(
         IModel channel,
         object channelGate,
         BasicDeliverEventArgs delivery,
         CancellationToken stoppingToken)
     {
+        ExecutionEnvelope? envelope = null;
         try
         {
-            var envelope = JsonSerializer.Deserialize<ExecutionEnvelope>(
+            envelope = JsonSerializer.Deserialize<ExecutionEnvelope>(
                 delivery.Body.Span,
                 SerializerOptions)
                 ?? throw new JsonException("RabbitMQ execution envelope was empty.");
@@ -153,8 +216,13 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
                     Reject(channel, channelGate, delivery.DeliveryTag, result.Reason);
                     break;
                 case ExecutionEnvelopeProcessingStatus.Retry:
-                    await Task.Delay(_options.RetryDelay, stoppingToken);
-                    Nack(channel, channelGate, delivery.DeliveryTag, result.Reason);
+                    await RepublishOrReconcileAsync(
+                        channel,
+                        channelGate,
+                        delivery,
+                        envelope,
+                        "worker_retry",
+                        stoppingToken);
                     break;
             }
         }
@@ -168,17 +236,178 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            Nack(channel, channelGate, delivery.DeliveryTag, "consumer_stopping");
+            if (envelope is not null)
+            {
+                RepublishOrNack(channel, channelGate, delivery, envelope.Queue, "consumer_stopping");
+            }
+            else
+            {
+                Nack(channel, channelGate, delivery.DeliveryTag, "consumer_stopping");
+            }
         }
         catch (Exception exception)
         {
-            Nack(channel, channelGate, delivery.DeliveryTag, exception.Message);
+            if (envelope is not null)
+            {
+                await RepublishOrReconcileAsync(
+                    channel,
+                    channelGate,
+                    delivery,
+                    envelope,
+                    exception.Message,
+                    stoppingToken);
+            }
+            else
+            {
+                Nack(channel, channelGate, delivery.DeliveryTag, exception.Message);
+            }
             _logger.LogError(
                 exception,
-                "Transient failure processing RabbitMQ execution envelope {DeliveryTag}; requeued",
+                "Transient failure processing RabbitMQ execution envelope {DeliveryTag}; sent to retry queue when possible",
                 delivery.DeliveryTag);
         }
     }
+
+    private async Task RepublishOrReconcileAsync(
+        IModel channel,
+        object gate,
+        BasicDeliverEventArgs delivery,
+        ExecutionEnvelope envelope,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (GetBrokerRetryCount(delivery.BasicProperties) >= _options.MaxBrokerRetryAttempts)
+        {
+            try
+            {
+                var scheduled = await _runtimeClient.RequeueExecutionAsync(
+                    new RequeueExecutionRequest(
+                        envelope.RunId,
+                        DateTimeOffset.UtcNow + _options.BrokerRetryReconciliationDelay),
+                    cancellationToken);
+                Ack(channel, gate, delivery.DeliveryTag);
+                _logger.LogWarning(
+                    "ACKed RabbitMQ execution envelope {EventId} after broker retry budget; durable reconciliation scheduled={Scheduled} for Run {RunId}",
+                    envelope.EventId,
+                    scheduled,
+                    envelope.RunId);
+            }
+            catch (Exception reconciliationException)
+            {
+                Nack(
+                    channel,
+                    gate,
+                    delivery.DeliveryTag,
+                    $"{reason}; durable reconciliation failed: {reconciliationException.Message}");
+            }
+
+            return;
+        }
+
+        try
+        {
+            RepublishForRetry(channel, gate, delivery, envelope.Queue);
+        }
+        catch (Exception retryException)
+        {
+            Nack(
+                channel,
+                gate,
+                delivery.DeliveryTag,
+                $"{reason}; retry publication failed: {retryException.Message}");
+        }
+    }
+
+    private void RepublishOrNack(
+        IModel channel,
+        object gate,
+        BasicDeliverEventArgs delivery,
+        string logicalQueue,
+        string reason)
+    {
+        try
+        {
+            RepublishForRetry(channel, gate, delivery, logicalQueue);
+        }
+        catch (Exception retryException)
+        {
+            Nack(
+                channel,
+                gate,
+                delivery.DeliveryTag,
+                $"{reason}; retry publication failed: {retryException.Message}");
+        }
+    }
+
+    private void RepublishForRetry(
+        IModel channel,
+        object gate,
+        BasicDeliverEventArgs delivery,
+        string logicalQueue)
+    {
+        lock (gate)
+        {
+            BasicReturnEventArgs? returned = null;
+            EventHandler<BasicReturnEventArgs> returnHandler = (_, args) => returned = args;
+            channel.BasicReturn += returnHandler;
+            try
+            {
+                var retryCount = GetBrokerRetryCount(delivery.BasicProperties) + 1;
+                var properties = delivery.BasicProperties;
+                var headers = properties.Headers is null
+                    ? new Dictionary<string, object>()
+                    : new Dictionary<string, object>(properties.Headers);
+                headers[BrokerRetryCountHeader] = retryCount;
+                properties.Headers = headers;
+
+                channel.BasicPublish(
+                    exchange: _options.GetRetryExchangeName(),
+                    routingKey: logicalQueue,
+                    mandatory: true,
+                    basicProperties: delivery.BasicProperties,
+                    body: delivery.Body.ToArray());
+                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                {
+                    throw new IOException(
+                        $"RabbitMQ did not confirm retry publication for delivery {delivery.DeliveryTag}.");
+                }
+
+                if (returned is not null)
+                {
+                    throw new IOException(
+                        $"RabbitMQ could not route retry delivery {delivery.DeliveryTag} for queue '{logicalQueue}'.");
+                }
+
+                channel.BasicAck(delivery.DeliveryTag, multiple: false);
+            }
+            finally
+            {
+                channel.BasicReturn -= returnHandler;
+            }
+        }
+    }
+
+    private const string BrokerRetryCountHeader = "x-kubejob-broker-retry-count";
+
+    private static int GetBrokerRetryCount(IBasicProperties properties)
+    {
+        if (properties.Headers is null
+            || !properties.Headers.TryGetValue(BrokerRetryCountHeader, out var value))
+        {
+            return 0;
+        }
+
+        return value switch
+        {
+            byte[] bytes when int.TryParse(Encoding.UTF8.GetString(bytes), out var parsedBytes) => parsedBytes,
+            int integer => integer,
+            long longValue when longValue is >= 0 and <= int.MaxValue => (int)longValue,
+            string text when int.TryParse(text, out var parsedString) => parsedString,
+            _ => 0
+        };
+    }
+
+    private sealed record CancelEnvelope(string RunId);
 
     private void Ack(IModel channel, object gate, ulong deliveryTag)
     {

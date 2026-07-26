@@ -13,15 +13,16 @@ public sealed record DashboardOperationalSummary(
     bool HasRecentFailures,
     bool HasOutboxBacklog,
     TimeSpan? OldestReadyAge,
-    DashboardOperationalMessage Message)
+    DashboardOperationalMessage Message,
+    bool HasFailedOutbox = false)
 {
     public bool HasAttention =>
-        WaitingWithoutCapacity || HasAgingBacklog || HasRecentFailures;
+        WaitingWithoutCapacity || HasAgingBacklog || HasRecentFailures || HasFailedOutbox;
 
     public static DashboardOperationalSummary Create(DashboardOverview overview)
     {
         var activeRuns = overview.PendingRuns + overview.RunningRuns;
-        var oldestReadyAt = overview.Queues
+        var oldestReadyAt = overview.OldestReadyRunAt ?? overview.Queues
             .Where(queue => queue.OldestReadyAt is not null)
             .Select(queue => queue.OldestReadyAt)
             .OrderBy(value => value)
@@ -38,6 +39,7 @@ public sealed record DashboardOperationalSummary(
         var hasAgingBacklog = oldestReadyAge >= TimeSpan.FromMinutes(5);
         var hasRecentFailures = overview.LastHour.UnsuccessfulRuns > 0;
         var hasOutboxBacklog = overview.PendingOutboxMessages > 0;
+        var hasFailedOutbox = overview.FailedOutboxMessages > 0;
         var isIdle = activeRuns == 0
             && overview.LastHour.CompletedRuns == 0
             && overview.LastHour.UnsuccessfulRuns == 0
@@ -58,6 +60,11 @@ public sealed record DashboardOperationalSummary(
                     ? new DashboardOperationalMessage(
                         "warning", "!", $"{overview.LastHour.UnsuccessfulRuns} job(s) failed or exhausted retries in the last hour.",
                         "Open the job list to inspect the latest error and complete Attempt history.",
+                        "Review failures", "Failures")
+                    : hasFailedOutbox
+                    ? new DashboardOperationalMessage(
+                        "danger", "!", "Outbox publication is failing.",
+                        $"{overview.FailedOutboxMessages} message(s) are in retry state. The oldest has waited {FormatAge(overview.ObservedAt - overview.OldestPendingOutboxAt.GetValueOrDefault(overview.ObservedAt))}.",
                         "Review failures", "Failures")
                     : hasOutboxBacklog
                         ? new DashboardOperationalMessage(
@@ -81,7 +88,8 @@ public sealed record DashboardOperationalSummary(
             hasRecentFailures,
             hasOutboxBacklog,
             oldestReadyAge,
-            message);
+            message,
+            hasFailedOutbox);
     }
 
     public static string FormatAge(TimeSpan value)

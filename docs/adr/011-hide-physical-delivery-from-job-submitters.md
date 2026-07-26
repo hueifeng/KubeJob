@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted — Direct Dispatch implemented via `ExecutionDeliveryProfile.BrokerDispatch`
+(see [`docs/v2/logical-architecture.md` Section 7](../v2/logical-architecture.md)
+and [`docs/v2/message-transport.md` Direct Dispatch section](../v2/message-transport.md)).
 
 ## Context
 

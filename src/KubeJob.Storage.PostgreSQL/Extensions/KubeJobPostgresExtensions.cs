@@ -35,6 +35,7 @@ public static class KubeJobPostgresExtensions
             services.AddSingleton<IJobScheduleStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
             services.AddSingleton<IOutboxStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
             services.AddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+            services.AddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
         };
 
         return options;

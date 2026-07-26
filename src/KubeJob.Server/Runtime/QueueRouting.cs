@@ -13,6 +13,20 @@ public interface IQueueRouter
     QueueRoute Resolve(string logicalQueue);
 }
 
+public interface IExecutionGroupResolver
+{
+    string Resolve(string logicalQueue);
+}
+
+public sealed class DefaultExecutionGroupResolver : IExecutionGroupResolver
+{
+    public string Resolve(string logicalQueue)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
+        return "default";
+    }
+}
+
 /// <summary>
 /// Deployment-level routing policy. It intentionally has no relationship to
 /// EnqueueJobRequest, so a business caller cannot choose a physical profile

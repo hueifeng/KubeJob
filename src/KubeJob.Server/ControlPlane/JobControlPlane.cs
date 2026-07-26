@@ -1,7 +1,9 @@
+using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.ControlPlane;
 
@@ -15,13 +17,22 @@ public sealed class JobControlPlane
 {
     private readonly IJobSubmissionStore _submissions;
     private readonly IJobQueryStore _queries;
+    private readonly IQueueRouter _queueRouter;
+    private readonly IExecutionGroupResolver _executionGroupResolver;
+    private readonly JobRuntimeOptions _options;
 
     public JobControlPlane(
         IJobSubmissionStore submissions,
-        IJobQueryStore queries)
+        IJobQueryStore queries,
+        IQueueRouter queueRouter,
+        IExecutionGroupResolver executionGroupResolver,
+        IOptions<JobRuntimeOptions> options)
     {
         _submissions = submissions;
         _queries = queries;
+        _queueRouter = queueRouter;
+        _executionGroupResolver = executionGroupResolver;
+        _options = options.Value;
     }
 
     public async ValueTask<JobSubmissionReceipt> SubmitAsync(
@@ -55,13 +66,26 @@ public sealed class JobControlPlane
         return run is null ? null : ToSnapshot(run);
     }
 
-    public ValueTask<bool> RequestCancelAsync(
+    public async ValueTask<bool> RequestCancelAsync(
         string runId,
         string? reason,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-        return _submissions.RequestCancelAsync(runId, reason, cancellationToken);
+
+        string? group = null;
+        if (_options.BrokerCancelPropagationEnabled)
+        {
+            var run = await _queries.GetRunAsync(runId, cancellationToken);
+            if (run is not null
+                && _queueRouter.Resolve(run.Queue).Profile == ExecutionDeliveryProfile.BrokerDispatch)
+            {
+                group = _executionGroupResolver.Resolve(run.Queue);
+            }
+        }
+
+        var result = await _submissions.RequestCancelAsync(runId, reason, group, cancellationToken);
+        return result.Requested;
     }
 
     public async ValueTask<IReadOnlyList<JobAttemptSnapshot>?> GetAttemptsAsync(
@@ -78,7 +102,7 @@ public sealed class JobControlPlane
         return attempts.Select(ToSnapshot).ToArray();
     }
 
-    private static void ValidateSubmission(EnqueueJobRequest request)
+    private void ValidateSubmission(EnqueueJobRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -91,6 +115,29 @@ public sealed class JobControlPlane
             throw new ControlPlaneValidationException(
                 "invalid_job_submission",
                 "JobKey, valid payload JSON, queue, positive MaxAttempts, and TimeoutSeconds between 1 and 86400 are required.");
+        }
+
+        var overlongField = request.JobKey.Length > 300
+            ? "JobKey"
+            : request.Queue.Length > 100
+                ? "Queue"
+                : request.IdempotencyKey?.Length > 500
+                    ? "IdempotencyKey"
+                    : request.ConcurrencyKey?.Length > 500
+                        ? "ConcurrencyKey"
+                        : null;
+        if (overlongField is not null)
+        {
+            throw new ControlPlaneValidationException(
+                "job_submission_field_too_long",
+                $"{overlongField} exceeds the maximum storage length.");
+        }
+
+        if (Encoding.UTF8.GetByteCount(request.PayloadJson) > _options.MaxPayloadBytes)
+        {
+            throw new ControlPlaneValidationException(
+                "job_payload_too_large",
+                $"PayloadJson exceeds the configured maximum of {_options.MaxPayloadBytes} UTF-8 bytes.");
         }
 
         try

@@ -2,6 +2,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Server.ControlPlane;
+using KubeJob.Server.Data;
 using KubeJob.Server.Controllers;
 using KubeJob.Server.Dashboard;
 using KubeJob.Server.Options;
@@ -33,17 +34,24 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IJobScheduleStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IOutboxStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+        services.TryAddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<JobControlPlane>();
         services.TryAddSingleton<IJobMessageIngress, JobMessageIngress>();
         services.TryAddSingleton<WorkerControlPlane>();
         services.TryAddSingleton<ScheduleControlPlane>();
         services.TryAddSingleton<IWorkAvailableNotifier, PollingWorkAvailableNotifier>();
+        services.TryAddSingleton<ICancelPublisher, NoopCancelPublisher>();
         services.AddOptions<QueueDeliveryOptions>();
         services.TryAddSingleton<IQueueRouter, ConfigurationQueueRouter>();
+        services.TryAddSingleton<IExecutionGroupResolver, DefaultExecutionGroupResolver>();
         services.TryAddSingleton<IExecutionDispatcher, UnconfiguredExecutionDispatcher>();
         services.TryAddSingleton<IJobClient, DefaultJobClient>();
         services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
         services.AddOptions<JobRuntimeOptions>();
+        services.AddHealthChecks()
+            .AddCheck<KubeJobRuntimeHealthCheck>(
+                "kubejob-runtime",
+                tags: new[] { "ready" });
 
         services.AddAuthorization();
         services.AddControllers(mvc =>
@@ -56,6 +64,7 @@ public static class KubeJobServerExtensions
         services.AddHostedService<ScheduleReconcilerService>();
         services.AddHostedService<LeaseReaperService>();
         services.AddHostedService<OutboxPublisherService>();
+        services.AddHostedService<RuntimeRetentionService>();
         return services;
     }
 
@@ -97,6 +106,19 @@ public static class KubeJobServerExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers the broker-specific cancel publisher used by Direct Dispatch
+    /// Mode to fanout per-group cancel signals to in-flight workers. MQ
+    /// transport packages supply their own implementation.
+    /// </summary>
+    public static IServiceCollection UseKubeJobCancelPublisher<TCancelPublisher>(
+        this IServiceCollection services)
+        where TCancelPublisher : class, ICancelPublisher
+    {
+        services.Replace(ServiceDescriptor.Singleton<ICancelPublisher, TCancelPublisher>());
+        return services;
+    }
+
     public static IServiceCollection AddKubeJobDashboard(
         this IServiceCollection services,
         Action<KubeJobDashboardOptions>? configure = null)
@@ -125,8 +147,8 @@ public static class KubeJobServerExtensions
     public static void InitializeKubeJobDatabase(this IApplicationBuilder app)
     {
         using var scope = app.ApplicationServices.CreateScope();
-        var initializer = scope.ServiceProvider.GetService<KubeJob.Server.Data.IStorageInitializer>();
-        initializer?.Initialize();
+        var initializer = scope.ServiceProvider.GetRequiredService<IStorageInitializer>();
+        initializer.Initialize();
     }
 }
 

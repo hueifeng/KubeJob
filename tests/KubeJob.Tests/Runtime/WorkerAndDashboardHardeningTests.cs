@@ -312,5 +312,9 @@ public sealed class WorkerAndDashboardHardeningTests
             CompleteAttemptRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(
             new CompleteAttemptResponse(true, JobPhase.Succeeded, false));
+
+        public ValueTask<bool> RequeueExecutionAsync(
+            RequeueExecutionRequest request,
+            CancellationToken cancellationToken) => ValueTask.FromResult(false);
     }
 }

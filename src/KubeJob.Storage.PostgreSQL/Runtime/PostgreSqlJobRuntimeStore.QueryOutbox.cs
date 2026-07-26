@@ -1,6 +1,7 @@
 using Dapper;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
+using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;
 
@@ -40,7 +41,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         int batchSize,
         CancellationToken cancellationToken)
     {
-        _ = now;
         if (claimDuration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(claimDuration));
@@ -57,6 +57,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             "SELECT clock_timestamp();",
             transaction: transaction,
             cancellationToken: cancellationToken));
+        var effectiveNow = now.ToUniversalTime() > databaseNow
+            ? now.ToUniversalTime()
+            : databaseNow;
         var claimUntil = databaseNow.Add(claimDuration);
 
         var messages = (await connection.QueryAsync<OutboxMessageRecord>(new CommandDefinition(@"
@@ -72,7 +75,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 Pending = (int)OutboxDeliveryState.Pending,
                 Failed = (int)OutboxDeliveryState.Failed,
                 Publishing = (int)OutboxDeliveryState.Publishing,
-                Now = databaseNow,
+                Now = effectiveNow,
                 BatchSize = batchSize
             },
             transaction,
@@ -178,5 +181,216 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 NextAttemptAt = failure.NextAttemptAt.ToUniversalTime()
             },
             cancellationToken: cancellationToken));
+    }
+
+    public async ValueTask MarkAbandonedAsync(
+        OutboxFailure failure,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_Outbox
+            SET State = @Abandoned,
+                LastError = @Error,
+                ClaimToken = NULL
+            WHERE Id = @MessageId
+              AND State = @Publishing
+              AND ClaimToken = @ClaimToken;",
+            new
+            {
+                MessageId = failure.MessageId,
+                Abandoned = (int)OutboxDeliveryState.Abandoned,
+                Publishing = (int)OutboxDeliveryState.Publishing,
+                ClaimToken = failure.ClaimToken,
+                Error = failure.Error
+            },
+            cancellationToken: cancellationToken));
+    }
+
+    public async ValueTask<OutboxDispatchBatch> DispatchOnceAsync(
+        TimeSpan claimDuration,
+        TimeSpan retryDelay,
+        int batchSize,
+        Func<OutboxMessageRecord, CancellationToken, ValueTask> dispatch,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(dispatch);
+
+        if (claimDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(claimDuration));
+        }
+
+        if (retryDelay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(retryDelay));
+        }
+
+        if (batchSize <= 0)
+        {
+            return new OutboxDispatchBatch(Array.Empty<string>(), Array.Empty<string>());
+        }
+
+        var dispatched = new List<string>(batchSize);
+        var failed = new List<string>(batchSize);
+        var abandoned = new List<string>(batchSize);
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+
+        for (var iteration = 0; iteration < batchSize; iteration++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            OutboxMessageRecord? message;
+            string claimToken;
+
+            // Claim and commit before touching the broker. The database lock is
+            // therefore held only for the short state transition, not for the
+            // network round-trip or publisher confirm.
+            await using (var claimTransaction = await connection.BeginTransactionAsync(cancellationToken))
+            {
+                message = await connection.QuerySingleOrDefaultAsync<OutboxMessageRecord>(new CommandDefinition(@"
+                    SELECT *
+                    FROM Kj2_Outbox
+                    WHERE State IN (@Pending, @Failed, @Publishing)
+                      AND AvailableAt <= clock_timestamp()
+                    ORDER BY AvailableAt, CreatedAt
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1;",
+                    new
+                    {
+                        Pending = (int)OutboxDeliveryState.Pending,
+                        Failed = (int)OutboxDeliveryState.Failed,
+                        Publishing = (int)OutboxDeliveryState.Publishing
+                    },
+                    claimTransaction,
+                    cancellationToken: cancellationToken));
+
+                if (message is null)
+                {
+                    await claimTransaction.CommitAsync(cancellationToken);
+                    break;
+                }
+
+                var now = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
+                    "SELECT clock_timestamp();",
+                    transaction: claimTransaction,
+                    cancellationToken: cancellationToken));
+                claimToken = NewId();
+                var claimUntil = now.Add(claimDuration);
+
+                await connection.ExecuteAsync(new CommandDefinition(@"
+                    UPDATE Kj2_Outbox
+                    SET State = @Publishing,
+                        PublishAttempts = PublishAttempts + 1,
+                        AvailableAt = @ClaimUntil,
+                        ClaimToken = @ClaimToken
+                    WHERE Id = @MessageId;",
+                    new
+                    {
+                        MessageId = message.Id,
+                        Publishing = (int)OutboxDeliveryState.Publishing,
+                        ClaimUntil = claimUntil,
+                        ClaimToken = claimToken
+                    },
+                    claimTransaction,
+                    cancellationToken: cancellationToken));
+                await claimTransaction.CommitAsync(cancellationToken);
+
+                message.State = OutboxDeliveryState.Publishing;
+                message.PublishAttempts++;
+                message.AvailableAt = claimUntil;
+                message.ClaimToken = claimToken;
+            }
+
+            try
+            {
+                await dispatch(message, cancellationToken).ConfigureAwait(false);
+                await using var publishTransaction = await connection.BeginTransactionAsync(cancellationToken);
+                await connection.ExecuteAsync(new CommandDefinition(@"
+                    UPDATE Kj2_Outbox
+                    SET State = @Published,
+                        PublishedAt = clock_timestamp(),
+                        LastError = NULL,
+                        ClaimToken = NULL
+                    WHERE Id = @MessageId
+                      AND State = @Publishing
+                      AND ClaimToken = @ClaimToken;",
+                    new
+                    {
+                        MessageId = message.Id,
+                        Published = (int)OutboxDeliveryState.Published,
+                        Publishing = (int)OutboxDeliveryState.Publishing,
+                        ClaimToken = claimToken
+                    },
+                    publishTransaction,
+                    cancellationToken: cancellationToken));
+                await publishTransaction.CommitAsync(cancellationToken);
+                dispatched.Add(message.Id);
+            }
+            catch (PermanentOutboxException ex)
+            {
+                await MarkAbandonedAsync(
+                    new OutboxFailure(
+                        message.Id,
+                        claimToken,
+                        ex.Message,
+                        DateTimeOffset.UtcNow),
+                    CancellationToken.None);
+                abandoned.Add(message.Id);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await MarkDispatchFailedAsync(
+                    connection,
+                    message.Id,
+                    claimToken,
+                    "publisher_canceled",
+                    retryDelay);
+                failed.Add(message.Id);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await MarkDispatchFailedAsync(
+                    connection,
+                    message.Id,
+                    claimToken,
+                    ex.Message,
+                    retryDelay);
+                failed.Add(message.Id);
+            }
+        }
+
+        return new OutboxDispatchBatch(dispatched, failed, abandoned);
+    }
+
+    private static async ValueTask MarkDispatchFailedAsync(
+        NpgsqlConnection connection,
+        string messageId,
+        string claimToken,
+        string error,
+        TimeSpan retryDelay)
+    {
+        await using var transaction = await connection.BeginTransactionAsync(CancellationToken.None);
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_Outbox
+            SET State = @Failed,
+                LastError = @Error,
+                AvailableAt = clock_timestamp() + @RetryInterval,
+                ClaimToken = NULL
+            WHERE Id = @MessageId
+              AND State = @Publishing
+              AND ClaimToken = @ClaimToken;",
+            new
+            {
+                MessageId = messageId,
+                Failed = (int)OutboxDeliveryState.Failed,
+                Publishing = (int)OutboxDeliveryState.Publishing,
+                ClaimToken = claimToken,
+                Error = error,
+                RetryInterval = retryDelay
+            },
+            transaction,
+            cancellationToken: CancellationToken.None));
+        await transaction.CommitAsync(CancellationToken.None);
     }
 }

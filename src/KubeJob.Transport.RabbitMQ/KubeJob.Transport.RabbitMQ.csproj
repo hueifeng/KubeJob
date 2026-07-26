@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\KubeJob.Core\KubeJob.Core.csproj" />
+    <ProjectReference Include="..\KubeJob.ControlPlane\KubeJob.ControlPlane.csproj" />
     <ProjectReference Include="..\KubeJob.Worker\KubeJob.Worker.csproj" />
   </ItemGroup>
 

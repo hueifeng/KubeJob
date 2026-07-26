@@ -29,11 +29,24 @@ public sealed class DashboardOperationalSummaryTests
         summary.Message.Title.Should().Be("Outbox delivery is pending.");
     }
 
+    [Fact]
+    public void Failed_outbox_is_reported_as_operator_attention()
+    {
+        var summary = DashboardOperationalSummary.Create(Overview(
+            pendingOutboxMessages: 2,
+            failedOutboxMessages: 1));
+
+        summary.HasAttention.Should().BeTrue();
+        summary.HasFailedOutbox.Should().BeTrue();
+        summary.Message.Title.Should().Be("Outbox publication is failing.");
+    }
+
     private static DashboardOverview Overview(
         int pendingRuns = 0,
         int readyWorkers = 1,
         int availableSlots = 1,
         int pendingOutboxMessages = 0,
+        int failedOutboxMessages = 0,
         IReadOnlyList<DashboardQueueSummary>? queues = null) => new(
             DateTimeOffset.UtcNow,
             pendingRuns,
@@ -51,5 +64,6 @@ public sealed class DashboardOperationalSummaryTests
             pendingOutboxMessages,
             new DashboardActivitySummary(0, 0, 0, 0),
             queues ?? Array.Empty<DashboardQueueSummary>(),
-            Array.Empty<DashboardRunSummary>());
+            Array.Empty<DashboardRunSummary>(),
+            FailedOutboxMessages: failedOutboxMessages);
 }

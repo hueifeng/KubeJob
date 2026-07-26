@@ -18,15 +18,34 @@ public sealed record SubmitJobCommand(
 
 public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
 
+/// <summary>
+/// Result of a cancel request. <see cref="Queue"/> and <see cref="Group"/>
+/// are returned when the cancel actually mutated a Run so the caller can
+/// decide whether to write a per-group <c>cancel</c> outbox row for Direct
+/// Dispatch Mode.
+/// </summary>
+public sealed record CancelJobResult(bool Requested, string? Queue, string? Group);
+
 public interface IJobSubmissionStore
 {
     ValueTask<SubmitJobResult> SubmitAsync(
         SubmitJobCommand command,
         CancellationToken cancellationToken);
 
-    ValueTask<bool> RequestCancelAsync(
+    /// <summary>
+    /// Schedules a durable work-available signal for a still-pending Run after
+    /// broker retry budget is exhausted. Returns false when the Run is no longer
+    /// pending and therefore needs no broker re-drive.
+    /// </summary>
+    ValueTask<bool> RequeueWorkAvailableAsync(
+        string runId,
+        DateTimeOffset availableAt,
+        CancellationToken cancellationToken);
+
+    ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,
+        string? consumerGroup,
         CancellationToken cancellationToken);
 }
 
@@ -137,6 +156,36 @@ public interface IJobScheduleStore
         CancellationToken cancellationToken);
 }
 
+public sealed class PermanentOutboxException : Exception
+{
+    public PermanentOutboxException(string message)
+        : base(message)
+    {
+    }
+
+    public PermanentOutboxException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+public interface IJobRuntimeMaintenanceStore
+{
+    ValueTask<int> DeletePublishedOutboxAsync(
+        DateTimeOffset olderThan,
+        int batchSize,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Deletes only terminal runs without an idempotency key or schedule identity.
+    /// Keyed terminal history remains until idempotency tombstones exist.
+    /// </summary>
+    ValueTask<int> DeleteUnkeyedTerminalRunsAsync(
+        DateTimeOffset olderThan,
+        int batchSize,
+        CancellationToken cancellationToken);
+}
+
 public interface IOutboxStore
 {
     /// <summary>
@@ -157,6 +206,25 @@ public interface IOutboxStore
     ValueTask MarkFailedAsync(
         OutboxFailure failure,
         CancellationToken cancellationToken);
+
+    ValueTask MarkAbandonedAsync(
+        OutboxFailure failure,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Claims up to <paramref name="batchSize"/> ready outbox messages and
+    /// dispatches them one at a time. Each successful dispatch is committed to
+    /// the store before the next message is processed, so a failure on one
+    /// message does not revert messages that already succeeded. Returns the
+    /// identifiers that were dispatched successfully and the identifiers whose
+    /// dispatch failed (the latter are already marked Failed in the store).
+    /// </summary>
+    ValueTask<OutboxDispatchBatch> DispatchOnceAsync(
+        TimeSpan claimDuration,
+        TimeSpan retryDelay,
+        int batchSize,
+        Func<OutboxMessageRecord, CancellationToken, ValueTask> dispatch,
+        CancellationToken cancellationToken);
 }
 
 public sealed record OutboxPublication(string MessageId, string ClaimToken);
@@ -166,3 +234,17 @@ public sealed record OutboxFailure(
     string ClaimToken,
     string Error,
     DateTimeOffset NextAttemptAt);
+
+/// <summary>
+/// Reports the durable outcome of a single <see cref="IOutboxStore.DispatchOnceAsync"/>
+/// call. The store marks each row Published or Failed inside its own transaction,
+/// so partial-batch failures cannot leak already-published rows back to a
+/// subsequent poll cycle.
+/// </summary>
+public sealed record OutboxDispatchBatch(
+    IReadOnlyList<string> DispatchedIds,
+    IReadOnlyList<string> FailedIds,
+    IReadOnlyList<string>? AbandonedIds = null)
+{
+    public IReadOnlyList<string> Abandoned => AbandonedIds ?? Array.Empty<string>();
+}

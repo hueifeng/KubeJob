@@ -41,6 +41,23 @@ public enum OutboxDeliveryState
 }
 
 /// <summary>
+/// Event types written to the Kj2_Outbox table. The transactional outbox is
+/// the durable hand-off: <c>work-available</c> rows either notify Pull workers
+/// directly or are converted to an <c>ExecutionEnvelope</c> at publish time for
+/// BrokerDispatch queues, and <c>cancel</c> rows fan out per-group cancel
+/// signals. <see cref="OutboxPublisherService"/> switches on this value to
+/// route each row to the correct transport adapter.
+/// </summary>
+public static class OutboxEventTypes
+{
+    /// <summary>Non-authoritative hint that a logical queue may have claimable work.</summary>
+    public const string WorkAvailable = "work-available";
+
+    /// <summary>Per-group cancel signal for an in-flight BrokerDispatch envelope.</summary>
+    public const string Cancel = "cancel";
+}
+
+/// <summary>
 /// Durable logical job. Retries create attempts, not additional logical runs.
 /// </summary>
 public sealed class JobRunRecord

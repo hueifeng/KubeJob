@@ -164,7 +164,10 @@ public sealed record DashboardOverview(
     int PendingOutboxMessages,
     DashboardActivitySummary LastHour,
     IReadOnlyList<DashboardQueueSummary> Queues,
-    IReadOnlyList<DashboardRunSummary> RecentRuns);
+    IReadOnlyList<DashboardRunSummary> RecentRuns,
+    int FailedOutboxMessages = 0,
+    DateTimeOffset? OldestPendingOutboxAt = null,
+    DateTimeOffset? OldestReadyRunAt = null);
 
 public interface IJobRuntimeDashboardStore
 {

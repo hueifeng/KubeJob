@@ -11,7 +11,12 @@ public static class JobSubmissionIdentity
         SubmitJobCommand command)
     {
         if (string.Equals(existing.JobKey, command.JobKey, StringComparison.Ordinal)
-            && JsonEquals(existing.PayloadJson, command.PayloadJson))
+            && JsonEquals(existing.PayloadJson, command.PayloadJson)
+            && string.Equals(existing.Queue, command.Queue, StringComparison.Ordinal)
+            && existing.Priority == command.Priority
+            && string.Equals(existing.ConcurrencyKey, command.ConcurrencyKey, StringComparison.Ordinal)
+            && existing.MaxAttempts == command.MaxAttempts
+            && existing.TimeoutSeconds == command.TimeoutSeconds)
         {
             return;
         }

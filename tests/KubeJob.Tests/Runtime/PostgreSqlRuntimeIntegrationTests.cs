@@ -20,6 +20,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 {
     private string? _adminConnectionString;
     private string? _databaseName;
+    private string? _testConnectionString;
     private NpgsqlDataSource? _dataSource;
     private PostgreSqlJobRuntimeStore? _store;
 
@@ -30,6 +31,15 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var configured = Environment.GetEnvironmentVariable("KUBEJOB_TEST_POSTGRES");
         if (string.IsNullOrWhiteSpace(configured))
         {
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("KUBEJOB_REQUIRE_POSTGRES"),
+                    "1",
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "KUBEJOB_TEST_POSTGRES is required for this integration test job.");
+            }
+
             return;
         }
 
@@ -55,6 +65,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             Pooling = true
         };
         var connectionString = testBuilder.ConnectionString;
+        _testConnectionString = connectionString;
         new DbInitializer(connectionString).Initialize();
         _dataSource = NpgsqlDataSource.Create(connectionString);
         _store = new PostgreSqlJobRuntimeStore(_dataSource);
@@ -82,6 +93,63 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         await using var drop = admin.CreateCommand();
         drop.CommandText = $"DROP DATABASE IF EXISTS \"{_databaseName}\"";
         await drop.ExecuteNonQueryAsync();
+    }
+
+    [Fact]
+    public async Task Concurrent_reinitialization_preserves_schema_version_and_contract()
+    {
+        if (!Enabled) return;
+        var connectionString = _testConnectionString!;
+
+        await Task.WhenAll(
+            Enumerable.Range(0, 3).Select(_ => Task.Run(
+                () => new DbInitializer(connectionString).Initialize())));
+
+        await using var connection = await _dataSource!.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT Version
+            FROM Kj2_SchemaMigrations
+            ORDER BY Version DESC
+            LIMIT 1;";
+        var version = Convert.ToInt32(await command.ExecuteScalarAsync());
+
+        version.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PostgreSql_broker_reconciliation_requeues_pending_run_only()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var run = (await store.SubmitAsync(NewSubmission(), CancellationToken.None)).Run;
+        var requeueAt = DateTimeOffset.UtcNow.AddMinutes(1);
+
+        var scheduled = await store.RequeueWorkAvailableAsync(
+            run.Id,
+            requeueAt,
+            CancellationToken.None);
+        var messages = await store.ClaimPendingAsync(
+            requeueAt,
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        scheduled.Should().BeTrue();
+        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
+
+        var canceled = await store.RequestCancelAsync(
+            run.Id,
+            "cancel before reconciliation",
+            null,
+            CancellationToken.None);
+        var scheduledAfterCancel = await store.RequeueWorkAvailableAsync(
+            run.Id,
+            requeueAt,
+            CancellationToken.None);
+
+        canceled.Requested.Should().BeTrue();
+        scheduledAfterCancel.Should().BeFalse();
     }
 
     [Fact]
@@ -233,7 +301,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         await store.SubmitAsync(NewSubmission(idempotencyKey: "outbox-batch:one"), CancellationToken.None);
         await store.SubmitAsync(NewSubmission(idempotencyKey: "outbox-batch:two"), CancellationToken.None);
         var claimed = (await store.ClaimPendingAsync(
-            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(30),
             10,
             CancellationToken.None)).ToArray();

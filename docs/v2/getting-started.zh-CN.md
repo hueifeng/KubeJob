@@ -57,7 +57,12 @@ builder.Services.AddKubeJob(
 
 var app = builder.Build();
 app.InitializeKubeJobDatabase();
+// 初始化器会应用当前版本化 Schema，并校验数据库契约。
 app.MapControllers();
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 app.Run();
 ```
 
@@ -82,7 +87,8 @@ var handle = await jobs.EnqueueAsync(
 var status = await jobs.GetStatusAsync(handle.JobId, cancellationToken);
 ```
 
-相同幂等键只有在 JobKey 和 JSON Payload 语义相同时才会返回原 Run。相同键用于不同任务
+相同幂等键只有在 JobKey、JSON Payload 语义以及执行身份（Queue、Priority、ConcurrencyKey、
+MaxAttempts、TimeoutSeconds）都相同时才会返回原 Run。相同键用于不同执行身份、不同任务
 或不同 Payload 时，会抛出 `IdempotencyConflictException`，HTTP API 返回 409。
 
 取消采用协作式语义：

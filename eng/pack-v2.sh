@@ -12,6 +12,7 @@ mkdir -p "$output"
 projects=(
   "src/KubeJob.Core/KubeJob.Core.csproj"
   "src/KubeJob.Client/KubeJob.Client.csproj"
+  "src/KubeJob.ControlPlane/KubeJob.ControlPlane.csproj"
   "src/KubeJob.Server/KubeJob.Server.csproj"
   "src/KubeJob.Worker/KubeJob.Worker.csproj"
   "src/KubeJob.Storage.PostgreSQL/KubeJob.Storage.PostgreSQL.csproj"

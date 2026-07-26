@@ -11,6 +11,13 @@ using RabbitMQ.Client;
 
 namespace KubeJob.RabbitMqIntegrationTests;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class RabbitMqIntegrationCollection
+{
+    public const string Name = "rabbitmq-integration";
+}
+
+[Collection(RabbitMqIntegrationCollection.Name)]
 public sealed class RabbitMqIngressIntegrationTests
 {
     [Fact]
@@ -53,6 +60,9 @@ public sealed class RabbitMqIngressIntegrationTests
             channel.ExchangeDeclare(deadLetterExchange, ExchangeType.Direct, true, false);
             channel.QueueDeclare(deadLetterQueue, true, false, false);
             channel.QueueBind(deadLetterQueue, deadLetterExchange, "dead");
+            await EventuallyAsync(
+                () => Task.FromResult(channel.ConsumerCount(queue) == 1),
+                attempts: 200);
 
             var valid = new RabbitMqJobIngressEnvelope(
                 "integration-message-1",
@@ -72,7 +82,7 @@ public sealed class RabbitMqIngressIntegrationTests
                             ExactJobKey: true),
                         CancellationToken.None);
                 return runs.TotalCount == 1;
-            });
+            }, attempts: 200);
 
             var invalidBody = Encoding.UTF8.GetBytes("not-json");
             var invalidProperties = channel.CreateBasicProperties();
@@ -85,12 +95,53 @@ public sealed class RabbitMqIngressIntegrationTests
                 body: invalidBody);
 
             await EventuallyAsync(() =>
-                Task.FromResult(channel.MessageCount(deadLetterQueue) == 1));
+                Task.FromResult(channel.MessageCount(deadLetterQueue) == 1),
+                attempts: 200);
             channel.MessageCount(queue).Should().Be(0);
         }
         finally
         {
             await host.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Direct_dispatch_surfaces_unroutable_publish_when_no_queue_binding_exists()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
+            ?? throw new InvalidOperationException(
+                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
+        var suffix = Guid.NewGuid().ToString("N");
+        var options = new RabbitMqExecutionOptions
+        {
+            ConnectionString = connectionString,
+            ConsumerGroup = $"integration-{suffix}",
+            ConsumerQueuePrefix = $"kubejob.integration.{suffix}",
+            PublisherConfirmTimeout = TimeSpan.FromSeconds(5)
+        };
+        var exchange = $"{options.ConsumerQueuePrefix}.{options.ConsumerGroup}";
+
+        try
+        {
+            using var dispatcher = new RabbitMqExecutionDispatcher(
+                Microsoft.Extensions.Options.Options.Create(options));
+            var action = async () => await dispatcher.DispatchAsync(
+                new ExecutionEnvelope(
+                    ExecutionEnvelope.CurrentSchemaVersion,
+                    $"event-{suffix}",
+                    "missing-queue",
+                    $"run-{suffix}"),
+                CancellationToken.None);
+
+            var exception = await action.Should().ThrowAsync<IOException>();
+            exception.Which.Message.Should().Contain("could not route");
+        }
+        finally
+        {
+            using var connection = CreateConnection(connectionString);
+            using var channel = connection.CreateModel();
+            channel.ExchangeDelete(exchange);
         }
     }
 

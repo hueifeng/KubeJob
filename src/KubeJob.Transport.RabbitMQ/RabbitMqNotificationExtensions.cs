@@ -1,4 +1,5 @@
 using KubeJob.Core.Runtime;
+using KubeJob.Server.Runtime;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -47,13 +48,17 @@ public static class RabbitMqNotificationExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
+        services.Replace(ServiceDescriptor.Singleton<IExecutionGroupResolver, RabbitMqExecutionGroupResolver>());
         services.Replace(ServiceDescriptor.Singleton<IExecutionDispatcher, RabbitMqExecutionDispatcher>());
         return services;
     }
 
     /// <summary>
     /// Adds the RabbitMQ Execution Envelope consumer to a worker. The worker
-    /// must already be registered with AddKubeJobWorker.
+    /// must already be registered with AddKubeJobWorker. The Direct Dispatch
+    /// topology (group exchange, TTL retry exchange/queues, DLX, DLQ,
+    /// per-queue quorum queues with optional <c>x-delivery-limit</c>, and the
+    /// per-group cancel fanout exchange) is declared automatically on startup.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobExecutionConsumer(
         this IServiceCollection services,
@@ -61,7 +66,25 @@ public static class RabbitMqNotificationExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
+        services.AddHostedService<RabbitMqDispatchTopology>();
         services.AddHostedService<RabbitMqExecutionConsumerService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Replaces the default no-op <c>ICancelPublisher</c> with a RabbitMQ
+    /// publisher that fans out per-group cancel signals to all workers in
+    /// the consumer group. Pair with <c>UseRabbitMqKubeJobExecutionDispatcher</c>
+    /// when enabling Direct Dispatch Mode.
+    /// </summary>
+    public static IServiceCollection UseRabbitMqKubeJobCancelPublisher(
+        this IServiceCollection services,
+        Action<RabbitMqExecutionOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        services.Configure(configure);
+        services.Replace(ServiceDescriptor.Singleton<IExecutionGroupResolver, RabbitMqExecutionGroupResolver>());
+        services.Replace(ServiceDescriptor.Singleton<ICancelPublisher, RabbitMqCancelPublisher>());
         return services;
     }
 

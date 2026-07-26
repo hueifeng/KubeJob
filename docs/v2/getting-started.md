@@ -69,7 +69,12 @@ builder.Services.AddKubeJob(
 
 var app = builder.Build();
 app.InitializeKubeJobDatabase();
+// The initializer applies the current versioned schema and validates the contract.
 app.MapControllers();
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 app.Run();
 ```
 
@@ -94,9 +99,11 @@ var handle = await jobs.EnqueueAsync(
 var status = await jobs.GetStatusAsync(handle.JobId, cancellationToken);
 ```
 
-An idempotency key may be reused only for the same JobKey and semantically equal
-JSON payload. Reusing it with another job or payload throws
-`IdempotencyConflictException`; the HTTP API returns `409 Conflict`.
+An idempotency key may be reused only for the same JobKey, semantically equal
+JSON payload, and execution identity (Queue, Priority, ConcurrencyKey,
+MaxAttempts, and TimeoutSeconds). Reusing it with another execution identity,
+job, or payload throws `IdempotencyConflictException`; the HTTP API returns
+`409 Conflict`.
 
 Cancellation is cooperative:
 
@@ -228,6 +235,8 @@ builder.Services.AddRabbitMqKubeJobIngress(options =>
     options.QueueName = "mailer-ingress";
     options.RoutingKey = "mail.#";
     options.Source = "rabbitmq.mailer";
+    options.DeadLetterExchangeName = "kubejob.job-ingress.dlx";
+    options.DeadLetterRoutingKey = "dead";
 });
 ```
 

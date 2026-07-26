@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
@@ -168,8 +169,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                         await AddOutboxAsync(
                             connection,
                             transaction,
-                            request.RunId,
                             state.Queue,
+                            OutboxEventTypes.WorkAvailable,
+                            JsonSerializer.Serialize(new { runId = request.RunId, queue = state.Queue }, SerializerOptions),
                             availableAt,
                             cancellationToken);
                     }
@@ -303,8 +305,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 await AddOutboxAsync(
                     connection,
                     transaction,
-                    state.AttemptRunId,
                     state.Queue,
+                    OutboxEventTypes.WorkAvailable,
+                    JsonSerializer.Serialize(new { runId = state.AttemptRunId, queue = state.Queue }, SerializerOptions),
                     availableAt,
                     cancellationToken);
             }

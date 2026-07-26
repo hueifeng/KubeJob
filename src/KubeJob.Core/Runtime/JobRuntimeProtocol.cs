@@ -89,6 +89,10 @@ public sealed record CompleteAttemptResponse(
     bool Requeued,
     string? RejectionReason = null);
 
+public sealed record RequeueExecutionRequest(
+    string RunId,
+    DateTimeOffset AvailableAt);
+
 public sealed record EnqueueJobRequest(
     string JobKey,
     string PayloadJson,

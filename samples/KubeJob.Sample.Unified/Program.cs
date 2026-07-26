@@ -8,6 +8,7 @@ using KubeJob.Server.Extensions;
 using KubeJob.Storage.PostgreSQL.Extensions;
 using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Extensions;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
 var postgresConnectionString = builder.Configuration.GetConnectionString("KubeJob");
@@ -74,6 +75,10 @@ if (!string.IsNullOrWhiteSpace(postgresConnectionString))
 app.UseStaticFiles();
 app.UseRouting();
 app.MapControllers();
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 
 var dashboardDemoJob = new JobKey<DashboardDemoPayload>("sample.dashboard-demo");
 app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancellationToken) =>

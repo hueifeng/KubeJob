@@ -3,6 +3,7 @@ using System.Text.Json;
 using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
 namespace KubeJob.Transport.RabbitMQ;
 
@@ -48,19 +49,42 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
                 properties.Type = "execution-envelope";
                 properties.MessageId = envelope.EventId;
 
-                channel.BasicPublish(
-                    exchange: _options.ExchangeName,
-                    routingKey: envelope.Queue,
-                    mandatory: false,
-                    basicProperties: properties,
-                    body: Encoding.UTF8.GetBytes(
-                        JsonSerializer.Serialize(envelope, SerializerOptions)));
-
-                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                BasicReturnEventArgs? returned = null;
+                EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
                 {
-                    throw new IOException(
-                        $"RabbitMQ did not confirm execution envelope '{envelope.EventId}' " +
-                        $"within {_options.PublisherConfirmTimeout}.");
+                    if (string.Equals(args.BasicProperties.MessageId, envelope.EventId, StringComparison.Ordinal))
+                    {
+                        returned = args;
+                    }
+                };
+                channel.BasicReturn += returnHandler;
+                try
+                {
+                    channel.BasicPublish(
+                        exchange: _options.GetGroupExchangeName(),
+                        routingKey: envelope.Queue,
+                        mandatory: true,
+                        basicProperties: properties,
+                        body: Encoding.UTF8.GetBytes(
+                            JsonSerializer.Serialize(envelope, SerializerOptions)));
+
+                    if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                    {
+                        throw new IOException(
+                            $"RabbitMQ did not confirm execution envelope '{envelope.EventId}' " +
+                            $"within {_options.PublisherConfirmTimeout}.");
+                    }
+
+                    if (returned is not null)
+                    {
+                        throw new IOException(
+                            $"RabbitMQ could not route execution envelope '{envelope.EventId}' " +
+                            $"with routing key '{envelope.Queue}' (reply code {returned.ReplyCode}: {returned.ReplyText}).");
+                    }
+                }
+                finally
+                {
+                    channel.BasicReturn -= returnHandler;
                 }
             }
             catch
@@ -98,8 +122,12 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
 
         _connection = factory.CreateConnection("KubeJob.ExecutionDispatcher");
         _channel = _connection.CreateModel();
+        // Publish to the per-group direct exchange that
+        // RabbitMqDispatchTopology binds each queue's quorum queue to. The
+        // control plane declares it itself so a distributed deployment does
+        // not depend on a worker having run the topology first.
         _channel.ExchangeDeclare(
-            exchange: _options.ExchangeName,
+            exchange: _options.GetGroupExchangeName(),
             type: ExchangeType.Direct,
             durable: true,
             autoDelete: false,

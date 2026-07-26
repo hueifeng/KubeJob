@@ -15,6 +15,7 @@ public sealed class WorkerControlPlane
     private readonly IJobClaimStore _claims;
     private readonly IJobCompletionStore _completions;
     private readonly IJobQueryStore _queries;
+    private readonly IJobSubmissionStore _submissions;
     private readonly JobRuntimeOptions _options;
 
     public WorkerControlPlane(
@@ -22,12 +23,14 @@ public sealed class WorkerControlPlane
         IJobClaimStore claims,
         IJobCompletionStore completions,
         IJobQueryStore queries,
+        IJobSubmissionStore submissions,
         IOptions<JobRuntimeOptions> options)
     {
         _sessions = sessions;
         _claims = claims;
         _completions = completions;
         _queries = queries;
+        _submissions = submissions;
         _options = options.Value;
     }
 
@@ -125,6 +128,13 @@ public sealed class WorkerControlPlane
                 Reason: "run_already_terminal");
         }
 
+        if (run.Phase == JobPhase.Running)
+        {
+            return new AdmitExecutionResponse(
+                ExecutionAdmissionStatus.AlreadyTerminal,
+                Reason: "run_already_running");
+        }
+
         if (!request.Queues.Contains(run.Queue, StringComparer.Ordinal)
             || !request.Capabilities.Contains(run.JobKey, StringComparer.Ordinal))
         {
@@ -177,6 +187,18 @@ public sealed class WorkerControlPlane
             request,
             _options.RetryDelay,
             cancellationToken);
+
+    public ValueTask<bool> RequeueExecutionAsync(
+        RequeueExecutionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.RunId);
+        return _submissions.RequeueWorkAvailableAsync(
+            request.RunId,
+            request.AvailableAt,
+            cancellationToken);
+    }
 
     private static void ValidateRegistration(RegisterWorkerSessionRequest request)
     {

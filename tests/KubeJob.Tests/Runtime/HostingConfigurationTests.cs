@@ -4,6 +4,7 @@ using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Extensions;
 using KubeJob.Storage.PostgreSQL.Runtime;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 
 namespace KubeJob.Tests.Runtime;
@@ -20,6 +21,23 @@ public sealed class HostingConfigurationTests
         HasHostedService<ScheduleReconcilerService>(services).Should().BeTrue();
         HasHostedService<LeaseReaperService>(services).Should().BeTrue();
         HasHostedService<OutboxPublisherService>(services).Should().BeTrue();
+        HasHostedService<RuntimeRetentionService>(services).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Server_registers_a_runtime_readiness_check()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        using var provider = services.BuildServiceProvider();
+
+        var result = await provider
+            .GetRequiredService<HealthCheckService>()
+            .CheckHealthAsync();
+
+        result.Status.Should().Be(HealthStatus.Healthy);
+        result.Entries.Should().ContainKey("kubejob-runtime");
     }
 
     [Fact]

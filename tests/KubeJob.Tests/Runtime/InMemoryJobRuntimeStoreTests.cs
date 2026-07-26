@@ -223,7 +223,7 @@ public sealed class InMemoryJobRuntimeStoreTests
         var run = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
         var worker = await RegisterAsync(store, "worker", "session");
 
-        var accepted = await store.RequestCancelAsync(run.Id, "not needed", CancellationToken.None);
+        var accepted = await store.RequestCancelAsync(run.Id, "not needed", null, CancellationToken.None);
         var claimed = await store.ClaimAsync(
             NewClaim(worker),
             TimeSpan.FromSeconds(30),
@@ -231,7 +231,7 @@ public sealed class InMemoryJobRuntimeStoreTests
             CancellationToken.None);
         var snapshot = await store.GetRunAsync(run.Id, CancellationToken.None);
 
-        accepted.Should().BeTrue();
+        accepted.Requested.Should().BeTrue();
         claimed.Should().BeEmpty();
         snapshot!.Phase.Should().Be(JobPhase.Canceled);
     }
@@ -263,6 +263,40 @@ public sealed class InMemoryJobRuntimeStoreTests
 
         retryClaim.Single().Id.Should().Be(message.Id);
         retryClaim.Single().PublishAttempts.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Broker_retry_budget_requeues_pending_run_through_durable_outbox()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var run = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
+        var requeueAt = DateTimeOffset.UtcNow.AddMinutes(1);
+
+        var scheduled = await store.RequeueWorkAvailableAsync(
+            run.Id,
+            requeueAt,
+            CancellationToken.None);
+        var messages = await store.ClaimPendingAsync(
+            requeueAt,
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        scheduled.Should().BeTrue();
+        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
+
+        var canceled = await store.RequestCancelAsync(
+            run.Id,
+            "cancel before reconciliation",
+            null,
+            CancellationToken.None);
+        var scheduledAfterCancel = await store.RequeueWorkAvailableAsync(
+            run.Id,
+            requeueAt,
+            CancellationToken.None);
+
+        canceled.Requested.Should().BeTrue();
+        scheduledAfterCancel.Should().BeFalse();
     }
 
     [Fact]
@@ -347,6 +381,97 @@ public sealed class InMemoryJobRuntimeStoreTests
 
         claimed[0].State.Should().Be(OutboxDeliveryState.Published);
         claimed[1].State.Should().Be(OutboxDeliveryState.Publishing);
+    }
+
+    [Fact]
+    public async Task Outbox_dispatch_respects_batch_size()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(idempotencyKey: "batch-one"), CancellationToken.None);
+        await store.SubmitAsync(NewCommand(idempotencyKey: "batch-two"), CancellationToken.None);
+        await store.SubmitAsync(NewCommand(idempotencyKey: "batch-three"), CancellationToken.None);
+
+        var dispatched = await store.DispatchOnceAsync(
+            TimeSpan.FromMinutes(1),
+            TimeSpan.Zero,
+            2,
+            (_, _) => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        dispatched.DispatchedIds.Should().HaveCount(2);
+        var remaining = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromMinutes(1),
+            10,
+            CancellationToken.None);
+        remaining.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Permanent_outbox_failure_is_abandoned_instead_of_retried_forever()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+
+        var result = await store.DispatchOnceAsync(
+            TimeSpan.FromMinutes(1),
+            TimeSpan.Zero,
+            10,
+            (_, _) => throw new PermanentOutboxException("invalid event"),
+            CancellationToken.None);
+
+        result.Abandoned.Should().ContainSingle();
+        result.FailedIds.Should().BeEmpty();
+
+        var next = await store.DispatchOnceAsync(
+            TimeSpan.FromMinutes(1),
+            TimeSpan.Zero,
+            10,
+            (_, _) => ValueTask.CompletedTask,
+            CancellationToken.None);
+        next.DispatchedIds.Should().BeEmpty();
+        next.Abandoned.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Runtime_maintenance_removes_published_outbox_and_unkeyed_terminal_runs()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var unkeyedRun = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
+        var keyedRun = (await store.SubmitAsync(
+            NewCommand(idempotencyKey: "retain-me"),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "maintenance-worker", "maintenance-session");
+        var claim = (await store.ClaimAsync(
+            NewClaim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        await store.CompleteAsync(
+            NewCompletion(worker, claim, JobAttemptOutcome.Succeeded),
+            TimeSpan.Zero,
+            CancellationToken.None);
+        await store.DispatchOnceAsync(
+            TimeSpan.FromMinutes(1),
+            TimeSpan.Zero,
+            10,
+            (_, _) => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        var maintenance = (IJobRuntimeMaintenanceStore)store;
+        var outboxDeleted = await maintenance.DeletePublishedOutboxAsync(
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            100,
+            CancellationToken.None);
+        var terminalDeleted = await maintenance.DeleteUnkeyedTerminalRunsAsync(
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            100,
+            CancellationToken.None);
+
+        outboxDeleted.Should().BeGreaterThan(0);
+        terminalDeleted.Should().Be(1);
+        (await store.GetRunAsync(unkeyedRun.Id, CancellationToken.None)).Should().BeNull();
+        (await store.GetRunAsync(keyedRun.Id, CancellationToken.None)).Should().NotBeNull();
     }
 
     private static SubmitJobCommand NewCommand(

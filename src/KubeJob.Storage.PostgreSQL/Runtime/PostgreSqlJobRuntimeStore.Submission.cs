@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
@@ -96,39 +97,168 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await AddOutboxAsync(
             connection,
             transaction,
-            run.Id,
             run.Queue,
+            OutboxEventTypes.WorkAvailable,
+            JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
             run.AvailableAt,
             cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new SubmitJobResult(run, Existing: false);
     }
 
-    public async ValueTask<bool> RequestCancelAsync(
+    public async ValueTask<bool> RequeueWorkAvailableAsync(
         string runId,
-        string? reason,
+        DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-        var affected = await connection.ExecuteAsync(new CommandDefinition(@"
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var state = await connection.QuerySingleOrDefaultAsync<WorkRequeueState>(new CommandDefinition(@"
+            SELECT Phase, CancelRequested, AvailableAt
+            FROM Kj2_JobRuns
+            WHERE Id = @RunId
+            FOR UPDATE;",
+            new { RunId = runId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (state is null
+            || state.CancelRequested
+            || state.Phase != (int)JobPhase.Pending)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        var retryAt = state.AvailableAt > availableAt
+            ? state.AvailableAt
+            : availableAt;
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET AvailableAt = @AvailableAt,
+                Version = Version + 1
+            WHERE Id = @RunId
+              AND Phase = @Pending
+              AND CancelRequested = FALSE;",
+            new
+            {
+                RunId = runId,
+                AvailableAt = retryAt,
+                Pending = (int)JobPhase.Pending
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var queue = await connection.QuerySingleAsync<string>(new CommandDefinition(@"
+            SELECT Queue
+            FROM Kj2_JobRuns
+            WHERE Id = @RunId;",
+            new { RunId = runId },
+            transaction,
+            cancellationToken: cancellationToken));
+        await AddOutboxAsync(
+            connection,
+            transaction,
+            queue,
+            OutboxEventTypes.WorkAvailable,
+            JsonSerializer.Serialize(new { runId, queue }, SerializerOptions),
+            retryAt,
+            cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async ValueTask<CancelJobResult> RequestCancelAsync(
+        string runId,
+        string? reason,
+        string? consumerGroup,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var state = await connection.QuerySingleOrDefaultAsync<RunCancelState>(new CommandDefinition(@"
+            SELECT Id AS RunId,
+                   Queue,
+                   Phase,
+                   CancelRequested
+            FROM Kj2_JobRuns
+            WHERE Id = @RunId
+            FOR UPDATE;",
+            new { RunId = runId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (state is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return new CancelJobResult(false, null, null);
+        }
+
+        if (state.CancelRequested
+            || state.Phase is (int)JobPhase.Succeeded
+                or (int)JobPhase.Failed
+                or (int)JobPhase.Canceled
+                or (int)JobPhase.Dead)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return new CancelJobResult(false, state.Queue, consumerGroup);
+        }
+
+        var databaseNow = await GetDatabaseNowAsync(connection, transaction, cancellationToken);
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobRuns
             SET CancelRequested = TRUE,
                 FailureCode = 'cancel_requested',
                 FailureMessage = @Reason,
                 Phase = CASE WHEN Phase = @Pending THEN @Canceled ELSE Phase END,
-                CompletedAt = CASE WHEN Phase = @Pending THEN clock_timestamp() ELSE CompletedAt END,
+                CompletedAt = CASE WHEN Phase = @Pending THEN @Now ELSE CompletedAt END,
                 Version = Version + 1
             WHERE Id = @RunId
-              AND Phase IN (@Pending, @Running);",
+              AND Phase IN (@Pending, @Running)
+              AND CancelRequested = FALSE;",
             new
             {
                 RunId = runId,
                 Reason = reason,
                 Pending = (int)JobPhase.Pending,
                 Running = (int)JobPhase.Running,
-                Canceled = (int)JobPhase.Canceled
+                Canceled = (int)JobPhase.Canceled,
+                Now = databaseNow
             },
+            transaction,
             cancellationToken: cancellationToken));
-        return affected > 0;
+
+        if (!string.IsNullOrWhiteSpace(consumerGroup)
+            && !string.IsNullOrWhiteSpace(state.Queue))
+        {
+            await AddCancelOutboxAsync(
+                connection,
+                transaction,
+                consumerGroup!,
+                runId,
+                databaseNow,
+                cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new CancelJobResult(true, state.Queue, consumerGroup);
+    }
+
+    private sealed class WorkRequeueState
+    {
+        public int Phase { get; set; }
+        public bool CancelRequested { get; set; }
+        public DateTimeOffset AvailableAt { get; set; }
+    }
+
+    private sealed class RunCancelState
+    {
+        public string RunId { get; set; } = string.Empty;
+        public string Queue { get; set; } = string.Empty;
+        public int Phase { get; set; }
+        public bool CancelRequested { get; set; }
     }
 }

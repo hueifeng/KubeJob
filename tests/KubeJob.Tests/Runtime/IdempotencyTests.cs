@@ -52,6 +52,25 @@ public sealed class IdempotencyTests
         await action.Should().ThrowAsync<IdempotencyConflictException>();
     }
 
+    [Fact]
+    public async Task Same_key_with_different_execution_identity_throws_conflict()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(
+            NewCommand("{\"id\":42}"),
+            CancellationToken.None);
+
+        var command = NewCommand("{\"id\":42}") with
+        {
+            Queue = "priority-queue",
+            ConcurrencyKey = "order:42",
+            MaxAttempts = 3
+        };
+        var action = async () => await store.SubmitAsync(command, CancellationToken.None);
+
+        await action.Should().ThrowAsync<IdempotencyConflictException>();
+    }
+
     private static SubmitJobCommand NewCommand(string payloadJson) => new(
         "mail.send",
         payloadJson,

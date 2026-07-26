@@ -18,6 +18,14 @@ public sealed class RabbitMqJobIngressOptions
 
     public string? DeadLetterRoutingKey { get; set; }
 
+    /// <summary>
+    /// Allow the ingress queue to be declared without a dead-letter exchange.
+    /// When false (default), <see cref="Validate"/> throws because permanent
+    /// rejects (malformed JSON, validation errors, idempotency conflicts) would
+    /// otherwise be silently dropped by the broker.
+    /// </summary>
+    public bool AllowNoDeadLetterExchange { get; set; }
+
     public ushort PrefetchCount { get; set; } = 32;
 
     public TimeSpan ReconnectDelay { get; set; } = TimeSpan.FromSeconds(2);
@@ -40,6 +48,16 @@ public sealed class RabbitMqJobIngressOptions
         {
             throw new InvalidOperationException(
                 "DeadLetterRoutingKey requires DeadLetterExchangeName.");
+        }
+
+        if (string.IsNullOrWhiteSpace(DeadLetterExchangeName) && !AllowNoDeadLetterExchange)
+        {
+            throw new InvalidOperationException(
+                "DeadLetterExchangeName is required for the RabbitMQ business ingress. " +
+                "Permanent rejects (malformed JSON, validation errors, idempotency conflicts) " +
+                "must be routed to a dead-letter exchange so they are not silently dropped. " +
+                "Set DeadLetterExchangeName and DeadLetterRoutingKey, or opt out explicitly with " +
+                "AllowNoDeadLetterExchange=true.");
         }
 
         if (!string.IsNullOrWhiteSpace(DeadLetterExchangeName)

@@ -6,6 +6,8 @@ namespace KubeJob.Storage.PostgreSQL.Data;
 
 public sealed class DbInitializer : IStorageInitializer
 {
+    private const int CurrentSchemaVersion = 1;
+
     private readonly string _connectionString;
 
     public DbInitializer(string connectionString)
@@ -23,6 +25,19 @@ public sealed class DbInitializer : IStorageInitializer
         using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         connection.Execute(@"
+            SELECT pg_advisory_lock(hashtextextended('kubejob.schema', 0));
+            CREATE TABLE IF NOT EXISTS Kj2_SchemaMigrations (
+                Version INTEGER PRIMARY KEY,
+                AppliedAt TIMESTAMPTZ NOT NULL
+            );");
+
+        try
+        {
+            var appliedVersion = connection.ExecuteScalar<int?>(
+                "SELECT MAX(Version) FROM Kj2_SchemaMigrations;");
+            if (appliedVersion is null)
+            {
+                connection.Execute(@"
             CREATE TABLE IF NOT EXISTS Kj2_JobRuns (
                 Id VARCHAR(64) PRIMARY KEY,
                 JobKey VARCHAR(300) NOT NULL,
@@ -111,8 +126,7 @@ public sealed class DbInitializer : IStorageInitializer
                 ON Kj2_JobAttempts (LeaseExpiresAt)
                 WHERE Phase = 0;
 
-            CREATE INDEX IF NOT EXISTS IX_Kj2_JobAttempts_Run
-                ON Kj2_JobAttempts (RunId, AttemptNumber);
+            DROP INDEX IF EXISTS IX_Kj2_JobAttempts_Run;
 
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobAttempts_WorkerActive
                 ON Kj2_JobAttempts (WorkerId, SessionId, SessionEpoch)
@@ -200,6 +214,63 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE INDEX IF NOT EXISTS IX_Kj2_Outbox_Pending
                 ON Kj2_Outbox (AvailableAt, CreatedAt)
                 WHERE State IN (0, 1, 3);
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_Outbox_PublishedRetention
+                ON Kj2_Outbox (PublishedAt, Id)
+                WHERE State = 2 AND PublishedAt IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_TerminalRetention
+                ON Kj2_JobRuns (CompletedAt, Id)
+                WHERE Phase IN (2, 3, 4, 5)
+                  AND IdempotencyKey IS NULL
+                  AND IdempotencyKey IS NULL
+                  AND ScheduleId IS NULL;
         ");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (@Version, CURRENT_TIMESTAMP);",
+                    new { Version = CurrentSchemaVersion });
+            }
+            else if (appliedVersion != CurrentSchemaVersion)
+            {
+                throw new InvalidOperationException(
+                    $"Unsupported KubeJob schema version {appliedVersion}; application supports {CurrentSchemaVersion}.");
+            }
+
+            ValidateSchemaContract(connection);
+        }
+        finally
+        {
+            connection.Execute(
+                "SELECT pg_advisory_unlock(hashtextextended('kubejob.schema', 0));");
+        }
+    }
+
+    private static void ValidateSchemaContract(NpgsqlConnection connection)
+    {
+        var missing = connection.ExecuteScalar<string?>(@"
+            SELECT string_agg(expected.table_name || '.' || expected.column_name, ', ' ORDER BY expected.table_name, expected.column_name)
+            FROM (VALUES
+                ('Kj2_JobRuns', 'Id'),
+                ('Kj2_JobRuns', 'PayloadJson'),
+                ('Kj2_JobRuns', 'CancelRequested'),
+                ('Kj2_JobRuns', 'Version'),
+                ('Kj2_JobAttempts', 'RunId'),
+                ('Kj2_JobAttempts', 'LeaseExpiresAt'),
+                ('Kj2_WorkerSessions', 'Epoch'),
+                ('Kj2_WorkerSessions', 'AvailableSlots'),
+                ('Kj2_JobSchedules', 'ClaimToken'),
+                ('Kj2_Outbox', 'EventType'),
+                ('Kj2_Outbox', 'ClaimToken')) AS expected(table_name, column_name)
+            LEFT JOIN information_schema.columns columns
+                ON columns.table_schema = current_schema()
+               AND lower(columns.table_name) = lower(expected.table_name)
+               AND lower(columns.column_name) = lower(expected.column_name)
+            WHERE columns.column_name IS NULL;");
+
+        if (!string.IsNullOrWhiteSpace(missing))
+        {
+            throw new InvalidOperationException(
+                $"KubeJob schema version {CurrentSchemaVersion} is missing required columns: {missing}.");
+        }
     }
 }

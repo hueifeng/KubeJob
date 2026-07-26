@@ -57,6 +57,7 @@ public sealed class ExecutionAdmissionTests
             new[] { "orders.push" },
             new[] { "order-push-2" }));
 
-        duplicate.Status.Should().Be(ExecutionAdmissionStatus.Retry);
+        duplicate.Status.Should().Be(ExecutionAdmissionStatus.AlreadyTerminal);
+        duplicate.Reason.Should().Be("run_already_running");
     }
 }

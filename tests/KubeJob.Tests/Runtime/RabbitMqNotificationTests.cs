@@ -193,6 +193,57 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
+    public void Physical_queue_names_remain_distinct_for_normalization_collisions()
+    {
+        RabbitMqExecutionOptions.SanitizeSegment("orders.push")
+            .Should().NotBe(RabbitMqExecutionOptions.SanitizeSegment("orders-push"));
+        RabbitMqExecutionOptions.SanitizeSegment("Orders")
+            .Should().NotBe(RabbitMqExecutionOptions.SanitizeSegment("orders"));
+    }
+
+    [Fact]
+    public void Execution_options_reject_composed_topology_names_over_255_bytes()
+    {
+        var options = new RabbitMqExecutionOptions
+        {
+            ConsumerGroup = new string('g', 200)
+        };
+
+        var action = options.Validate;
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*topology names*");
+    }
+
+    [Fact]
+    public void Broker_retry_budget_options_are_validated()
+    {
+        var options = new RabbitMqExecutionOptions
+        {
+            MaxBrokerRetryAttempts = 0
+        };
+
+        var action = options.Validate;
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*MaxBrokerRetryAttempts*");
+    }
+
+    [Fact]
+    public void Broker_reconciliation_delay_must_be_positive()
+    {
+        var options = new RabbitMqExecutionOptions
+        {
+            BrokerRetryReconciliationDelay = TimeSpan.Zero
+        };
+
+        var action = options.Validate;
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*BrokerRetryReconciliationDelay*");
+    }
+
+    [Fact]
     public void Business_ingress_options_validate_broker_topology()
     {
         var options = new RabbitMqJobIngressOptions

@@ -17,6 +17,8 @@ builder.Services.AddRabbitMqKubeJobIngress(options =>
     options.QueueName = "mailer-ingress";
     options.RoutingKey = "mail.#";
     options.Source = "rabbitmq.mailer";
+    options.DeadLetterExchangeName = "kubejob.job-ingress.dlx";
+    options.DeadLetterRoutingKey = "dead";
 });
 ```
 

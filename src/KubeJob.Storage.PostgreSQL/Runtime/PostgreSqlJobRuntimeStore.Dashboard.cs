@@ -52,7 +52,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
                       AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS CanceledRunsLastHour,
                 COUNT(*) FILTER (
                     WHERE Phase = @Dead
-                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS DeadRunsLastHour
+                      AND CompletedAt >= statement_timestamp() - INTERVAL '1 hour')::int AS DeadRunsLastHour,
+                MIN(AvailableAt) FILTER (
+                    WHERE Phase = @Pending
+                      AND AvailableAt <= statement_timestamp()) AS OldestReadyRunAt
             FROM Kj2_JobRuns;
 
             SELECT
@@ -67,7 +70,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 COUNT(*) FILTER (WHERE Enabled = FALSE)::int AS DisabledSchedules
             FROM Kj2_JobSchedules;
 
-            SELECT COUNT(*)::int
+            SELECT
+                COUNT(*)::int AS PendingMessages,
+                COUNT(*) FILTER (WHERE State = @OutboxFailed)::int AS FailedMessages,
+                MIN(CreatedAt) AS OldestPendingAt
             FROM Kj2_Outbox
             WHERE State IN (@OutboxPending, @OutboxPublishing, @OutboxFailed);
 
@@ -108,7 +114,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var runs = await grid.ReadSingleAsync<RunCountsRow>();
         var workers = await grid.ReadSingleAsync<WorkerCountsRow>();
         var schedules = await grid.ReadSingleAsync<ScheduleCountsRow>();
-        var outbox = await grid.ReadSingleAsync<int>();
+        var outbox = await grid.ReadSingleAsync<OutboxHealthRow>();
         var queues = (await grid.ReadAsync<QueueSummaryRow>())
             .Select(row => new DashboardQueueSummary(
                 row.Queue,
@@ -132,14 +138,17 @@ public sealed partial class PostgreSqlJobRuntimeStore
             workers.AvailableWorkerSlots,
             schedules.EnabledSchedules,
             schedules.DisabledSchedules,
-            outbox,
+            outbox.PendingMessages,
             new DashboardActivitySummary(
                 runs.SucceededRunsLastHour,
                 runs.FailedRunsLastHour,
                 runs.CanceledRunsLastHour,
                 runs.DeadRunsLastHour),
             queues,
-            recent);
+            recent,
+            FailedOutboxMessages: outbox.FailedMessages,
+            OldestPendingOutboxAt: outbox.OldestPendingAt,
+            OldestReadyRunAt: runs.OldestReadyRunAt);
     }
 
     public async ValueTask<DashboardPage<DashboardRunSummary>> GetRunsAsync(
@@ -326,6 +335,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public int FailedRunsLastHour { get; set; }
         public int CanceledRunsLastHour { get; set; }
         public int DeadRunsLastHour { get; set; }
+        public DateTimeOffset? OldestReadyRunAt { get; set; }
+    }
+
+    private sealed class OutboxHealthRow
+    {
+        public int PendingMessages { get; set; }
+        public int FailedMessages { get; set; }
+        public DateTimeOffset? OldestPendingAt { get; set; }
     }
 
     private sealed class WorkerCountsRow

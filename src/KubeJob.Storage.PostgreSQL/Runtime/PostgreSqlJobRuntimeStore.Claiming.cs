@@ -18,7 +18,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             || maxBatchSize <= 0
             || request.AvailableSlots <= 0
             || request.Queues.Count == 0
-            || request.Capabilities.Count == 0)
+            || request.Capabilities.Count == 0
+            || request.RunIds is { Count: 0 })
         {
             return Array.Empty<ClaimedJob>();
         }

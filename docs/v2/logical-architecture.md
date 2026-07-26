@@ -325,10 +325,12 @@ or another transport to be added as independent adapters later.
 
 ## 7. High-throughput execution dispatch mode
 
-The following is a proposed optional mode for workloads such as
-`订单推送2` at hundreds or thousands of messages per second. It is different
-from the current notification-assisted pull mode: the execution broker, not a
-Worker claim scan, delivers the work envelope to a Consumer Group.
+This optional mode targets workloads such as `订单推送2` at hundreds or
+thousands of messages per second. Unlike the notification-assisted pull mode,
+the execution broker — not a Worker claim scan — delivers the work envelope to
+a Consumer Group. It is implemented as an opt-in per-queue delivery profile
+(`ExecutionDeliveryProfile.BrokerDispatch`); the control plane still owns the
+durable state machine and PostgreSQL remains the authoritative ledger.
 
 ```mermaid
 flowchart LR
@@ -346,7 +348,7 @@ flowchart LR
     subgraph Control["KubeJob Control Plane"]
         submit["JobControlPlane\n幂等、校验、取消"]
         state[("PostgreSQL\nJobRun / JobAttempt / Lease")]
-        outbox["Execution Dispatch Outbox\n待投递任务"]
+        outbox["Kj2_Outbox\n待投递 work-available 行"]
         dispatcher["Dispatch Publisher\n发布确认"]
         complete["Complete / Retry / Fence\n状态机"]
     end
@@ -390,14 +392,14 @@ sequenceDiagram
     participant Channel as 外部渠道
 
     Order->>Ingress: OrderPaid(O-1001, event-9001)
-    Ingress->>DB: JobRun Pending + DispatchOutbox
+    Ingress->>DB: JobRun Pending + work-available outbox 行
     DB-->>Ingress: run-abc 已提交
     Ingress-->>Order: 业务消息 ACK
 
-    Dispatch->>DB: Claim DispatchOutbox
-    Dispatch->>MQ: ExecutionEnvelope(run-abc, orderId=O-1001)
+    Dispatch->>DB: 读取 work-available outbox 行
+    Dispatch->>MQ: ExecutionEnvelope(run-abc, queue=orders.push)
     MQ-->>Dispatch: Publisher confirm
-    Dispatch->>DB: 标记已投递
+    Dispatch->>DB: 标记已发布
 
     MQ->>Worker: 投递 ExecutionEnvelope
     Worker->>DB: Start/Accept delivery，创建或确认 Attempt + Lease
@@ -416,13 +418,13 @@ sequenceDiagram
 | 事项 | 当前 Pull 模式 | 高吞吐 Dispatch 模式 |
 | --- | --- | --- |
 | 任务来源 | Worker 向控制面 Claim | Worker Consumer 从 MQ 收取 |
-| 数据库 Claim | 按队列扫描、`SKIP LOCKED` | 按 DispatchId/RunId 接受消息，避免空轮询和大范围扫描 |
-| MQ 消息内容 | 只有唤醒提示 | 执行信封，可包含 Payload 或 PayloadRef |
+| 数据库 Claim | 按队列扫描、`SKIP LOCKED` | 按 RunId 接受消息（targeted admission），避免空轮询和大范围扫描 |
+| MQ 消息内容 | 只有唤醒提示 | 执行信封（`RunId`/`Queue`/`EventId`，不含 Payload）；worker 凭 `RunId` 向控制面 admission 取 payload |
 | 任务状态 | PostgreSQL | 仍由 PostgreSQL 保存 |
 | Worker ACK | 唤醒后即可 ACK | Complete 成功后才能 ACK |
-| 重试主责 | KubeJob Attempt/Lease | 必须明确由 MQ 或 KubeJob 其中一方主导 |
-| 顺序保证 | `ConcurrencyKey` + 数据库锁 | Kafka 使用 `orderId` 分区；其他 MQ 需要业务分片或数据库 fencing |
-| 当前代码状态 | 已实现 | 需要新增执行分发 Adapter |
+| 重试主责 | KubeJob Attempt/Lease | KubeJob `MaxAttempts` 权威；broker `x-delivery-limit` 仅作兜底，触限后进 DLQ |
+| 顺序保证 | `ConcurrencyKey` + 数据库锁 | RabbitMQ 用 logical queue 作 routing key，由 `ConcurrencyKey` + 数据库 fencing 保序；Kafka 适配器未来可按 `orderId` 分区 |
+| 当前代码状态 | 已实现 | 已实现（队列 profile=`BrokerDispatch` 开启；`BrokerCancelPropagationEnabled` 只 gate broker 取消传播） |
 
 This mode still provides at-least-once execution. An external order channel
 must accept an application idempotency key such as `orderId`; neither a broker
@@ -430,5 +432,13 @@ ACK nor a PostgreSQL completion transaction can undo a side effect that
 already succeeded before a worker crash.
 
 The broker should absorb bursts, while PostgreSQL remains the authoritative
-ledger. If PostgreSQL is unavailable, the dispatcher stops advancing its
-Outbox and consumers must delay or retry instead of acknowledging messages.
+ledger. If PostgreSQL is unavailable, the dispatcher stops advancing its Outbox
+and consumers must delay or retry instead of acknowledging messages.
+
+### Direct Dispatch 拓扑与约定
+
+- **Quorum queue 必选。** Direct Dispatch 消费队列以 `x-queue-type=quorum` 声明，broker 持久化 `x-delivery-count`，跨 worker 重启不丢。`x-delivery-limit` 默认关闭；只有部署同时提供 Pending Run 的 DLQ re-drive/reconciliation 时才应显式启用。`RabbitMqDispatchTopology` 在 worker 启动时声明队列与 DLX，`RabbitMqExecutionConsumerService` 只做 passive 声明确认队列存在后消费，避免与 quorum 声明冲突。
+- **命名约定。** 调度 group exchange `kubejob.execution.{group}`、调度队列 `kubejob.execution.{group}.{sanitized-queue}`、调度 DLX `kubejob.execution.{group}.dlx`、调度 DLQ `kubejob.execution.{group}.dlq`、取消 fanout exchange `kubejob.execution.{group}.cancel`、每个 Worker Session 独立的 exclusive auto-delete 取消队列 `kubejob.execution.{group}.cancel.{worker-session}`。前缀 `kubejob.execution` 来自 `RabbitMqExecutionOptions.ConsumerQueuePrefix`（可配），`{group}` 来自 `ConsumerGroup`。`{sanitized-queue}` 是把 logical queue 名规范化后截断到 48 字符，并始终追加 6 字符稳定哈希，避免 `orders.push` 与 `orders-push` 碰撞。
+- **Header 约定。** Dispatch envelope 携带 `properties.Type = "execution-envelope"`、`MessageId = EventId`；cancel marker 携带 `properties.Type = "cancel"` 与 `X-KubeJob-Event-Type = "cancel"`，consumer 不用解析 body 即可按 header 分发。
+- **投递路径.** dispatcher 与 consumer 都指向 group exchange：`RabbitMqDispatchTopology` 声明 quorum 队列 + TTL retry exchange/queue + DLX + 可选 `x-delivery-limit` + 绑定，`RabbitMqExecutionDispatcher` 发布到 group exchange，`RabbitMqExecutionConsumerService` 从 quorum 队列消费。提交始终写 `work-available` outbox 行；`OutboxPublisherService` 对 `BrokerDispatch` profile 的队列在发布时把 `WorkAvailableSignal` 转成 `ExecutionEnvelope` 再投递。
+- **Opt-in 开关。** `JobRuntimeOptions.BrokerCancelPropagationEnabled` 默认 `false`，只 gate 取消传播：开启时取消 `BrokerDispatch` Run 会解析 consumer group 并写 `cancel` outbox 行，由 `ICancelPublisher` fanout；关闭时取消只置 `CancelRequested`，靠 lease reaper 兜底。投递本身由队列 profile（`BrokerDispatch`）决定，与该 flag 无关。

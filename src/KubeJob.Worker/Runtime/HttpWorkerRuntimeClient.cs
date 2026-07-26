@@ -104,6 +104,14 @@ public sealed class HttpWorkerRuntimeClient : IWorkerRuntimeClient, IDisposable
         return await ReadRequiredAsync<CompleteAttemptResponse>(response, cancellationToken);
     }
 
+    public ValueTask<bool> RequeueExecutionAsync(
+        RequeueExecutionRequest request,
+        CancellationToken cancellationToken) =>
+        PostBooleanAsync(
+            "api/kubejob/runtime/executions/requeue",
+            request,
+            cancellationToken);
+
     public void Dispose() => _httpClient.Dispose();
 
     private async ValueTask<bool> PostBooleanAsync<TRequest>(

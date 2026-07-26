@@ -21,6 +21,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
     private readonly RabbitMqJobIngressOptions _options;
     private readonly IJobMessageIngress _ingress;
     private readonly ILogger<RabbitMqJobIngressService> _logger;
+    private readonly object _channelGate = new();
 
     public RabbitMqJobIngressService(
         IOptions<RabbitMqJobIngressOptions> options,
@@ -136,6 +137,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
             var messageId = string.IsNullOrWhiteSpace(delivery.BasicProperties.MessageId)
                 ? envelope.MessageId
                 : delivery.BasicProperties.MessageId;
+            EnsureIngressIdentity(_options.Source, messageId);
             var request = new EnqueueJobRequest(
                 envelope.JobKey,
                 envelope.PayloadJson,
@@ -150,7 +152,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
             var result = await _ingress.SubmitAsync(
                 new JobIngressMessage(_options.Source, messageId, request),
                 stoppingToken);
-            channel.BasicAck(delivery.DeliveryTag, multiple: false);
+            Ack(channel, delivery.DeliveryTag);
             _logger.LogDebug(
                 "Accepted RabbitMQ KubeJob ingress message {MessageId} as Run {RunId}; existing={Existing}",
                 messageId,
@@ -159,7 +161,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         }
         catch (JsonException exception)
         {
-            channel.BasicReject(delivery.DeliveryTag, requeue: false);
+            Reject(channel, delivery.DeliveryTag);
             _logger.LogWarning(
                 exception,
                 "Rejected malformed RabbitMQ KubeJob ingress message {DeliveryTag}",
@@ -167,11 +169,11 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            channel.BasicNack(delivery.DeliveryTag, multiple: false, requeue: true);
+            Nack(channel, delivery.DeliveryTag);
         }
         catch (ControlPlaneValidationException exception)
         {
-            channel.BasicReject(delivery.DeliveryTag, requeue: false);
+            Reject(channel, delivery.DeliveryTag);
             _logger.LogWarning(
                 exception,
                 "Rejected invalid RabbitMQ KubeJob ingress message {DeliveryTag} with code {Code}",
@@ -180,7 +182,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         }
         catch (IdempotencyConflictException exception)
         {
-            channel.BasicReject(delivery.DeliveryTag, requeue: false);
+            Reject(channel, delivery.DeliveryTag);
             _logger.LogWarning(
                 exception,
                 "Rejected conflicting RabbitMQ KubeJob ingress message {DeliveryTag}",
@@ -188,11 +190,35 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         }
         catch (Exception exception)
         {
-            channel.BasicNack(delivery.DeliveryTag, multiple: false, requeue: true);
+            Nack(channel, delivery.DeliveryTag);
             _logger.LogError(
                 exception,
                 "Transient failure processing RabbitMQ KubeJob ingress message {DeliveryTag}; requeued",
                 delivery.DeliveryTag);
+        }
+    }
+
+    private void Ack(IModel channel, ulong deliveryTag)
+    {
+        lock (_channelGate)
+        {
+            channel.BasicAck(deliveryTag, multiple: false);
+        }
+    }
+
+    private void Reject(IModel channel, ulong deliveryTag)
+    {
+        lock (_channelGate)
+        {
+            channel.BasicReject(deliveryTag, requeue: false);
+        }
+    }
+
+    private void Nack(IModel channel, ulong deliveryTag)
+    {
+        lock (_channelGate)
+        {
+            channel.BasicNack(deliveryTag, multiple: false, requeue: true);
         }
     }
 
@@ -208,5 +234,22 @@ public sealed class RabbitMqJobIngressService : BackgroundService
             ["x-dead-letter-exchange"] = _options.DeadLetterExchangeName,
             ["x-dead-letter-routing-key"] = _options.DeadLetterRoutingKey ?? string.Empty
         };
+    }
+
+    private static void EnsureIngressIdentity(string? source, string? messageId)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            throw new ControlPlaneValidationException(
+                "ingress_source_required",
+                "RabbitMQ ingress Source must be configured to derive a stable idempotency key.");
+        }
+
+        if (string.IsNullOrWhiteSpace(messageId))
+        {
+            throw new ControlPlaneValidationException(
+                "ingress_message_id_required",
+                "RabbitMQ ingress MessageId is required. Configure the AMQP MessageId property or include a non-empty MessageId field in the envelope body.");
+        }
     }
 }

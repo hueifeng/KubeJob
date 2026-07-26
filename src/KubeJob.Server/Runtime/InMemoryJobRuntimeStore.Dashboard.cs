@@ -43,6 +43,13 @@ public sealed partial class InMemoryJobRuntimeStore
                               && completedAt >= activityWindowStart
                               && completedAt <= observedAt)
                 .ToArray();
+            var pendingOutbox = _outbox.Values
+                .Where(message => message.State is OutboxDeliveryState.Pending or OutboxDeliveryState.Publishing or OutboxDeliveryState.Failed)
+                .ToArray();
+            var oldestReadyRunAt = runs
+                .Where(run => run.Phase == JobPhase.Pending && run.AvailableAt <= observedAt)
+                .Select(run => (DateTimeOffset?)run.AvailableAt)
+                .Min();
 
             return ValueTask.FromResult(new DashboardOverview(
                 ObservedAt: observedAt,
@@ -62,17 +69,17 @@ public sealed partial class InMemoryJobRuntimeStore
                     .Sum(session => session.AvailableSlots),
                 EnabledSchedules: schedules.Count(schedule => schedule.Enabled),
                 DisabledSchedules: schedules.Count(schedule => !schedule.Enabled),
-                PendingOutboxMessages: _outbox.Values.Count(message => message.State is
-                    OutboxDeliveryState.Pending or
-                    OutboxDeliveryState.Publishing or
-                    OutboxDeliveryState.Failed),
+                PendingOutboxMessages: pendingOutbox.Length,
                 LastHour: new DashboardActivitySummary(
                     lastHourRuns.Count(run => run.Phase == JobPhase.Succeeded),
                     lastHourRuns.Count(run => run.Phase == JobPhase.Failed),
                     lastHourRuns.Count(run => run.Phase == JobPhase.Canceled),
                     lastHourRuns.Count(run => run.Phase == JobPhase.Dead)),
                 Queues: queues,
-                RecentRuns: recent));
+                RecentRuns: recent,
+                FailedOutboxMessages: pendingOutbox.Count(message => message.State == OutboxDeliveryState.Failed),
+                OldestPendingOutboxAt: pendingOutbox.Select(message => (DateTimeOffset?)message.CreatedAt).Min(),
+                OldestReadyRunAt: oldestReadyRunAt));
         }
     }
 

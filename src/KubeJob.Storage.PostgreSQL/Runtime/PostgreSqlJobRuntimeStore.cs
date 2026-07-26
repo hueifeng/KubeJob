@@ -16,7 +16,8 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     IJobQueryStore,
     IJobScheduleStore,
     IOutboxStore,
-    IJobRuntimeDashboardStore
+    IJobRuntimeDashboardStore,
+    IJobRuntimeMaintenanceStore
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly NpgsqlDataSource _dataSource;
@@ -61,8 +62,9 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     private static async ValueTask AddOutboxAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        string runId,
         string queue,
+        string eventType,
+        string payloadJson,
         DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
@@ -71,14 +73,52 @@ public sealed partial class PostgreSqlJobRuntimeStore :
                 (Id, Queue, EventType, PayloadJson, State, PublishAttempts,
                  AvailableAt, CreatedAt)
             VALUES
-                (@Id, @Queue, 'work-available', CAST(@PayloadJson AS jsonb),
+                (@Id, @Queue, @EventType, CAST(@PayloadJson AS jsonb),
                  @State, 0, GREATEST(@AvailableAt, clock_timestamp()),
                  clock_timestamp());",
             new
             {
                 Id = NewId(),
                 Queue = queue,
-                PayloadJson = JsonSerializer.Serialize(new { runId, queue }, SerializerOptions),
+                EventType = eventType,
+                PayloadJson = payloadJson,
+                State = (int)OutboxDeliveryState.Pending,
+                AvailableAt = availableAt.ToUniversalTime()
+            },
+            transaction,
+            cancellationToken: cancellationToken);
+        await connection.ExecuteAsync(command);
+    }
+
+    /// <summary>
+    /// Persists a per-group cancel signal as an outbox row. The cancel
+    /// exchange is per-group, so the row's <c>Queue</c> column carries the
+    /// group identifier (not the logical queue).
+    /// </summary>
+    internal static async ValueTask AddCancelOutboxAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        string group,
+        string runId,
+        DateTimeOffset availableAt,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(group);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var command = new CommandDefinition(@"
+            INSERT INTO Kj2_Outbox
+                (Id, Queue, EventType, PayloadJson, State, PublishAttempts,
+                 AvailableAt, CreatedAt)
+            VALUES
+                (@Id, @Queue, @EventType, CAST(@PayloadJson AS jsonb),
+                 @State, 0, GREATEST(@AvailableAt, clock_timestamp()),
+                 clock_timestamp());",
+            new
+            {
+                Id = NewId(),
+                Queue = group,
+                EventType = OutboxEventTypes.Cancel,
+                PayloadJson = JsonSerializer.Serialize(new { runId }, SerializerOptions),
                 State = (int)OutboxDeliveryState.Pending,
                 AvailableAt = availableAt.ToUniversalTime()
             },

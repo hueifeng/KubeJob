@@ -33,6 +33,7 @@ public sealed class OutboxPublisherRoutingTests
                 "orders.push",
                 ExecutionDeliveryProfile.BrokerDispatch)),
             dispatcher,
+            new NoopCancelPublisher(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(10),

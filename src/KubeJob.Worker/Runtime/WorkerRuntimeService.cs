@@ -114,6 +114,24 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
     }
 
+    public string SessionId => _sessionId;
+
+    public bool TryCancelRun(string runId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var canceled = false;
+        foreach (var owned in _owned.Values)
+        {
+            if (string.Equals(owned.Job.RunId, runId, StringComparison.Ordinal))
+            {
+                owned.CancellationSource.Cancel();
+                canceled = true;
+            }
+        }
+
+        return canceled;
+    }
+
     /// <summary>
     /// Admits and executes one broker-delivered Run through the same bounded
     /// channel used by Pull claims. The caller may ACK only when the result is
@@ -128,6 +146,9 @@ public sealed class WorkerRuntimeService : BackgroundService
         var session = await _sessionReady.Task.WaitAsync(cancellationToken);
         if (Volatile.Read(ref _draining) != 0)
         {
+            // The worker is shutting down. The envelope will be redelivered to
+            // another worker; we must not loop locally or the broker will keep
+            // assigning this envelope to a dead session.
             return new ExecutionEnvelopeProcessingResult(
                 ExecutionEnvelopeProcessingStatus.Retry,
                 "worker_draining");
@@ -175,7 +196,18 @@ public sealed class WorkerRuntimeService : BackgroundService
                     ExecutionEnvelopeProcessingStatus.Retry,
                     admission.Reason);
             case ExecutionAdmissionStatus.Admitted when admission.Job is not null:
-                return await EnqueueAdmittedExecutionAsync(admission.Job, cancellationToken);
+                try
+                {
+                    return await EnqueueAdmittedExecutionAsync(admission.Job, cancellationToken);
+                }
+                catch (OperationCanceledException) when (Volatile.Read(ref _draining) != 0)
+                {
+                    // Session was canceled mid-enqueue; the broker must not
+                    // redeliver to this worker.
+                    return new ExecutionEnvelopeProcessingResult(
+                        ExecutionEnvelopeProcessingStatus.Reject,
+                        "worker_session_canceled");
+                }
             default:
                 return new ExecutionEnvelopeProcessingResult(
                     ExecutionEnvelopeProcessingStatus.Reject,
@@ -212,7 +244,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         catch (ChannelClosedException)
         {
             return new ExecutionEnvelopeProcessingResult(
-                ExecutionEnvelopeProcessingStatus.Retry,
+                ExecutionEnvelopeProcessingStatus.Reject,
                 "worker_execution_channel_closed");
         }
         finally
