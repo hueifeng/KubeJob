@@ -154,7 +154,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             FROM Kj2_JobRuns
             WHERE (@Phase IS NULL OR Phase = @Phase)
               AND (@Queue IS NULL OR Queue = @Queue)
-              AND (@JobKey IS NULL OR LOWER(JobKey) LIKE LOWER(@JobKey) || '%')
+              AND (@JobKey IS NULL OR (
+                   (@ExactJobKey AND LOWER(JobKey) = LOWER(@JobKey))
+                   OR (NOT @ExactJobKey AND LOWER(JobKey) LIKE LOWER(@JobKey) || '%')))
             ORDER BY CreatedAt DESC, Id DESC
             OFFSET @Offset
             LIMIT @PageSize;
@@ -163,13 +165,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
             FROM Kj2_JobRuns
             WHERE (@Phase IS NULL OR Phase = @Phase)
               AND (@Queue IS NULL OR Queue = @Queue)
-              AND (@JobKey IS NULL OR LOWER(JobKey) LIKE LOWER(@JobKey) || '%');
+              AND (@JobKey IS NULL OR (
+                   (@ExactJobKey AND LOWER(JobKey) = LOWER(@JobKey))
+                   OR (NOT @ExactJobKey AND LOWER(JobKey) LIKE LOWER(@JobKey) || '%')));
             """,
             new
             {
                 Phase = phase,
                 normalized.Queue,
                 normalized.JobKey,
+                normalized.ExactJobKey,
                 Offset = (normalized.Page - 1) * normalized.PageSize,
                 normalized.PageSize
             },

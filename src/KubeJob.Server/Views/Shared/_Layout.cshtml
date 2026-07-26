@@ -7,7 +7,6 @@
     <title>@ViewData["Title"] - KubeJob</title>
     <style>
         :root {
-            --sidebar-width: 224px;
             --primary: #0f6cbd;
             --primary-hover: #115ea3;
             --primary-soft: #eff6fc;
@@ -24,7 +23,7 @@
             --text: #242424;
             --muted: #616161;
             --muted-2: #8a8886;
-            --shadow: 0 1px 2px rgba(0, 0, 0, .06);
+            --shadow: none;
         }
 
         * { box-sizing: border-box; }
@@ -33,25 +32,30 @@
         a { color: var(--primary); }
         button, input, select { font: inherit; }
         code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+        :focus-visible { outline: 3px solid rgba(15,108,189,.35); outline-offset: 2px; }
+        .skip-link { position: fixed; left: 16px; top: 12px; z-index: 2000; padding: 8px 12px; color: white; background: var(--primary); border-radius: 4px; transform: translateY(-160%); transition: transform .15s ease; }
+        .skip-link:focus { transform: translateY(0); }
 
         .sidebar {
-            position: fixed;
-            inset: 0 auto 0 0;
-            width: var(--sidebar-width);
+            position: sticky;
+            top: 0;
+            min-height: 52px;
+            display: flex;
+            align-items: stretch;
             background: var(--surface);
-            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
             z-index: 1030;
         }
         .brand {
-            height: 64px;
+            min-height: 52px;
             display: flex;
             align-items: center;
             gap: 10px;
-            padding: 0 18px;
+            padding: 0 24px;
             color: var(--text);
             font-size: 16px;
             font-weight: 650;
-            border-bottom: 1px solid var(--border);
+            text-decoration: none;
         }
         .brand-mark {
             width: 28px;
@@ -66,46 +70,44 @@
             box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
         }
         .brand-copy { line-height: 1.05; }
-        .brand small { display: block; color: var(--muted-2); font-size: 10px; font-weight: 600; letter-spacing: .08em; margin-top: 4px; }
-        .nav-caption { padding: 20px 18px 8px; color: var(--muted-2); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+        .brand small { display: none; }
+        .nav-caption { display: none; }
+        .sidebar nav { display: flex; align-items: stretch; }
         .sidebar .nav-link {
             position: relative;
-            min-height: 38px;
-            margin: 2px 8px;
-            padding: 8px 10px;
+            min-height: 52px;
+            margin: 0;
+            padding: 0 13px;
             display: flex;
             align-items: center;
             gap: 10px;
-            border-radius: 4px;
+            border-left: 1px solid transparent;
+            border-right: 1px solid transparent;
             color: #424242;
             font-weight: 500;
             text-decoration: none;
         }
         .sidebar .nav-link:hover { background: #f3f3f3; color: var(--text); }
-        .sidebar .nav-link.active { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
-        .sidebar .nav-link.active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--primary); }
-        .sidebar .nav-link .fa-solid { color: var(--muted); }
-        .sidebar .nav-link.active .fa-solid { color: var(--primary); }
+        .sidebar .nav-link.active { background: var(--canvas); border-color: var(--border); color: var(--text); font-weight: 650; }
+        .sidebar .nav-link.active::before { display: none; }
+        .sidebar .nav-link .fa-solid { display: none; }
 
-        .main-wrapper { margin-left: var(--sidebar-width); min-height: 100vh; }
+        .main-wrapper { min-height: 100vh; }
         .topbar {
-            position: sticky;
-            top: 0;
-            z-index: 1020;
             min-height: 64px;
-            padding: 10px 28px;
+            padding: 13px max(24px, calc((100vw - 1240px) / 2));
             display: flex;
             align-items: center;
             justify-content: space-between;
-            background: rgba(255,255,255,.96);
+            background: var(--canvas);
             border-bottom: 1px solid var(--border);
-            backdrop-filter: blur(14px);
         }
+        .topbar-start { display: flex; align-items: center; gap: 10px; min-width: 0; }
         .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
         .page-title { margin: 2px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; letter-spacing: -.01em; }
         .runtime-state { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: #424242; font-size: 12px; font-weight: 600; }
         .runtime-state.admin-mode { color: var(--warning); background: #fff8e8; border-color: #d8b35b; }
-        .content-area { width: 100%; max-width: 1680px; margin: 0 auto; padding: 24px 28px 40px; }
+        .content-area { width: min(1240px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 40px; }
 
         .section-header {
             padding: 0 0 12px;
@@ -182,6 +184,7 @@
         .mb-4 { margin-bottom: 1.5rem; }
         .me-1 { margin-right: .25rem; }
         .me-2 { margin-right: .5rem; }
+        .ms-1 { margin-left: .25rem; }
         .p-3 { padding: 1rem; }
         .p-4 { padding: 1.5rem; }
         .px-3 { padding-left: 1rem; padding-right: 1rem; }
@@ -238,6 +241,7 @@
         .btn:hover { background: #f5f5f5; }
         .btn-primary:hover { color: white; background: var(--primary-hover); border-color: var(--primary-hover); }
         .btn.disabled, .btn:disabled { opacity: .42; pointer-events: none; }
+        .mobile-nav-toggle, .nav-toggle, .nav-scrim { display: none; }
         .form-label { display: block; color: var(--muted); font-weight: 600; }
         .form-control, .form-select { width: 100%; min-height: 34px; padding: 5px 8px; color: var(--text); background: white; border: 1px solid var(--border-strong); border-radius: 4px; outline: none; }
         .form-control:focus, .form-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(15,108,189,.16); }
@@ -248,6 +252,7 @@
         .progress { overflow: hidden; height: 5px; background: #e8e8e8; border-radius: 999px; }
         .progress-bar { height: 100%; background: var(--primary); border-radius: inherit; }
         .fa-solid { display: inline-block; width: 1.1em; text-align: center; font-style: normal; }
+        .fa-bars::before { content: "☰"; }
         .fa-cubes-stacked::before { content: "K"; }
         .fa-code-branch::before { content: "⋈"; }
         .fa-gauge-high::before { content: "◫"; }
@@ -273,14 +278,19 @@
         @@media (min-width: 1200px) { .col-xl-3 { width: 25%; } }
         @@media (max-width: 1100px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-grid { grid-template-columns: 1fr; } }
         @@media (max-width: 760px) {
-            :root { --sidebar-width: 64px; }
-            .brand { justify-content: center; padding: 0; }
-            .brand-copy, .nav-caption, .sidebar .label { display: none; }
-            .sidebar .nav-link { justify-content: center; margin: 3px 7px; padding: 8px; }
-            .sidebar .nav-link.active::before { top: 7px; bottom: 7px; }
+            .sidebar { position: static; flex-wrap: wrap; }
+            .brand { min-height: 48px; padding: 0 14px; }
+            .sidebar nav { order: 3; width: 100%; overflow-x: auto; border-top: 1px solid var(--border); }
+            .sidebar .nav-link { min-height: 42px; padding: 0 10px; }
+            .sidebar .label { display: inline; }
             .topbar { padding: 10px 16px; }
-            .content-area { padding: 16px; }
+            .topbar .runtime-state { display: none; }
+            .topbar .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .content-area { width: min(100% - 32px, 1240px); padding: 16px 0; }
             .metric-grid { grid-template-columns: 1fr; }
+            .section-header > .d-flex { width: 100%; }
+            .section-header .btn { flex: 0 0 auto; }
+            .table th, .table td { padding: 10px 12px; }
         }
     </style>
 </head>
@@ -288,11 +298,12 @@
 @{
     var action = ViewContext.RouteData.Values["Action"]?.ToString();
 }
-<aside class="sidebar">
-    <div class="brand">
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="sidebar">
+    <a asp-controller="Dashboard" asp-action="Index" class="brand">
         <span class="brand-mark">K</span>
         <span class="brand-copy">KubeJob<small>CONTROL PLANE</small></span>
-    </div>
+    </a>
     <div class="nav-caption">Runtime</div>
     <nav aria-label="Dashboard navigation">
         <a asp-controller="Dashboard" asp-action="Index" class="nav-link @(action == "Index" ? "active" : "")"
@@ -320,20 +331,27 @@
             <i class="fa-solid fa-calendar-days" aria-hidden="true"></i><span class="label">Schedules</span>
         </a>
     </nav>
-</aside>
+</header>
 <div class="main-wrapper">
     <header class="topbar">
-        <div>
-            <div class="eyebrow">KubeJob / Runtime</div>
-            <h1 class="page-title">@ViewData["Title"]</h1>
+        <div class="topbar-start">
+            <div>
+                <div class="eyebrow">KubeJob / Runtime</div>
+                <h1 class="page-title">@ViewData["Title"]</h1>
+            </div>
         </div>
-        <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
-              title="This indicator reflects dashboard permissions, not runtime health.">
-            <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
-            @(DashboardOptions.AllowMutatingActions ? "Mutations enabled" : "Read-only dashboard")
-        </span>
+        <div class="d-flex align-items-center gap-2">
+            <a class="btn btn-sm btn-outline-secondary" href="@Context.Request.Path@Context.Request.QueryString" aria-label="Refresh this page" title="Refresh this page">
+                <i class="fa-solid fa-rotate" aria-hidden="true"></i><span class="label ms-1">Refresh</span>
+            </a>
+            <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
+                  title="This indicator reflects dashboard permissions, not runtime health.">
+                <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
+                @(DashboardOptions.AllowMutatingActions ? "Admin mode" : "Read-only")
+            </span>
+        </div>
     </header>
-    <main class="content-area">@RenderBody()</main>
+    <main id="main-content" class="content-area">@RenderBody()</main>
 </div>
 @await RenderSectionAsync("Scripts", required: false)
 </body>

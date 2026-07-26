@@ -6,6 +6,30 @@ namespace KubeJob.Server.Runtime;
 
 public sealed partial class InMemoryJobRuntimeStore
 {
+    public ValueTask<JobScheduleRecord?> CreateIfAbsentAsync(
+        JobScheduleRecord schedule,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_schedules.ContainsKey(schedule.Id))
+            {
+                return ValueTask.FromResult<JobScheduleRecord?>(null);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var stored = CloneSchedule(schedule);
+            stored.CreatedAt = now;
+            stored.UpdatedAt = now;
+            stored.Version = 1;
+            stored.ClaimToken = null;
+            stored.ClaimUntil = null;
+            _schedules[schedule.Id] = stored;
+            return ValueTask.FromResult<JobScheduleRecord?>(CloneSchedule(stored));
+        }
+    }
+
     public ValueTask<JobScheduleRecord> UpsertAsync(
         JobScheduleRecord schedule,
         CancellationToken cancellationToken)

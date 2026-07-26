@@ -10,8 +10,6 @@
                      || !string.IsNullOrWhiteSpace(permanentQuery.JobKey);
     var needsReview = permanent.TotalCount + exhausted.TotalCount;
 }
-<meta http-equiv="refresh" content="30">
-
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
         <h5 class="mb-1 fw-bold">Failures that need operator review</h5>
@@ -19,7 +17,7 @@
             Permanent failures cannot be retried automatically. “No retries left” means retryable errors, timeouts, or lost leases exhausted the configured Attempts.
         </div>
     </div>
-    <a asp-action="Runs" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" class="btn btn-sm btn-outline-secondary">Back to jobs</a>
+    <a asp-action="Runs" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" asp-route-exactJobKey="@permanentQuery.ExactJobKey" class="btn btn-sm btn-outline-secondary">Back to jobs</a>
 </div>
 
 @if (hasFilters)
@@ -84,6 +82,7 @@
             <input name="jobKey" value="@permanentQuery.JobKey" class="form-control form-control-sm" placeholder="for example: mail." />
         </div>
         <input type="hidden" name="pageSize" value="@permanentQuery.PageSize" />
+        <input type="hidden" name="exactJobKey" value="@permanentQuery.ExactJobKey" />
         <div class="col-auto"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-filter me-1" aria-hidden="true"></i>Apply filters</button></div>
         @if (hasFilters)
         {
@@ -102,7 +101,7 @@
     </div>
     <div class="table-responsive">
         <table class="table mb-0">
-            <thead><tr><th>Job run</th><th>Job type / queue</th><th>Attempts</th><th>Completed / duration</th><th>Failure</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job type / queue</th><th scope="col">Attempts</th><th scope="col">Completed / duration</th><th scope="col">Failure</th></tr></thead>
             <tbody>
             @if (permanent.Items.Count == 0)
             {
@@ -141,10 +140,10 @@
         <div class="d-flex gap-2" aria-label="Permanent failure pagination">
             <a class="btn btn-sm btn-outline-secondary @(permanent.Page <= 1 ? "disabled" : "")"
                asp-action="Failures" asp-route-failedPage="@(permanent.Page - 1)" asp-route-deadPage="@exhausted.Page"
-               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey">Previous page</a>
+               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" asp-route-exactJobKey="@permanentQuery.ExactJobKey">Previous page</a>
             <a class="btn btn-sm btn-outline-secondary @(permanent.TotalPages == 0 || permanent.Page >= permanent.TotalPages ? "disabled" : "")"
                asp-action="Failures" asp-route-failedPage="@(permanent.Page + 1)" asp-route-deadPage="@exhausted.Page"
-               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey">Next page</a>
+               asp-route-pageSize="@permanent.PageSize" asp-route-queue="@permanentQuery.Queue" asp-route-jobKey="@permanentQuery.JobKey" asp-route-exactJobKey="@permanentQuery.ExactJobKey">Next page</a>
         </div>
     </div>
 </section>
@@ -159,7 +158,7 @@
     </div>
     <div class="table-responsive">
         <table class="table mb-0">
-            <thead><tr><th>Job run</th><th>Job type / queue</th><th>Attempts</th><th>Completed / duration</th><th>Last failure</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job type / queue</th><th scope="col">Attempts</th><th scope="col">Completed / duration</th><th scope="col">Last failure</th></tr></thead>
             <tbody>
             @if (exhausted.Items.Count == 0)
             {
@@ -198,10 +197,10 @@
         <div class="d-flex gap-2" aria-label="Exhausted retry pagination">
             <a class="btn btn-sm btn-outline-secondary @(exhausted.Page <= 1 ? "disabled" : "")"
                asp-action="Failures" asp-route-failedPage="@permanent.Page" asp-route-deadPage="@(exhausted.Page - 1)"
-               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey">Previous page</a>
+               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey" asp-route-exactJobKey="@exhaustedQuery.ExactJobKey">Previous page</a>
             <a class="btn btn-sm btn-outline-secondary @(exhausted.TotalPages == 0 || exhausted.Page >= exhausted.TotalPages ? "disabled" : "")"
                asp-action="Failures" asp-route-failedPage="@permanent.Page" asp-route-deadPage="@(exhausted.Page + 1)"
-               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey">Next page</a>
+               asp-route-pageSize="@exhausted.PageSize" asp-route-queue="@exhaustedQuery.Queue" asp-route-jobKey="@exhaustedQuery.JobKey" asp-route-exactJobKey="@exhaustedQuery.ExactJobKey">Next page</a>
         </div>
     </div>
 </section>

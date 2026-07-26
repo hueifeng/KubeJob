@@ -150,7 +150,7 @@ public sealed class DashboardApiTests
         overviewHtml.Should().Contain("Runtime Overview");
         overviewHtml.Should().Contain("<span class=\"label\">Jobs</span>");
         overviewHtml.Should().Contain("<span class=\"label\">Failures</span>");
-        overviewHtml.Should().Contain("Read-only dashboard");
+        overviewHtml.Should().Contain("Read-only");
         overviewHtml.Should().Contain("aria-label=\"Dashboard navigation\"");
         overviewHtml.Should().Contain("aria-current=\"page\"");
         overviewHtml.Should().Contain("Job Types");
@@ -292,6 +292,56 @@ public sealed class DashboardApiTests
         failedDetailHtml.Should().Contain("smtp_rejected");
         failedDetailHtml.Should().Contain("Failure workbench");
         failedDetailHtml.Should().NotContain("top-secret-value");
+
+        var oldWorkerSession = await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "worker-history-view",
+                "session-old",
+                "build-1",
+                "host-1",
+                4,
+                new[] { "default" },
+                new[] { "mail.send" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        await store.CloseAsync(
+            oldWorkerSession.WorkerId,
+            oldWorkerSession.SessionId,
+            oldWorkerSession.Epoch,
+            CancellationToken.None);
+        await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "worker-history-view",
+                "session-current",
+                "build-2",
+                "host-1",
+                4,
+                new[] { "default" },
+                new[] { "mail.send" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+
+        using var workersRequest = CreateAuthorizedRequest("/admin/jobs/workers");
+        using var workersResponse = await client.SendAsync(workersRequest);
+        var workersHtml = await workersResponse.Content.ReadAsStringAsync();
+
+        workersResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        workersHtml.Should().Contain("Active worker sessions");
+        workersHtml.Should().Contain("session-current");
+        workersHtml.Should().NotContain("session-old");
+        workersHtml.Should().Contain("Show history (1)");
+        workersHtml.Should().Contain("Refresh manually to see the latest heartbeat");
+        workersHtml.Should().NotContain("Auto-refreshes every 15 seconds");
+
+        using var workerHistoryRequest = CreateAuthorizedRequest("/admin/jobs/workers?history=true");
+        using var workerHistoryResponse = await client.SendAsync(workerHistoryRequest);
+        var workerHistoryHtml = await workerHistoryResponse.Content.ReadAsStringAsync();
+
+        workerHistoryResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        workerHistoryHtml.Should().Contain("All worker sessions");
+        workerHistoryHtml.Should().Contain("session-current");
+        workerHistoryHtml.Should().Contain("session-old");
+        workerHistoryHtml.Should().Contain("No active execution slots");
 
         using var jobTypesRequest = CreateAuthorizedRequest("/admin/jobs/job-types");
         using var jobTypesResponse = await client.SendAsync(jobTypesRequest);

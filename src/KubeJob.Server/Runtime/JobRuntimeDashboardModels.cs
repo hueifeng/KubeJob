@@ -19,7 +19,8 @@ public sealed record DashboardRunQuery(
     int PageSize = 25,
     JobPhase? Phase = null,
     string? Queue = null,
-    string? JobKey = null)
+    string? JobKey = null,
+    bool ExactJobKey = false)
 {
     public DashboardRunQuery Normalize()
     {

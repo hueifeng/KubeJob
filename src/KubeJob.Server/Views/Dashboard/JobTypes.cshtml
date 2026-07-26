@@ -3,16 +3,14 @@
 @{
     ViewData["Title"] = "Job Types";
 }
-<meta http-equiv="refresh" content="15">
-
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-        <h5 class="mb-1 fw-bold">Job Types</h5>
+        <h5 class="mb-1 fw-bold">Observed Job Types</h5>
         <div class="small text-muted">
-            This catalog is built from Worker capabilities, recent Runs, and configured Schedules. A type with no Ready Worker cannot execute until a matching Worker connects.
+            This live catalog is observed from Worker capabilities, recent Runs, and configured Schedules. It is not a permanent registry; a type with no Ready Worker cannot execute until a matching Worker connects.
         </div>
     </div>
-    <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>Refresh now</button>
+    <a class="btn btn-sm btn-outline-secondary" href="@Context.Request.Path@Context.Request.QueryString"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>Refresh now</a>
 </div>
 
 <div class="table-card">
@@ -20,13 +18,13 @@
         <table class="table table-hover mb-0">
             <thead>
                 <tr>
-                    <th>Job key</th>
-                    <th>Availability</th>
-                    <th>Workers</th>
-                    <th>Queues</th>
-                    <th>Recent activity</th>
-                    <th>Schedules</th>
-                    <th class="text-end">Actions</th>
+                    <th scope="col">Job key</th>
+                    <th scope="col">Availability</th>
+                    <th scope="col">Workers</th>
+                    <th scope="col">Worker-advertised queues</th>
+                    <th scope="col">Recent activity</th>
+                    <th scope="col">Schedules</th>
+                    <th scope="col" class="text-end">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -35,7 +33,7 @@
                 <tr>
                     <td colspan="7" class="text-center text-muted py-5">
                         <div class="fw-semibold text-dark mb-1">No Job Types have been observed.</div>
-                        <div>Connect a Worker, submit a Run, or create a Schedule to populate this catalog.</div>
+                        <div>Connect a Worker, submit a Run, or create a Schedule to populate this observation view.</div>
                     </td>
                 </tr>
             }
@@ -57,7 +55,7 @@
                         </td>
                         <td><span class="badge @availabilityClass">@availabilityText</span></td>
                         <td>
-                            <div><strong>@jobType.ReadyWorkerCount</strong> ready / @jobType.WorkerCount total</div>
+                            <div><strong>@jobType.ReadyWorkerCount</strong> ready / @jobType.WorkerCount known</div>
                             @if (jobType.WorkerIds.Count > 0)
                             {
                                 <div class="small text-muted">@string.Join(", ", jobType.WorkerIds)</div>
@@ -94,7 +92,7 @@
                             }
                         </td>
                         <td class="text-end">
-                            <a asp-action="Runs" asp-route-jobKey="@jobType.JobKey" class="btn btn-sm btn-outline-primary">View Runs</a>
+                            <a asp-action="Runs" asp-route-jobKey="@jobType.JobKey" asp-route-exactJobKey="true" class="btn btn-sm btn-outline-primary">View Runs</a>
                         </td>
                     </tr>
                 }

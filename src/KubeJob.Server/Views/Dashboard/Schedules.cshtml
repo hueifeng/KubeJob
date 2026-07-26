@@ -3,7 +3,6 @@
 @{
     ViewData["Title"] = "Schedules";
 }
-<meta http-equiv="refresh" content="30">
 @if (Model.AllowMutatingActions)
 {
     <style>
@@ -79,7 +78,7 @@
                 <div class="col-md-4">
                     <label asp-for="CreateForm.JobKey" class="form-label">Job key</label>
                     <input asp-for="CreateForm.JobKey" class="form-control" placeholder="sample.data" />
-                    <div class="schedule-help mt-1">例如本示例是 <code>sample.data</code> 或 <code>sample.dashboard-demo</code>；不要填 Run ID。</div>
+                    <div class="schedule-help mt-1">Use a registered handler key such as <code>sample.data</code> or <code>sample.dashboard-demo</code>. Do not enter a Run ID. See <a asp-action="JobTypes">Observed Job Types</a> for currently advertised keys.</div>
                     <span asp-validation-for="CreateForm.JobKey" class="text-danger small"></span>
                 </div>
                 <div class="col-md-4">
@@ -155,14 +154,20 @@
             const dialog = document.getElementById('create-schedule-dialog');
             const openButton = document.getElementById('open-create-schedule');
             if (!dialog || !openButton) return;
-            openButton.addEventListener('click', () => dialog.showModal());
+            const openDialog = () => typeof dialog.showModal === 'function'
+                ? dialog.showModal()
+                : dialog.setAttribute('open', '');
+            const closeDialog = () => typeof dialog.close === 'function'
+                ? dialog.close()
+                : dialog.removeAttribute('open');
+            openButton.addEventListener('click', openDialog);
             dialog.querySelectorAll('.schedule-dialog-close').forEach(button => {
-                button.addEventListener('click', () => dialog.close());
+                button.addEventListener('click', closeDialog);
             });
             dialog.addEventListener('click', event => {
-                if (event.target === dialog) dialog.close();
+                if (event.target === dialog) closeDialog();
             });
-            if (dialog.dataset.open === 'true') dialog.showModal();
+            if (dialog.dataset.open === 'true') openDialog();
         })();
     </script>
 }
@@ -170,14 +175,21 @@
 <div class="table-card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th>Schedule</th><th>Job type / queue</th><th>When it runs</th><th>Missed runs / overlap</th><th>Next / previous run</th><th>Status</th>@if (Model.AllowMutatingActions){<th class="text-end">Action</th>}</tr></thead>
+            <thead><tr><th scope="col">Schedule</th><th scope="col">Job type / queue</th><th scope="col">When it runs</th><th scope="col">Missed runs / overlap</th><th scope="col">Next / previous run</th><th scope="col">Status</th>@if (Model.AllowMutatingActions){<th scope="col" class="text-end">Action</th>}</tr></thead>
             <tbody>
             @if (Model.Schedules.Count == 0)
             {
                 <tr>
                     <td colspan="@(Model.AllowMutatingActions ? 7 : 6)" class="text-center text-muted py-5">
                         <div class="fw-semibold text-dark mb-1">No recurring jobs have been configured.</div>
-                        <div>Use <strong>New recurring job</strong> or create a Schedule through <code>IJobScheduleClient</code>.</div>
+                        @if (Model.AllowMutatingActions)
+                        {
+                            <div>Use <strong>New recurring job</strong> or create a Schedule through <code>IJobScheduleClient</code>.</div>
+                        }
+                        else
+                        {
+                            <div>Create a Schedule through <code>IJobScheduleClient</code> or ask an administrator to configure one.</div>
+                        }
                     </td>
                 </tr>
             }
