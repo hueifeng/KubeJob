@@ -15,7 +15,7 @@ PostgreSQL is the source of truth for Runs, Attempts, Worker Sessions, Schedules
 and current state. Submission and retry transactions write an Outbox record with
 the durable state change.
 
-`IWorkAvailableNotifier` publishes an asynchronous wake-up hint. Missing or
+`IWorkAvailableNotifier` publishes a versioned `WorkAvailableSignal` asynchronous wake-up hint. Missing or
 duplicate notifications do not authorize execution; workers always claim from
 the authoritative store.
 
@@ -25,7 +25,8 @@ cannot leave a message permanently stuck in `Publishing`.
 ## Consequences
 
 - Broker outages delay wake-up but do not lose accepted jobs.
-- MQ adapters can be added without changing handlers or `IJobClient`.
+- MQ adapters can be added without changing handlers or `IJobClient`; RabbitMQ,
+  Kafka, NATS, cloud buses, and in-process signals all implement the same seam.
 - Duplicate publication is expected and harmless.
 - PostgreSQL must be sized and indexed for active coordination traffic.
 - Full broker-as-queue mode is a separate future transport with stricter

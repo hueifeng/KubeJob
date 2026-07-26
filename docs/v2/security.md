@@ -56,9 +56,31 @@ state. Anti-forgery validation remains enabled on Dashboard POST actions.
 ## Internal control-plane endpoints
 
 Worker registration, claim, renewal, heartbeat, and completion endpoints are
-intended for an authenticated internal network or workload identity. Deployment
-hosts should apply their normal ASP.NET Core authentication and authorization
-policy before exposing those routes outside a trusted network.
+intended for an authenticated workload identity. Client and Worker routes can
+use independent ASP.NET Core policies:
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("KubeJobClient", policy =>
+        policy.RequireClaim("scope", "kubejob.client"));
+    options.AddPolicy("KubeJobWorker", policy =>
+        policy.RequireClaim("scope", "kubejob.worker"));
+});
+
+builder.Services.AddKubeJobServer(options =>
+{
+    options.ClientAuthorizationPolicy = "KubeJobClient";
+    options.WorkerAuthorizationPolicy = "KubeJobWorker";
+});
+```
+
+The Client policy protects submission, status, cancellation, attempt-history,
+and Schedule endpoints. The Worker policy protects registration, claim,
+renewal, heartbeat, close, and completion. They are optional for backward
+compatibility, but distributed production deployments should configure both.
+The host must still register authentication and call `UseAuthentication()` and
+`UseAuthorization()`.
 
 A LeaseToken is a fencing component, not an authentication mechanism.
 

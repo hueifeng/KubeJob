@@ -108,10 +108,12 @@ public interface IJobScheduleStore
         string scheduleId,
         bool enabled,
         DateTimeOffset? nextFireAt,
+        long? expectedVersion,
         CancellationToken cancellationToken);
 
     ValueTask<bool> DeleteAsync(
         string scheduleId,
+        long? expectedVersion,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<ClaimedSchedule>> ClaimDueAsync(
@@ -148,21 +150,19 @@ public interface IOutboxStore
         CancellationToken cancellationToken);
 
     ValueTask MarkPublishedAsync(
-        string messageId,
+        IReadOnlyList<OutboxPublication> publications,
         DateTimeOffset publishedAt,
         CancellationToken cancellationToken);
 
     ValueTask MarkFailedAsync(
-        string messageId,
-        string error,
-        DateTimeOffset nextAttemptAt,
+        OutboxFailure failure,
         CancellationToken cancellationToken);
 }
 
-public interface IWorkAvailableNotifier
-{
-    ValueTask PublishAsync(
-        string queue,
-        string payloadJson,
-        CancellationToken cancellationToken);
-}
+public sealed record OutboxPublication(string MessageId, string ClaimToken);
+
+public sealed record OutboxFailure(
+    string MessageId,
+    string ClaimToken,
+    string Error,
+    DateTimeOffset NextAttemptAt);

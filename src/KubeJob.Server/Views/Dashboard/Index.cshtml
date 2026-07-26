@@ -3,88 +3,7 @@
     ViewData["Title"] = "Runtime Overview";
     var overview = Model.Overview;
     var activeRuns = overview.PendingRuns + overview.RunningRuns;
-    var oldestReadyAt = overview.Queues
-        .Where(queue => queue.OldestReadyAt is not null)
-        .Select(queue => queue.OldestReadyAt)
-        .OrderBy(value => value)
-        .FirstOrDefault();
-    TimeSpan? oldestReadyAge = oldestReadyAt is null
-        ? null
-        : overview.ObservedAt - oldestReadyAt.Value;
-
-    string summaryTone;
-    string summaryIcon;
-    string summaryTitle;
-    string summaryDetail;
-    string? summaryAction;
-    string? summaryActionRoute;
-
-    if (overview.PendingRuns > 0 && overview.ReadyWorkers == 0)
-    {
-        summaryTone = "danger";
-        summaryIcon = "!";
-        summaryTitle = "Jobs are waiting, but no worker is ready.";
-        summaryDetail = "Start or restore a worker that listens to the affected queue before the backlog grows.";
-        summaryAction = "Check workers";
-        summaryActionRoute = "Workers";
-    }
-    else if (oldestReadyAge >= TimeSpan.FromMinutes(5))
-    {
-        summaryTone = "warning";
-        summaryIcon = "◷";
-        summaryTitle = $"The oldest ready job has waited {FormatAge(oldestReadyAge.Value)}.";
-        summaryDetail = "Check whether workers cover that queue and still have available execution slots.";
-        summaryAction = "Check workers";
-        summaryActionRoute = "Workers";
-    }
-    else if (overview.LastHour.UnsuccessfulRuns > 0)
-    {
-        summaryTone = "warning";
-        summaryIcon = "!";
-        summaryTitle = $"{overview.LastHour.UnsuccessfulRuns} job(s) failed or exhausted retries in the last hour.";
-        summaryDetail = "Open the job list to inspect the latest error and complete Attempt history.";
-        summaryAction = "Review jobs";
-        summaryActionRoute = "Runs";
-    }
-    else if (activeRuns > 0)
-    {
-        summaryTone = "success";
-        summaryIcon = "✓";
-        summaryTitle = "Jobs are moving through the runtime.";
-        summaryDetail = $"{overview.PendingRuns} waiting, {overview.RunningRuns} running, and {overview.AvailableWorkerSlots} worker slot(s) currently available.";
-        summaryAction = "View jobs";
-        summaryActionRoute = "Runs";
-    }
-    else
-    {
-        summaryTone = "neutral";
-        summaryIcon = "—";
-        summaryTitle = "No jobs are currently waiting or running.";
-        summaryDetail = "The runtime is idle. New jobs will appear here after your application submits them.";
-        summaryAction = null;
-        summaryActionRoute = null;
-    }
-
-    static string FormatAge(TimeSpan value)
-    {
-        var age = value < TimeSpan.Zero ? TimeSpan.Zero : value;
-        if (age.TotalDays >= 1)
-        {
-            return $"{(int)age.TotalDays}d {age.Hours}h";
-        }
-
-        if (age.TotalHours >= 1)
-        {
-            return $"{(int)age.TotalHours}h {age.Minutes}m";
-        }
-
-        if (age.TotalMinutes >= 1)
-        {
-            return $"{(int)age.TotalMinutes}m {age.Seconds}s";
-        }
-
-        return $"{Math.Floor(age.TotalSeconds):0}s";
-    }
+    var operational = DashboardOperationalSummary.Create(overview);
 }
 
 <style>
@@ -121,24 +40,105 @@
     .metric-explainer { margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.35; }
     .term-help { color: var(--muted); font-size: 12px; }
     .term-help strong { color: var(--text); }
+    .idle-readiness { padding: 18px; margin-bottom: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+    .idle-readiness h2 { margin: 0 0 4px; font-size: 15px; }
+    .idle-readiness p { margin: 0; color: var(--muted); font-size: 12px; }
+    .idle-readiness-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+    .idle-readiness-item { padding: 12px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 4px; }
+    .idle-readiness-label { display: block; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .idle-readiness-value { display: block; margin-top: 4px; font-size: 20px; font-weight: 650; }
+    .attention-panel { margin: 0 0 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .attention-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+    .attention-header h2 { margin: 0; font-size: 15px; font-weight: 650; }
+    .attention-header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .attention-count { color: var(--danger); font-size: 12px; font-weight: 650; }
+    .attention-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 1px; background: var(--border); }
+    .attention-item { min-height: 104px; padding: 16px; background: var(--surface); }
+    .attention-item.critical { box-shadow: inset 3px 0 0 var(--danger); }
+    .attention-item.warning { box-shadow: inset 3px 0 0 #d18b00; }
+    .attention-item-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+    .attention-item-title .status-dot { margin: 0; }
+    .attention-item-detail { margin: 5px 0 11px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .attention-item .btn { min-height: 27px; }
+    .shortcut-list { margin: 0; padding: 5px 16px; list-style: none; }
+    .shortcut-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; border-bottom: 1px solid #ededed; }
+    .shortcut-item:last-child { border-bottom: 0; }
+    .shortcut-item a { font-weight: 650; text-decoration: none; }
+    .shortcut-detail { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
     @@media (max-width: 760px) {
         .overview-summary { grid-template-columns: auto minmax(0, 1fr); }
         .overview-summary .btn { grid-column: 1 / -1; width: 100%; }
+        .idle-readiness-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .attention-grid { grid-template-columns: 1fr; }
     }
 </style>
 
-<section class="overview-summary @summaryTone" aria-label="Operational summary">
-    <div class="overview-summary-icon" aria-hidden="true">@summaryIcon</div>
+<section class="overview-summary @operational.Message.Tone" aria-label="Operational summary">
+    <div class="overview-summary-icon" aria-hidden="true">@operational.Message.Icon</div>
     <div>
-        <div class="overview-summary-title">@summaryTitle</div>
-        <div class="overview-summary-detail">@summaryDetail</div>
+        <div class="overview-summary-title">@operational.Message.Title</div>
+        <div class="overview-summary-detail">@operational.Message.Detail</div>
     </div>
-    @if (summaryAction is not null && summaryActionRoute is not null)
+    @if (operational.Message.Action is not null && operational.Message.ActionRoute is not null)
     {
-        <a asp-action="@summaryActionRoute" class="btn btn-sm btn-outline-primary">@summaryAction</a>
+        <a asp-action="@operational.Message.ActionRoute" class="btn btn-sm btn-outline-primary">@operational.Message.Action</a>
     }
 </section>
 
+@if (operational.HasAttention)
+{
+    <section class="attention-panel" aria-labelledby="attention-title">
+        <div class="attention-header">
+            <div>
+                <h2 id="attention-title">Needs attention</h2>
+                <p>Signals that may need an operator action now.</p>
+            </div>
+            <span class="attention-count">Operator review recommended</span>
+        </div>
+        <div class="attention-grid">
+            @if (operational.WaitingWithoutCapacity)
+            {
+                <article class="attention-item @(overview.ReadyWorkers == 0 ? "critical" : "warning")">
+                    <div class="attention-item-title"><span class="status-dot @(overview.ReadyWorkers == 0 ? "bg-danger" : "bg-warning")" aria-hidden="true"></span>Waiting jobs have no available capacity</div>
+                    <div class="attention-item-detail">@overview.PendingRuns job(s) are waiting while @(overview.ReadyWorkers == 0 ? "no Worker is ready" : "all Ready Worker slots remain occupied").</div>
+                    <a asp-action="Workers" class="btn btn-sm btn-outline-danger">Inspect workers</a>
+                </article>
+            }
+            @if (operational.HasAgingBacklog)
+            {
+                <article class="attention-item warning">
+                    <div class="attention-item-title"><span class="status-dot bg-warning" aria-hidden="true"></span>Ready work is aging</div>
+                    <div class="attention-item-detail">The oldest claimable job has waited @DashboardOperationalSummary.FormatAge(operational.OldestReadyAge!.Value). Check queue coverage and Worker capacity.</div>
+                    <a asp-action="Runs" class="btn btn-sm btn-outline-warning">Open queue backlog</a>
+                </article>
+            }
+            @if (operational.HasRecentFailures)
+            {
+                <article class="attention-item warning">
+                    <div class="attention-item-title"><span class="status-dot bg-warning" aria-hidden="true"></span>Recent jobs need review</div>
+                    <div class="attention-item-detail">@overview.LastHour.UnsuccessfulRuns job(s) failed or exhausted retries in the last hour.</div>
+                    <a asp-action="Failures" class="btn btn-sm btn-outline-warning">Review failures</a>
+                </article>
+            }
+        </div>
+    </section>
+}
+
+@if (operational.IsIdle)
+{
+    <section class="idle-readiness" aria-labelledby="runtime-readiness-title">
+        <h2 id="runtime-readiness-title">Runtime readiness</h2>
+        <p>No triage is needed. Submit a job from your application to begin observing queue activity, execution attempts, and failures here.</p>
+        <div class="idle-readiness-grid">
+            <div class="idle-readiness-item"><span class="idle-readiness-label">Ready workers</span><span class="idle-readiness-value">@overview.ReadyWorkers</span></div>
+            <div class="idle-readiness-item"><span class="idle-readiness-label">Available slots</span><span class="idle-readiness-value">@overview.AvailableWorkerSlots</span></div>
+            <div class="idle-readiness-item"><span class="idle-readiness-label">Enabled schedules</span><span class="idle-readiness-value">@overview.EnabledSchedules</span></div>
+            <div class="idle-readiness-item"><span class="idle-readiness-label">Outbox messages waiting</span><span class="idle-readiness-value">@overview.PendingOutboxMessages</span></div>
+        </div>
+    </section>
+}
+else
+{
 <div class="metric-grid">
     <section class="metric-card">
         <div class="metric-head"><span>Jobs in progress</span><span class="metric-glyph" aria-hidden="true">↗</span></div>
@@ -178,11 +178,15 @@
     </section>
 </div>
 
+}
+
+@if (!operational.IsIdle)
+{
 <div class="dashboard-grid">
     <section class="panel">
         <div class="panel-header">
             <div>
-                <h5>Queue backlog</h5>
+                <h2>Queue backlog</h2>
                 <div class="panel-subtitle">Shows where work is waiting and how long the oldest claimable job has waited.</div>
             </div>
             <a asp-action="Runs" class="btn btn-sm btn-outline-primary">Open jobs</a>
@@ -212,7 +216,7 @@
                                 {
                                     var age = overview.ObservedAt - queue.OldestReadyAt.Value;
                                     <span class="@(age >= TimeSpan.FromMinutes(5) ? "text-danger fw-semibold" : "text-muted")"
-                                          title="Ready since @queue.OldestReadyAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")">@FormatAge(age)</span>
+                                          title="Ready since @queue.OldestReadyAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")">@DashboardOperationalSummary.FormatAge(age)</span>
                                 }
                             </td>
                             <td class="text-end fw-bold">@queue.ActiveRuns</td>
@@ -227,16 +231,23 @@
     <section class="panel">
         <div class="panel-header">
             <div>
-                <h5>System details</h5>
-                <div class="panel-subtitle">Snapshot taken at @overview.ObservedAt.ToLocalTime().ToString("HH:mm:ss zzz").</div>
+                <h2>Control-plane shortcuts</h2>
+                <div class="panel-subtitle">Use these views to understand capacity, handler coverage, and recurring work.</div>
             </div>
         </div>
-        <ul class="signal-list">
-            <li class="signal-item"><span class="signal-label" title="Notifications waiting to be published or retried. Jobs still remain stored in PostgreSQL.">Outbox messages waiting</span><span class="signal-value">@overview.PendingOutboxMessages</span></li>
-            <li class="signal-item"><span class="signal-label">Schedules enabled</span><span class="signal-value">@overview.EnabledSchedules</span></li>
-            <li class="signal-item"><span class="signal-label">Schedules disabled</span><span class="signal-value">@overview.DisabledSchedules</span></li>
-            <li class="signal-item"><span class="signal-label">All-time succeeded</span><span class="signal-value text-success">@overview.SucceededRuns</span></li>
-            <li class="signal-item"><span class="signal-label">All-time failed / no retries left</span><span class="signal-value @(overview.FailedRuns + overview.DeadRuns > 0 ? "text-danger" : "")">@(overview.FailedRuns + overview.DeadRuns)</span></li>
+        <ul class="shortcut-list">
+            <li class="shortcut-item">
+                <span><a asp-action="Workers">Worker coverage</a><span class="shortcut-detail">@overview.ReadyWorkers Ready · @overview.AvailableWorkerSlots available slots</span></span>
+                <a asp-action="Workers" class="btn btn-sm btn-outline-primary">Open</a>
+            </li>
+            <li class="shortcut-item">
+                <span><a asp-action="JobTypes">Job key catalog</a><span class="shortcut-detail">Verify which handlers are currently advertised by Workers.</span></span>
+                <a asp-action="JobTypes" class="btn btn-sm btn-outline-primary">Open</a>
+            </li>
+            <li class="shortcut-item">
+                <span><a asp-action="Schedules">Recurring jobs</a><span class="shortcut-detail">@overview.EnabledSchedules enabled · @overview.DisabledSchedules paused</span></span>
+                <a asp-action="Schedules" class="btn btn-sm btn-outline-primary">Open</a>
+            </li>
         </ul>
     </section>
 </div>
@@ -244,7 +255,7 @@
 <section class="panel">
     <div class="panel-header">
         <div>
-            <h5>Recent jobs</h5>
+            <h2>Recent jobs</h2>
             <div class="panel-subtitle"><strong>Run</strong> means one logical job. A retry creates another <strong>Attempt</strong> under the same Run.</div>
         </div>
         <a asp-action="Runs" class="btn btn-sm btn-outline-primary">View all jobs</a>
@@ -294,3 +305,4 @@
         </table>
     </div>
 </section>
+}

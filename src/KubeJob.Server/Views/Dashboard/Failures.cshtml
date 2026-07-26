@@ -12,7 +12,7 @@
 }
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-        <h5 class="mb-1 fw-bold">Failures that need operator review</h5>
+        <h2 class="mb-1 fw-bold">Failures that need operator review</h2>
         <div class="small text-muted">
             Permanent failures cannot be retried automatically. “No retries left” means retryable errors, timeouts, or lost leases exhausted the configured Attempts.
         </div>
@@ -94,14 +94,15 @@
 <section class="panel mb-4">
     <div class="panel-header">
         <div>
-            <h5>Permanent failures</h5>
+            <h2>Permanent failures</h2>
             <div class="panel-subtitle">The handler returned PermanentFailure. These jobs will not be retried without a new submission.</div>
         </div>
         <span class="badge bg-danger-subtle text-danger">@permanent.TotalCount total</span>
     </div>
+    <div class="table-scroll-hint">Scroll sideways to see every failure detail →</div>
     <div class="table-responsive">
         <table class="table mb-0">
-            <thead><tr><th scope="col">Job run</th><th scope="col">Job type / queue</th><th scope="col">Attempts</th><th scope="col">Completed / duration</th><th scope="col">Failure</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job key / queue</th><th scope="col">Attempts</th><th scope="col">Completed / duration</th><th scope="col">Failure</th></tr></thead>
             <tbody>
             @if (permanent.Items.Count == 0)
             {
@@ -151,14 +152,15 @@
 <section class="panel">
     <div class="panel-header">
         <div>
-            <h5>No retries left</h5>
+            <h2>No retries left</h2>
             <div class="panel-subtitle">Retryable failures, timeouts, or lost leases reached MaxAttempts and became Dead.</div>
         </div>
         <span class="badge bg-dark-subtle text-dark">@exhausted.TotalCount total</span>
     </div>
+    <div class="table-scroll-hint">Scroll sideways to see every failure detail →</div>
     <div class="table-responsive">
         <table class="table mb-0">
-            <thead><tr><th scope="col">Job run</th><th scope="col">Job type / queue</th><th scope="col">Attempts</th><th scope="col">Completed / duration</th><th scope="col">Last failure</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job key / queue</th><th scope="col">Attempts</th><th scope="col">Completed / duration</th><th scope="col">Last failure</th></tr></thead>
             <tbody>
             @if (exhausted.Items.Count == 0)
             {

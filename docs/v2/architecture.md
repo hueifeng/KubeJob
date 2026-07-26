@@ -9,6 +9,15 @@ broker, actor runtime, or CI/CD system.
 Optional packages may integrate those systems without moving their complexity
 into the core handler API.
 
+The implementation is layered as `KubeJob.Core` contracts, the independent
+`KubeJob.ControlPlane` runtime, ASP.NET transport/Dashboard adapters in
+`KubeJob.Server`, storage adapters such as PostgreSQL, and optional transport
+packages such as RabbitMQ. `KubeJob.Server` assembles these modules but does not
+own the durable state machine implementation.
+
+For the end-to-end topology and request sequences, see
+[Logical Architecture and Sequences](./logical-architecture.md).
+
 ## Public model
 
 ```text
@@ -20,6 +29,34 @@ IJobScheduleClient  independent cron schedule management
 
 A handler is not a scheduler, transport consumer, database repository, or worker
 registration object.
+
+## Control-plane module seam
+
+Transport adapters do not orchestrate stores directly. They converge on three
+control-plane modules:
+
+```text
+typed IJobClient ─┐
+HTTP jobs API ────┼──> JobControlPlane ─────> submission/query stores
+message ingress ──┤
+Dashboard actions ┘
+
+HTTP runtime API ─┐
+in-process worker ┼──> WorkerControlPlane ───> session/claim/completion stores
+
+typed schedules ──┐
+HTTP schedules API┼──> ScheduleControlPlane ─> schedule store
+Dashboard actions ┘
+```
+
+These modules own validation, conversion to durable commands, runtime limits,
+cron calculation, and public snapshots. HTTP status codes, JSON serialization,
+broker acknowledgements, and worker transport remain adapter concerns.
+
+The modules are concrete classes rather than a second set of nearly identical
+interfaces. Storage behavior is the real varying seam and already has in-memory
+and PostgreSQL adapters. This keeps one implementation behind multiple callers
+without introducing pass-through abstractions.
 
 ## Durable model
 
@@ -183,6 +220,11 @@ operators ──HTTP──> protected Dashboard route
 
 A worker may contact any healthy control-plane replica because coordination is
 transactional in the state store.
+
+Business-message ingress is a separate adapter role. A generic RabbitMQ or Kafka
+ingress adapter submits an `EnqueueJobRequest` through `JobControlPlane`, uses
+the broker message identity as the idempotency key, and acknowledges or commits
+only after durable acceptance. It never grants execution ownership.
 
 ## Version boundary
 

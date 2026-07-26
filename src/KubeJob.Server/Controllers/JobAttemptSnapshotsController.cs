@@ -1,5 +1,5 @@
 using KubeJob.Core.Client;
-using KubeJob.Server.Runtime;
+using KubeJob.Server.ControlPlane;
 using Microsoft.AspNetCore.Mvc;
 
 namespace KubeJob.Server.Controllers;
@@ -8,11 +8,11 @@ namespace KubeJob.Server.Controllers;
 [Route("api/kubejob/jobs/{runId}/attempts")]
 public sealed class JobAttemptSnapshotsController : ControllerBase
 {
-    private readonly IJobQueryStore _queries;
+    private readonly JobControlPlane _controlPlane;
 
-    public JobAttemptSnapshotsController(IJobQueryStore queries)
+    public JobAttemptSnapshotsController(JobControlPlane controlPlane)
     {
-        _queries = queries;
+        _controlPlane = controlPlane;
     }
 
     [HttpGet]
@@ -20,24 +20,12 @@ public sealed class JobAttemptSnapshotsController : ControllerBase
         string runId,
         CancellationToken cancellationToken)
     {
-        if (await _queries.GetRunAsync(runId, cancellationToken) is null)
+        var attempts = await _controlPlane.GetAttemptsAsync(runId, cancellationToken);
+        if (attempts is null)
         {
             return NotFound();
         }
 
-        var attempts = await _queries.GetAttemptsAsync(runId, cancellationToken);
-        return Ok(attempts.Select(attempt => new JobAttemptSnapshot(
-            attempt.Id,
-            attempt.AttemptNumber,
-            attempt.WorkerId,
-            attempt.SessionId,
-            attempt.SessionEpoch,
-            attempt.Phase,
-            attempt.ClaimedAt,
-            attempt.StartedAt,
-            attempt.LeaseExpiresAt,
-            attempt.CompletedAt,
-            attempt.FailureCode,
-            attempt.FailureMessage)).ToArray());
+        return Ok(attempts);
     }
 }

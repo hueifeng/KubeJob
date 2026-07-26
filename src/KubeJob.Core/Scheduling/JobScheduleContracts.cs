@@ -42,6 +42,16 @@ public sealed class CronScheduleOptions
         {
             throw new ArgumentOutOfRangeException(nameof(Timeout));
         }
+
+        if (!Enum.IsDefined(MisfirePolicy))
+        {
+            throw new ArgumentOutOfRangeException(nameof(MisfirePolicy));
+        }
+
+        if (!Enum.IsDefined(ConcurrencyPolicy))
+        {
+            throw new ArgumentOutOfRangeException(nameof(ConcurrencyPolicy));
+        }
     }
 }
 

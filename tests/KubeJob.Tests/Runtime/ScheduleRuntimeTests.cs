@@ -9,6 +9,64 @@ namespace KubeJob.Tests.Runtime;
 public sealed class ScheduleRuntimeTests
 {
     [Fact]
+    public void Upcoming_occurrences_are_strictly_ascending()
+    {
+        var occurrences = CronScheduleCalculator.GetUpcomingOccurrences(
+            "*/5 * * * *",
+            "UTC",
+            DateTimeOffset.UtcNow,
+            3);
+
+        occurrences.Should().HaveCount(3);
+        occurrences[1].Should().BeAfter(occurrences[0]);
+        occurrences[2].Should().BeAfter(occurrences[1]);
+    }
+
+    [Fact]
+    public void Schedule_options_reject_unknown_policies()
+    {
+        var options = new CronScheduleOptions
+        {
+            MisfirePolicy = (MisfirePolicy)99,
+            ConcurrencyPolicy = (ScheduleConcurrencyPolicy)99
+        };
+
+        var action = () => options.Validate();
+
+        action.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task Conditional_schedule_mutations_reject_a_stale_configuration_version()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var first = await store.UpsertAsync(
+            NewSchedule(DateTimeOffset.UtcNow.AddMinutes(1)),
+            CancellationToken.None);
+        var current = await store.UpsertAsync(
+            NewSchedule(DateTimeOffset.UtcNow.AddMinutes(2)),
+            CancellationToken.None);
+
+        var changed = await store.SetEnabledAsync(
+            first.Id,
+            enabled: false,
+            nextFireAt: null,
+            expectedVersion: first.Version,
+            cancellationToken: CancellationToken.None);
+        var deleted = await store.DeleteAsync(
+            first.Id,
+            expectedVersion: first.Version,
+            cancellationToken: CancellationToken.None);
+        var persisted = await store.GetAsync(first.Id, CancellationToken.None);
+
+        changed.Should().BeFalse();
+        deleted.Should().BeFalse();
+        persisted.Should().NotBeNull();
+        persisted!.Version.Should().Be(current.Version);
+        persisted.Enabled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Create_if_absent_does_not_overwrite_an_existing_schedule()
     {
         var store = new InMemoryJobRuntimeStore();

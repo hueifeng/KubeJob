@@ -106,7 +106,7 @@
         .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
         .page-title { margin: 2px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; letter-spacing: -.01em; }
         .runtime-state { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: #424242; font-size: 12px; font-weight: 600; }
-        .runtime-state.admin-mode { color: var(--warning); background: #fff8e8; border-color: #d8b35b; }
+        .runtime-state.admin-mode { color: var(--primary); background: var(--primary-soft); border-color: #8ac2e8; }
         .content-area { width: min(1240px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 40px; }
 
         .section-header {
@@ -116,7 +116,7 @@
             border: 0;
             box-shadow: none;
         }
-        .section-header h5 { font-size: 15px; letter-spacing: -.005em; }
+        .section-header h2 { margin: 0; font-size: 15px; letter-spacing: -.005em; }
         .stats-card, .table-card, .detail-card {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -130,6 +130,7 @@
         .table-card { overflow: hidden; padding: 0; }
         .detail-card { box-shadow: none; }
         .table-responsive { overflow-x: auto; }
+        .table-scroll-hint { display: none; }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 11px 14px; vertical-align: middle; border-bottom: 1px solid #ededed; text-align: left; }
         .table thead th { height: 36px; background: #fafafa; color: #616161; border-bottom: 1px solid var(--border-strong); font-size: 11px; font-weight: 650; letter-spacing: .025em; text-transform: none; white-space: nowrap; }
@@ -151,7 +152,7 @@
         .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr); gap: 16px; margin-bottom: 24px; }
         .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; }
         .panel-header { min-height: 58px; padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); }
-        .panel-header h5 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+        .panel-header h2 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
         .panel-subtitle { color: var(--muted); font-size: 12px; }
         .signal-list { margin: 0; padding: 4px 16px; list-style: none; }
         .signal-item { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #ededed; }
@@ -223,6 +224,8 @@
         .bg-light { background: #fafafa; }
         .bg-primary { background: var(--primary); }
         .bg-success { background: var(--success); }
+        .bg-warning { background: #d18b00; }
+        .bg-danger { background: var(--danger); }
         .bg-primary-subtle { background: #eff6fc; }
         .bg-success-subtle { background: #edf9ed; }
         .bg-warning-subtle { background: #fff8e8; }
@@ -241,7 +244,7 @@
         .btn:hover { background: #f5f5f5; }
         .btn-primary:hover { color: white; background: var(--primary-hover); border-color: var(--primary-hover); }
         .btn.disabled, .btn:disabled { opacity: .42; pointer-events: none; }
-        .mobile-nav-toggle, .nav-toggle, .nav-scrim { display: none; }
+        .mobile-nav-toggle { display: none; }
         .form-label { display: block; color: var(--muted); font-weight: 600; }
         .form-control, .form-select { width: 100%; min-height: 34px; padding: 5px 8px; color: var(--text); background: white; border: 1px solid var(--border-strong); border-radius: 4px; outline: none; }
         .form-control:focus, .form-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(15,108,189,.16); }
@@ -270,27 +273,33 @@
         .fa-pause::before { content: "Ⅱ"; }
         .fa-play::before { content: "▶"; }
         .fa-bolt::before { content: "↗"; }
+        .fa-pen-to-square::before { content: "✎"; }
         .fa-triangle-exclamation::before { content: "!"; }
 
         @@media (min-width: 576px) { .col-sm-6 { width: 50%; } }
-        @@media (min-width: 768px) { .col-md-4 { width: 33.333333%; } .col-md-6 { width: 50%; } }
+        @@media (min-width: 768px) { .col-md-3 { width: 25%; } .col-md-4 { width: 33.333333%; } .col-md-6 { width: 50%; } }
         @@media (min-width: 992px) { .col-lg-4 { width: 33.333333%; } .col-lg-5 { width: 41.666667%; } .col-lg-7 { width: 58.333333%; } .col-lg-8 { width: 66.666667%; } }
         @@media (min-width: 1200px) { .col-xl-3 { width: 25%; } }
         @@media (max-width: 1100px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-grid { grid-template-columns: 1fr; } }
         @@media (max-width: 760px) {
             .sidebar { position: static; flex-wrap: wrap; }
-            .brand { min-height: 48px; padding: 0 14px; }
-            .sidebar nav { order: 3; width: 100%; overflow-x: auto; border-top: 1px solid var(--border); }
-            .sidebar .nav-link { min-height: 42px; padding: 0 10px; }
+            .brand { min-height: 48px; flex: 1 1 auto; padding: 0 14px; }
+            .mobile-nav-toggle { min-height: 32px; display: inline-flex; margin: 8px 14px 8px 0; }
+            .sidebar nav { display: none; order: 3; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--border); }
+            .sidebar nav.is-open { display: grid; }
+            .sidebar .nav-link { min-height: 42px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+            .sidebar .nav-link:nth-last-child(-n + 2) { border-bottom: 0; }
             .sidebar .label { display: inline; }
             .topbar { padding: 10px 16px; }
-            .topbar .runtime-state { display: none; }
+            .topbar-start { flex: 1 1 auto; }
+            .topbar .runtime-state { padding: 4px 7px; font-size: 11px; }
             .topbar .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
             .content-area { width: min(100% - 32px, 1240px); padding: 16px 0; }
             .metric-grid { grid-template-columns: 1fr; }
             .section-header > .d-flex { width: 100%; }
             .section-header .btn { flex: 0 0 auto; }
             .table th, .table td { padding: 10px 12px; }
+            .table-scroll-hint { display: block; padding: 8px 12px; color: var(--muted); background: var(--surface-subtle); border-bottom: 1px solid var(--border); font-size: 12px; }
         }
     </style>
 </head>
@@ -304,8 +313,11 @@
         <span class="brand-mark">K</span>
         <span class="brand-copy">KubeJob<small>CONTROL PLANE</small></span>
     </a>
+    <button type="button" class="btn btn-sm btn-outline-secondary mobile-nav-toggle" id="dashboard-nav-toggle" aria-controls="dashboard-nav" aria-expanded="false">
+        <i class="fa-solid fa-bars" aria-hidden="true"></i><span class="label ms-1">Menu</span>
+    </button>
     <div class="nav-caption">Runtime</div>
-    <nav aria-label="Dashboard navigation">
+    <nav id="dashboard-nav" aria-label="Dashboard navigation">
         <a asp-controller="Dashboard" asp-action="Index" class="nav-link @(action == "Index" ? "active" : "")"
            aria-label="Overview" aria-current="@(action == "Index" ? "page" : null)" title="Overview">
             <i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span class="label">Overview</span>
@@ -323,8 +335,8 @@
             <i class="fa-solid fa-server" aria-hidden="true"></i><span class="label">Workers</span>
         </a>
         <a asp-controller="Dashboard" asp-action="JobTypes" class="nav-link @(action == "JobTypes" ? "active" : "")"
-           aria-label="Job Types" aria-current="@(action == "JobTypes" ? "page" : null)" title="Job Types">
-            <i class="fa-solid fa-code-branch" aria-hidden="true"></i><span class="label">Job Types</span>
+           aria-label="Job keys" aria-current="@(action == "JobTypes" ? "page" : null)" title="Job keys">
+            <i class="fa-solid fa-code-branch" aria-hidden="true"></i><span class="label">Job keys</span>
         </a>
         <a asp-controller="Dashboard" asp-action="Schedules" class="nav-link @(action == "Schedules" ? "active" : "")"
            aria-label="Schedules" aria-current="@(action == "Schedules" ? "page" : null)" title="Schedules">
@@ -332,6 +344,17 @@
         </a>
     </nav>
 </header>
+<script>
+    (() => {
+        const toggle = document.getElementById('dashboard-nav-toggle');
+        const navigation = document.getElementById('dashboard-nav');
+        if (!toggle || !navigation) return;
+        toggle.addEventListener('click', () => {
+            const isOpen = navigation.classList.toggle('is-open');
+            toggle.setAttribute('aria-expanded', String(isOpen));
+        });
+    })();
+</script>
 <div class="main-wrapper">
     <header class="topbar">
         <div class="topbar-start">
@@ -346,8 +369,8 @@
             </a>
             <span class="runtime-state @(DashboardOptions.AllowMutatingActions ? "admin-mode" : "")"
                   title="This indicator reflects dashboard permissions, not runtime health.">
-                <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-triangle-exclamation" : "fa-lock")" aria-hidden="true"></i>
-                @(DashboardOptions.AllowMutatingActions ? "Admin mode" : "Read-only")
+                <i class="fa-solid @(DashboardOptions.AllowMutatingActions ? "fa-pen-to-square" : "fa-lock")" aria-hidden="true"></i>
+                @(DashboardOptions.AllowMutatingActions ? "Write access" : "Read-only")
             </span>
         </div>
     </header>

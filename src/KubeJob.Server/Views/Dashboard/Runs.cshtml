@@ -16,7 +16,7 @@
 <div class="section-header">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div>
-            <h5 class="mb-1 fw-bold">Jobs and execution attempts</h5>
+            <h2 class="mb-1 fw-bold">Jobs and execution attempts</h2>
             <div class="small text-muted">
                 Each submitted job is one <strong>Run</strong>. A retry creates another <strong>Attempt</strong> under that same Run.
             </div>
@@ -57,33 +57,6 @@
 <div class="section-header">
     <form method="get" class="row g-2 align-items-end" aria-label="Filter jobs">
         <div class="col-auto">
-            <label class="form-label small mb-1">Status</label>
-            <select name="phase" class="form-select form-select-sm" title="The underlying KubeJob Run phase">
-                <option value="">All statuses</option>
-                @foreach (var phase in Enum.GetValues<JobPhase>())
-                {
-                    var label = phase switch
-                    {
-                        JobPhase.Pending => "Waiting",
-                        JobPhase.Running => "Running",
-                        JobPhase.Succeeded => "Succeeded",
-                        JobPhase.Failed => "Permanent failure",
-                        JobPhase.Canceled => "Canceled",
-                        JobPhase.Dead => "No retries left",
-                        _ => phase.ToString()
-                    };
-                    if (query.Phase == phase)
-                    {
-                        <option value="@phase" selected>@label</option>
-                    }
-                    else
-                    {
-                        <option value="@phase">@label</option>
-                    }
-                }
-            </select>
-        </div>
-        <div class="col-auto">
             <label class="form-label small mb-1">Queue</label>
             <input name="queue" value="@query.Queue" class="form-control form-control-sm" placeholder="for example: default" />
         </div>
@@ -102,9 +75,10 @@
 </div>
 
 <div class="table-card">
+    <div class="table-scroll-hint">Scroll sideways to see all job details →</div>
     <div class="table-responsive">
         <table class="table table-hover mb-0">
-            <thead><tr><th scope="col">Job run</th><th scope="col">Job type / queue</th><th scope="col">Status</th><th scope="col">Assigned worker</th><th scope="col">Attempts</th><th scope="col">Submitted / duration</th><th scope="col">Last error</th></tr></thead>
+            <thead><tr><th scope="col">Job run</th><th scope="col">Job key / queue</th><th scope="col">Status</th><th scope="col">Assigned worker</th><th scope="col">Attempts</th><th scope="col">Submitted / duration</th><th scope="col">Last error</th></tr></thead>
             <tbody>
             @if (results.Items.Count == 0)
             {

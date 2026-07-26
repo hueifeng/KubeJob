@@ -20,11 +20,14 @@ The worker execution engine depends on `IWorkerRuntimeClient`.
 - Unified hosts replace it with `InProcessWorkerRuntimeClient`.
 - Both implementations expose the same register, heartbeat, claim, renew,
   complete, and close protocol.
+- The HTTP controller and `InProcessWorkerRuntimeClient` both invoke
+  `WorkerControlPlane`, so lease duration, batch limits, session fencing, and
+  completion behavior have one implementation.
 
 ## Consequences
 
 - Unified mode avoids localhost HTTP.
 - Distributed and unified deployments share the same state machine.
 - Handler code is independent of transport.
-- Optional notification decorators can accelerate remote empty polling without
-  changing ownership semantics.
+- Optional broker listeners pulse `IWorkerClaimTrigger`; they do not decorate or
+  replace the worker runtime client.

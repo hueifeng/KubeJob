@@ -21,12 +21,15 @@ public sealed class WorkerRuntimeService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly JobHandlerRegistry _registry;
     private readonly IWorkerRuntimeClient _runtimeClient;
+    private readonly IWorkerClaimTrigger _claimTrigger;
     private readonly KubeJobWorkerOptions _options;
     private readonly ILogger<WorkerRuntimeService> _logger;
     private readonly Channel<ClaimedJob> _channel;
     private readonly ConcurrentDictionary<string, OwnedAttempt> _owned = new(StringComparer.Ordinal);
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private readonly string _hostName = Environment.MachineName;
+    private readonly TaskCompletionSource<WorkerSessionContext> _sessionReady =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private CancellationTokenSource? _sessionLifetime;
     private long _sessionEpoch;
@@ -37,12 +40,14 @@ public sealed class WorkerRuntimeService : BackgroundService
         IServiceScopeFactory scopeFactory,
         JobHandlerRegistry registry,
         IWorkerRuntimeClient runtimeClient,
+        IWorkerClaimTrigger claimTrigger,
         IOptions<KubeJobWorkerOptions> options,
         ILogger<WorkerRuntimeService> logger)
     {
         _scopeFactory = scopeFactory;
         _registry = registry;
         _runtimeClient = runtimeClient;
+        _claimTrigger = claimTrigger;
         _options = options.Value;
         _logger = logger;
         _options.Validate();
@@ -60,8 +65,10 @@ public sealed class WorkerRuntimeService : BackgroundService
     {
         if (_registry.Capabilities.Count == 0)
         {
-            throw new InvalidOperationException(
+            var exception = new InvalidOperationException(
                 "The worker has no typed handlers. Register at least one AddKubeJobHandler<TJob, TPayload>.");
+            _sessionReady.TrySetException(exception);
+            throw exception;
         }
 
         using var sessionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -71,6 +78,12 @@ public sealed class WorkerRuntimeService : BackgroundService
         try
         {
             await RegisterSessionUntilAcceptedAsync(runtimeToken);
+            _sessionReady.TrySetResult(new WorkerSessionContext(
+                _options.WorkerId,
+                _sessionId,
+                Volatile.Read(ref _sessionEpoch),
+                _hostName,
+                _options.BuildId));
             _logger.LogInformation(
                 "KubeJob worker {WorkerId} session {SessionId}/{Epoch} started with capacity {Capacity}",
                 _options.WorkerId,
@@ -93,7 +106,122 @@ public sealed class WorkerRuntimeService : BackgroundService
         finally
         {
             _channel.Writer.TryComplete();
+            if (!_sessionReady.Task.IsCompleted)
+            {
+                _sessionReady.TrySetCanceled();
+            }
             Interlocked.CompareExchange(ref _sessionLifetime, null, sessionLifetime);
+        }
+    }
+
+    /// <summary>
+    /// Admits and executes one broker-delivered Run through the same bounded
+    /// channel used by Pull claims. The caller may ACK only when the result is
+    /// Completed; Retry means the broker delivery must remain/re-enter queued
+    /// state, and Reject is a permanent delivery decision.
+    /// </summary>
+    public async ValueTask<ExecutionEnvelopeProcessingResult> ProcessExecutionEnvelopeAsync(
+        ExecutionEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+        var session = await _sessionReady.Task.WaitAsync(cancellationToken);
+        if (Volatile.Read(ref _draining) != 0)
+        {
+            return new ExecutionEnvelopeProcessingResult(
+                ExecutionEnvelopeProcessingStatus.Retry,
+                "worker_draining");
+        }
+
+        if (!_options.Queues.Contains(envelope.Queue, StringComparer.Ordinal))
+        {
+            return new ExecutionEnvelopeProcessingResult(
+                ExecutionEnvelopeProcessingStatus.Reject,
+                "worker_not_configured_for_queue");
+        }
+
+        var availableSlots = _options.MaxConcurrentJobs - Volatile.Read(ref _reservedSlots);
+        if (availableSlots <= 0)
+        {
+            return new ExecutionEnvelopeProcessingResult(
+                ExecutionEnvelopeProcessingStatus.Retry,
+                "worker_capacity_exhausted");
+        }
+
+        var admission = await _runtimeClient.AdmitAsync(
+            new AdmitExecutionRequest(
+                session.WorkerId,
+                session.SessionId,
+                Volatile.Read(ref _sessionEpoch),
+                availableSlots,
+                envelope.RunId,
+                _options.Queues,
+                _registry.Capabilities),
+            cancellationToken);
+
+        switch (admission.Status)
+        {
+            case ExecutionAdmissionStatus.AlreadyTerminal:
+                return new ExecutionEnvelopeProcessingResult(
+                    ExecutionEnvelopeProcessingStatus.Completed,
+                    admission.Reason);
+            case ExecutionAdmissionStatus.NotFound:
+            case ExecutionAdmissionStatus.Rejected:
+                return new ExecutionEnvelopeProcessingResult(
+                    ExecutionEnvelopeProcessingStatus.Reject,
+                    admission.Reason);
+            case ExecutionAdmissionStatus.Retry:
+                return new ExecutionEnvelopeProcessingResult(
+                    ExecutionEnvelopeProcessingStatus.Retry,
+                    admission.Reason);
+            case ExecutionAdmissionStatus.Admitted when admission.Job is not null:
+                return await EnqueueAdmittedExecutionAsync(admission.Job, cancellationToken);
+            default:
+                return new ExecutionEnvelopeProcessingResult(
+                    ExecutionEnvelopeProcessingStatus.Reject,
+                    "invalid_admission_response");
+        }
+    }
+
+    private async ValueTask<ExecutionEnvelopeProcessingResult> EnqueueAdmittedExecutionAsync(
+        ClaimedJob job,
+        CancellationToken cancellationToken)
+    {
+        var owned = new OwnedAttempt(job);
+        if (!_owned.TryAdd(job.AttemptId, owned))
+        {
+            owned.CancellationSource.Dispose();
+            return new ExecutionEnvelopeProcessingResult(
+                ExecutionEnvelopeProcessingStatus.Retry,
+                "attempt_already_owned");
+        }
+
+        Interlocked.Increment(ref _reservedSlots);
+        try
+        {
+            await _channel.Writer.WriteAsync(
+                job,
+                _sessionLifetime?.Token ?? cancellationToken);
+            var completionReported = await owned.Completion.Task.WaitAsync(cancellationToken);
+            return new ExecutionEnvelopeProcessingResult(
+                completionReported
+                    ? ExecutionEnvelopeProcessingStatus.Completed
+                    : ExecutionEnvelopeProcessingStatus.Retry,
+                completionReported ? null : "completion_not_durable");
+        }
+        catch (ChannelClosedException)
+        {
+            return new ExecutionEnvelopeProcessingResult(
+                ExecutionEnvelopeProcessingStatus.Retry,
+                "worker_execution_channel_closed");
+        }
+        finally
+        {
+            if (_owned.TryRemove(job.AttemptId, out var removed))
+            {
+                removed.CancellationSource.Dispose();
+                Interlocked.Decrement(ref _reservedSlots);
+            }
         }
     }
 
@@ -183,7 +311,9 @@ public sealed class WorkerRuntimeService : BackgroundService
 
                 if (response.Jobs.Count == 0)
                 {
-                    await Task.Delay(_options.EmptyPollDelay, stoppingToken);
+                    await _claimTrigger.WaitAsync(
+                        _options.EmptyPollDelay,
+                        stoppingToken);
                     continue;
                 }
 
@@ -251,11 +381,12 @@ public sealed class WorkerRuntimeService : BackgroundService
                     continue;
                 }
 
+                var completionReported = false;
                 try
                 {
                     if (!_registry.TryGet(job.JobKey, out var handler))
                     {
-                        await ReportAsync(
+                        completionReported = await ReportAsync(
                             job,
                             JobAttemptOutcome.PermanentFailure,
                             "handler_not_registered",
@@ -298,11 +429,16 @@ public sealed class WorkerRuntimeService : BackgroundService
                         context,
                         executionSource.Token);
 
-                    await ReportAsync(job, JobAttemptOutcome.Succeeded, null, null, stoppingToken);
+                    completionReported = await ReportAsync(
+                        job,
+                        JobAttemptOutcome.Succeeded,
+                        null,
+                        null,
+                        stoppingToken);
                 }
                 catch (OperationCanceledException) when (owned.CancellationSource.IsCancellationRequested)
                 {
-                    await ReportAsync(
+                    completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.Canceled,
                         "canceled",
@@ -311,7 +447,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
                 catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                 {
-                    await ReportAsync(
+                    completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.TimedOut,
                         "timeout",
@@ -320,7 +456,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
                 catch (System.Text.Json.JsonException ex)
                 {
-                    await ReportAsync(
+                    completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.PermanentFailure,
                         "payload_invalid",
@@ -330,7 +466,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "KubeJob attempt {AttemptId} failed", job.AttemptId);
-                    await ReportAsync(
+                    completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.RetryableFailure,
                         "handler_exception",
@@ -339,6 +475,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
                 finally
                 {
+                    owned.Completion.TrySetResult(completionReported);
                     if (_owned.TryRemove(job.AttemptId, out var removed))
                     {
                         removed.CancellationSource.Dispose();
@@ -517,7 +654,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
     }
 
-    private async Task ReportAsync(
+    private async Task<bool> ReportAsync(
         ClaimedJob job,
         JobAttemptOutcome outcome,
         string? failureCode,
@@ -543,12 +680,12 @@ public sealed class WorkerRuntimeService : BackgroundService
                 var result = await _runtimeClient.CompleteAsync(request, cancellationToken);
                 if (result.Accepted || !string.IsNullOrWhiteSpace(result.RejectionReason))
                 {
-                    return;
+                    return true;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return;
+                return false;
             }
             catch (Exception ex)
             {
@@ -565,13 +702,14 @@ public sealed class WorkerRuntimeService : BackgroundService
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return;
+                return false;
             }
         }
 
         _logger.LogError(
             "Unable to report completion for attempt {AttemptId}; waiting for lease reconciliation",
             job.AttemptId);
+        return false;
     }
 
     private static string? Truncate(string? value, int maximumLength)
@@ -594,5 +732,8 @@ public sealed class WorkerRuntimeService : BackgroundService
         public ClaimedJob Job { get; }
 
         public CancellationTokenSource CancellationSource { get; } = new();
+
+        public TaskCompletionSource<bool> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

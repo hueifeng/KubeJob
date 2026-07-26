@@ -37,6 +37,29 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Targeted_claim_admits_only_the_run_named_by_an_execution_envelope()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var target = (await store.SubmitAsync(
+            NewCommand(idempotencyKey: "target"),
+            CancellationToken.None)).Run;
+        var other = (await store.SubmitAsync(
+            NewCommand(idempotencyKey: "other"),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "worker", "session");
+
+        var claim = await store.ClaimAsync(
+            NewClaim(worker) with { RunIds = new[] { target.Id } },
+            TimeSpan.FromSeconds(30),
+            1,
+            CancellationToken.None);
+
+        claim.Should().ContainSingle();
+        claim.Single().RunId.Should().Be(target.Id);
+        other.Phase.Should().Be(JobPhase.Pending);
+    }
+
+    [Fact]
     public async Task Runs_with_the_same_concurrency_key_do_not_run_together()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -226,9 +249,11 @@ public sealed class InMemoryJobRuntimeStoreTests
         var message = firstClaim.Single();
 
         await store.MarkFailedAsync(
-            message.Id,
-            "broker unavailable",
-            DateTimeOffset.UtcNow.AddSeconds(-1),
+            new OutboxFailure(
+                message.Id,
+                message.ClaimToken!,
+                "broker unavailable",
+                DateTimeOffset.UtcNow.AddSeconds(-1)),
             CancellationToken.None);
         var retryClaim = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
@@ -266,6 +291,62 @@ public sealed class InMemoryJobRuntimeStoreTests
         beforeExpiry.Should().BeEmpty();
         afterExpiry.Single().Id.Should().Be(firstClaim.Single().Id);
         afterExpiry.Single().PublishAttempts.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Stale_outbox_publisher_cannot_overwrite_a_reclaimed_message()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        var first = (await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromSeconds(10),
+            10,
+            CancellationToken.None)).Single();
+        var firstClaimToken = first.ClaimToken!;
+
+        var second = (await store.ClaimPendingAsync(
+            first.AvailableAt.AddSeconds(1),
+            TimeSpan.FromSeconds(10),
+            10,
+            CancellationToken.None)).Single();
+
+        await store.MarkFailedAsync(
+            new OutboxFailure(
+                first.Id,
+                firstClaimToken,
+                "stale publisher",
+                DateTimeOffset.UtcNow.AddSeconds(-1)),
+            CancellationToken.None);
+
+        second.State.Should().Be(OutboxDeliveryState.Publishing);
+        second.ClaimToken.Should().NotBe(firstClaimToken);
+        second.LastError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Batch_outbox_publication_only_completes_matching_claim_tokens()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(idempotencyKey: "one"), CancellationToken.None);
+        await store.SubmitAsync(NewCommand(idempotencyKey: "two"), CancellationToken.None);
+        var claimed = (await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None)).ToArray();
+
+        await store.MarkPublishedAsync(
+            new[]
+            {
+                new OutboxPublication(claimed[0].Id, claimed[0].ClaimToken!),
+                new OutboxPublication(claimed[1].Id, "wrong-token")
+            },
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        claimed[0].State.Should().Be(OutboxDeliveryState.Published);
+        claimed[1].State.Should().Be(OutboxDeliveryState.Publishing);
     }
 
     private static SubmitJobCommand NewCommand(

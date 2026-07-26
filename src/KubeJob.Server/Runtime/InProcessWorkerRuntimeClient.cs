@@ -1,5 +1,5 @@
 using KubeJob.Core.Runtime;
-using Microsoft.Extensions.Options;
+using KubeJob.Server.ControlPlane;
 
 namespace KubeJob.Server.Runtime;
 
@@ -10,77 +10,51 @@ namespace KubeJob.Server.Runtime;
 /// </summary>
 public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
 {
-    private readonly IWorkerSessionStore _sessions;
-    private readonly IJobClaimStore _claims;
-    private readonly IJobCompletionStore _completions;
-    private readonly JobRuntimeOptions _options;
+    private readonly WorkerControlPlane _controlPlane;
 
-    public InProcessWorkerRuntimeClient(
-        IWorkerSessionStore sessions,
-        IJobClaimStore claims,
-        IJobCompletionStore completions,
-        IOptions<JobRuntimeOptions> options)
+    public InProcessWorkerRuntimeClient(WorkerControlPlane controlPlane)
     {
-        _sessions = sessions;
-        _claims = claims;
-        _completions = completions;
-        _options = options.Value;
+        _controlPlane = controlPlane;
     }
 
     public async ValueTask<RegisterWorkerSessionResponse> RegisterAsync(
         RegisterWorkerSessionRequest request,
         CancellationToken cancellationToken)
     {
-        var session = await _sessions.RegisterAsync(request, cancellationToken);
-        return new RegisterWorkerSessionResponse(
-            session.WorkerId,
-            session.SessionId,
-            session.Epoch,
-            session.StartedAt);
+        return await _controlPlane.RegisterAsync(request, cancellationToken);
     }
 
     public ValueTask<bool> HeartbeatAsync(
         WorkerHeartbeatRequest request,
         CancellationToken cancellationToken) =>
-        _sessions.HeartbeatAsync(request, cancellationToken);
+        _controlPlane.HeartbeatAsync(request, cancellationToken);
 
     public ValueTask<bool> CloseAsync(
         WorkerHeartbeatRequest request,
         CancellationToken cancellationToken) =>
-        _sessions.CloseAsync(
-            request.WorkerId,
-            request.SessionId,
-            request.SessionEpoch,
-            cancellationToken);
+        _controlPlane.CloseAsync(request, cancellationToken);
 
     public async ValueTask<ClaimJobsResponse> ClaimAsync(
         ClaimJobsRequest request,
         CancellationToken cancellationToken)
     {
-        var jobs = await _claims.ClaimAsync(
-            request,
-            _options.LeaseDuration,
-            _options.MaxClaimBatchSize,
-            cancellationToken);
-        return new ClaimJobsResponse(jobs);
+        return await _controlPlane.ClaimAsync(request, cancellationToken);
     }
+
+    public ValueTask<AdmitExecutionResponse> AdmitAsync(
+        AdmitExecutionRequest request,
+        CancellationToken cancellationToken) =>
+        _controlPlane.AdmitAsync(request, cancellationToken);
 
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(
         RenewLeasesRequest request,
         CancellationToken cancellationToken)
     {
-        var attempts = await _claims.RenewLeasesAsync(
-            request,
-            _options.LeaseDuration,
-            cancellationToken);
-        return new RenewLeasesResponse(attempts);
+        return await _controlPlane.RenewLeasesAsync(request, cancellationToken);
     }
 
     public ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
         CancellationToken cancellationToken) =>
-        _completions.CompleteAsync(
-            request,
-            _options.RetryDelay,
-            cancellationToken);
+        _controlPlane.CompleteAsync(request, cancellationToken);
 }

@@ -22,6 +22,10 @@ public interface IWorkerRuntimeClient
         ClaimJobsRequest request,
         CancellationToken cancellationToken);
 
+    ValueTask<AdmitExecutionResponse> AdmitAsync(
+        AdmitExecutionRequest request,
+        CancellationToken cancellationToken);
+
     ValueTask<RenewLeasesResponse> RenewLeasesAsync(
         RenewLeasesRequest request,
         CancellationToken cancellationToken);

@@ -40,7 +40,7 @@
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
         <a asp-action="Runs" class="small text-decoration-none"><i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>Back to jobs</a>
-        <h5 class="mb-1 mt-2 fw-bold mono">@run.Id</h5>
+        <h2 class="mb-1 mt-2 fw-bold mono">@run.Id</h2>
         <div class="text-muted small">Job type <strong>@run.JobKey</strong> · queue <strong>@run.Queue</strong></div>
     </div>
     <div class="d-flex align-items-center gap-2">
@@ -127,7 +127,7 @@
 <section class="panel mb-4">
     <div class="panel-header">
         <div>
-            <h5>Execution timeline</h5>
+            <h2>Execution timeline</h2>
             <div class="panel-subtitle">A chronological view of submission, worker claims, attempt outcomes, and scheduled retries.</div>
         </div>
         <span class="badge bg-light text-dark border">@Model.Timeline.Count events</span>
@@ -158,7 +158,7 @@
 </section>
 
 <div class="section-header">
-    <h5 class="mb-1 fw-bold">Execution attempts</h5>
+    <h2 class="mb-1 fw-bold">Execution attempts</h2>
     <div class="small text-muted">Each retry or worker reassignment creates a new Attempt. Lease credentials are never shown.</div>
 </div>
 <div class="table-card">

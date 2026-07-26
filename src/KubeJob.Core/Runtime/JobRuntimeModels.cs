@@ -120,5 +120,6 @@ public sealed class OutboxMessageRecord
     public DateTimeOffset AvailableAt { get; set; }
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? PublishedAt { get; set; }
+    public string? ClaimToken { get; set; }
     public string? LastError { get; set; }
 }

@@ -1,3 +1,4 @@
+using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -10,8 +11,7 @@ namespace KubeJob.Server.Runtime;
 public sealed class PollingWorkAvailableNotifier : IWorkAvailableNotifier
 {
     public ValueTask PublishAsync(
-        string queue,
-        string payloadJson,
+        WorkAvailableSignal signal,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -23,17 +23,23 @@ public sealed class OutboxPublisherService : BackgroundService
 {
     private readonly IOutboxStore _store;
     private readonly IWorkAvailableNotifier _notifier;
+    private readonly IQueueRouter _queueRouter;
+    private readonly IExecutionDispatcher _dispatcher;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<OutboxPublisherService> _logger;
 
     public OutboxPublisherService(
         IOutboxStore store,
         IWorkAvailableNotifier notifier,
+        IQueueRouter queueRouter,
+        IExecutionDispatcher dispatcher,
         IOptions<JobRuntimeOptions> options,
         ILogger<OutboxPublisherService> logger)
     {
         _store = store;
         _notifier = notifier;
+        _queueRouter = queueRouter;
+        _dispatcher = dispatcher;
         _options = options.Value;
         _logger = logger;
     }
@@ -53,19 +59,35 @@ public sealed class OutboxPublisherService : BackgroundService
                     _options.OutboxClaimDuration,
                     _options.OutboxBatchSize,
                     stoppingToken);
+                var published = new List<OutboxPublication>();
 
                 foreach (var message in messages)
                 {
                     try
                     {
-                        await _notifier.PublishAsync(
-                            message.Queue,
-                            message.PayloadJson,
-                            stoppingToken);
-                        await _store.MarkPublishedAsync(
+                        var signal = WorkAvailableSignal.FromOutbox(message);
+                        var route = _queueRouter.Resolve(message.Queue);
+                        switch (route.Profile)
+                        {
+                            case ExecutionDeliveryProfile.Pull:
+                                await _notifier.PublishAsync(
+                                    signal,
+                                    stoppingToken);
+                                break;
+                            case ExecutionDeliveryProfile.BrokerDispatch:
+                                await _dispatcher.DispatchAsync(
+                                    ExecutionEnvelope.FromWorkAvailableSignal(signal),
+                                    stoppingToken);
+                                break;
+                            default:
+                                throw new InvalidOperationException(
+                                    $"Unsupported execution delivery profile '{route.Profile}'.");
+                        }
+                        published.Add(new OutboxPublication(
                             message.Id,
-                            DateTimeOffset.UtcNow,
-                            stoppingToken);
+                            message.ClaimToken
+                                ?? throw new InvalidOperationException(
+                                    $"Outbox message '{message.Id}' has no claim token.")));
                         publishedAny = true;
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -81,11 +103,23 @@ public sealed class OutboxPublisherService : BackgroundService
                             message.Queue);
 
                         await _store.MarkFailedAsync(
-                            message.Id,
-                            ex.Message,
-                            DateTimeOffset.UtcNow.Add(_options.OutboxFailureDelay),
+                            new OutboxFailure(
+                                message.Id,
+                                message.ClaimToken
+                                    ?? throw new InvalidOperationException(
+                                        $"Outbox message '{message.Id}' has no claim token."),
+                                ex.Message,
+                                DateTimeOffset.UtcNow.Add(_options.OutboxFailureDelay)),
                             stoppingToken);
                     }
+                }
+
+                if (published.Count > 0)
+                {
+                    await _store.MarkPublishedAsync(
+                        published,
+                        DateTimeOffset.UtcNow,
+                        stoppingToken);
                 }
 
                 if (!publishedAny)
@@ -100,6 +134,7 @@ public sealed class OutboxPublisherService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "KubeJob outbox publisher iteration failed");
+                await Task.Delay(_options.OutboxFailureDelay, stoppingToken);
             }
         }
     }

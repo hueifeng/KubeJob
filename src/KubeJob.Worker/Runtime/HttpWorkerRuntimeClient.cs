@@ -59,6 +59,19 @@ public sealed class HttpWorkerRuntimeClient : IWorkerRuntimeClient, IDisposable
         return await ReadRequiredAsync<ClaimJobsResponse>(response, cancellationToken);
     }
 
+    public async ValueTask<AdmitExecutionResponse> AdmitAsync(
+        AdmitExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.PostAsJsonAsync(
+            "api/kubejob/runtime/admissions",
+            request,
+            SerializerOptions,
+            cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await ReadRequiredAsync<AdmitExecutionResponse>(response, cancellationToken);
+    }
+
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(
         RenewLeasesRequest request,
         CancellationToken cancellationToken)

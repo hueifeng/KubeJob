@@ -1,7 +1,6 @@
-using System.Text.Json;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
-using KubeJob.Server.Runtime;
+using KubeJob.Server.ControlPlane;
 using Microsoft.AspNetCore.Mvc;
 
 namespace KubeJob.Server.Controllers;
@@ -10,11 +9,11 @@ namespace KubeJob.Server.Controllers;
 [Route("api/kubejob/schedules")]
 public sealed class SchedulesApiController : ControllerBase
 {
-    private readonly IJobScheduleStore _store;
+    private readonly ScheduleControlPlane _controlPlane;
 
-    public SchedulesApiController(IJobScheduleStore store)
+    public SchedulesApiController(ScheduleControlPlane controlPlane)
     {
-        _store = store;
+        _controlPlane = controlPlane;
     }
 
     [HttpPut("{scheduleId}")]
@@ -23,53 +22,22 @@ public sealed class SchedulesApiController : ControllerBase
         [FromBody] UpsertCronScheduleRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(scheduleId)
-            || string.IsNullOrWhiteSpace(request.JobKey)
-            || string.IsNullOrWhiteSpace(request.PayloadJson)
-            || string.IsNullOrWhiteSpace(request.CronExpression)
-            || string.IsNullOrWhiteSpace(request.TimeZoneId)
-            || string.IsNullOrWhiteSpace(request.Queue)
-            || request.MaxAttempts < 1
-            || request.TimeoutSeconds < 1)
-        {
-            return BadRequest("Schedule id, job key, payload, cron, time zone, queue, and positive limits are required.");
-        }
-
         try
         {
-            using var payload = JsonDocument.Parse(request.PayloadJson);
-            CronScheduleCalculator.Validate(request.CronExpression, request.TimeZoneId);
+            var schedule = await _controlPlane.UpsertCronAsync(
+                scheduleId,
+                request,
+                cancellationToken);
+            return Ok(schedule);
         }
-        catch (Exception ex) when (ex is JsonException or Cronos.CronFormatException or TimeZoneNotFoundException or InvalidTimeZoneException or InvalidOperationException)
+        catch (ControlPlaneValidationException validation)
         {
-            return BadRequest(new { code = "invalid_schedule", message = ex.Message });
+            return BadRequest(new
+            {
+                code = validation.Code,
+                message = validation.Message
+            });
         }
-
-        var now = DateTimeOffset.UtcNow;
-        var nextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
-            request.CronExpression,
-            request.TimeZoneId,
-            now);
-        var schedule = await _store.UpsertAsync(new JobScheduleRecord
-        {
-            Id = scheduleId,
-            JobKey = request.JobKey,
-            PayloadJson = request.PayloadJson,
-            CronExpression = request.CronExpression,
-            TimeZoneId = request.TimeZoneId,
-            Queue = request.Queue,
-            Priority = request.Priority,
-            MisfirePolicy = request.MisfirePolicy,
-            ConcurrencyPolicy = request.ConcurrencyPolicy,
-            MaxAttempts = request.MaxAttempts,
-            TimeoutSeconds = request.TimeoutSeconds,
-            Enabled = request.Enabled,
-            NextFireAt = nextFireAt.ToUniversalTime(),
-            CreatedAt = now,
-            UpdatedAt = now
-        }, cancellationToken);
-
-        return Ok(DefaultJobScheduleClient.ToSnapshot(schedule));
     }
 
     [HttpGet("{scheduleId}")]
@@ -77,10 +45,10 @@ public sealed class SchedulesApiController : ControllerBase
         string scheduleId,
         CancellationToken cancellationToken)
     {
-        var schedule = await _store.GetAsync(scheduleId, cancellationToken);
+        var schedule = await _controlPlane.GetAsync(scheduleId, cancellationToken);
         return schedule is null
             ? NotFound()
-            : Ok(DefaultJobScheduleClient.ToSnapshot(schedule));
+            : Ok(schedule);
     }
 
     [HttpPost("{scheduleId}/enabled")]
@@ -89,26 +57,10 @@ public sealed class SchedulesApiController : ControllerBase
         [FromBody] SetScheduleEnabledRequest request,
         CancellationToken cancellationToken)
     {
-        var schedule = await _store.GetAsync(scheduleId, cancellationToken);
-        if (schedule is null)
-        {
-            return NotFound();
-        }
-
-        DateTimeOffset? nextFireAt = null;
-        if (request.Enabled)
-        {
-            nextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
-                schedule.CronExpression,
-                schedule.TimeZoneId,
-                DateTimeOffset.UtcNow);
-        }
-
-        var updated = await _store.SetEnabledAsync(
+        var updated = await _controlPlane.SetEnabledAsync(
             scheduleId,
             request.Enabled,
-            nextFireAt,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         return updated ? Ok() : NotFound();
     }
 
@@ -117,7 +69,9 @@ public sealed class SchedulesApiController : ControllerBase
         string scheduleId,
         CancellationToken cancellationToken)
     {
-        return await _store.DeleteAsync(scheduleId, cancellationToken)
+        return await _controlPlane.DeleteAsync(
+                scheduleId,
+                cancellationToken: cancellationToken)
             ? NoContent()
             : NotFound();
     }

@@ -4,7 +4,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>RabbitMQ work-available notifications for KubeJob.</Description>
+    <Description>RabbitMQ ingress, work-available notifications, and execution dispatch adapters for KubeJob.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,7 +13,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\KubeJob.Core\KubeJob.Core.csproj" />
-    <ProjectReference Include="..\KubeJob.Server\KubeJob.Server.csproj" />
     <ProjectReference Include="..\KubeJob.Worker\KubeJob.Worker.csproj" />
   </ItemGroup>
 

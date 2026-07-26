@@ -190,8 +190,12 @@ public sealed class DbInitializer : IStorageInitializer
                 AvailableAt TIMESTAMPTZ NOT NULL,
                 CreatedAt TIMESTAMPTZ NOT NULL,
                 PublishedAt TIMESTAMPTZ,
+                ClaimToken VARCHAR(64),
                 LastError TEXT
             );
+
+            ALTER TABLE Kj2_Outbox
+                ADD COLUMN IF NOT EXISTS ClaimToken VARCHAR(64);
 
             CREATE INDEX IF NOT EXISTS IX_Kj2_Outbox_Pending
                 ON Kj2_Outbox (AvailableAt, CreatedAt)

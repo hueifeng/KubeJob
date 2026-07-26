@@ -1,7 +1,6 @@
 using KubeJob.Core.Runtime;
-using KubeJob.Server.Runtime;
+using KubeJob.Server.ControlPlane;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.Controllers;
 
@@ -9,21 +8,11 @@ namespace KubeJob.Server.Controllers;
 [Route("api/kubejob/runtime")]
 public sealed class JobRuntimeController : ControllerBase
 {
-    private readonly IWorkerSessionStore _workerSessions;
-    private readonly IJobClaimStore _claims;
-    private readonly IJobCompletionStore _completions;
-    private readonly JobRuntimeOptions _options;
+    private readonly WorkerControlPlane _controlPlane;
 
-    public JobRuntimeController(
-        IWorkerSessionStore workerSessions,
-        IJobClaimStore claims,
-        IJobCompletionStore completions,
-        IOptions<JobRuntimeOptions> options)
+    public JobRuntimeController(WorkerControlPlane controlPlane)
     {
-        _workerSessions = workerSessions;
-        _claims = claims;
-        _completions = completions;
-        _options = options.Value;
+        _controlPlane = controlPlane;
     }
 
     [HttpPost("workers/register")]
@@ -31,21 +20,18 @@ public sealed class JobRuntimeController : ControllerBase
         [FromBody] RegisterWorkerSessionRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.WorkerId)
-            || string.IsNullOrWhiteSpace(request.SessionId)
-            || request.MaxConcurrency < 1
-            || request.Queues.Count == 0
-            || request.Capabilities.Count == 0)
+        try
         {
-            return BadRequest("Worker identity, positive capacity, queues, and capabilities are required.");
+            return Ok(await _controlPlane.RegisterAsync(request, cancellationToken));
         }
-
-        var session = await _workerSessions.RegisterAsync(request, cancellationToken);
-        return Ok(new RegisterWorkerSessionResponse(
-            session.WorkerId,
-            session.SessionId,
-            session.Epoch,
-            session.StartedAt));
+        catch (ControlPlaneValidationException validation)
+        {
+            return BadRequest(new
+            {
+                code = validation.Code,
+                message = validation.Message
+            });
+        }
     }
 
     [HttpPost("workers/heartbeat")]
@@ -53,7 +39,7 @@ public sealed class JobRuntimeController : ControllerBase
         [FromBody] WorkerHeartbeatRequest request,
         CancellationToken cancellationToken)
     {
-        var accepted = await _workerSessions.HeartbeatAsync(request, cancellationToken);
+        var accepted = await _controlPlane.HeartbeatAsync(request, cancellationToken);
         return accepted ? Ok() : Conflict(new { reason = "stale_worker_session" });
     }
 
@@ -62,11 +48,7 @@ public sealed class JobRuntimeController : ControllerBase
         [FromBody] WorkerHeartbeatRequest request,
         CancellationToken cancellationToken)
     {
-        var accepted = await _workerSessions.CloseAsync(
-            request.WorkerId,
-            request.SessionId,
-            request.SessionEpoch,
-            cancellationToken);
+        var accepted = await _controlPlane.CloseAsync(request, cancellationToken);
         return accepted ? Ok() : Conflict(new { reason = "stale_worker_session" });
     }
 
@@ -75,17 +57,15 @@ public sealed class JobRuntimeController : ControllerBase
         [FromBody] ClaimJobsRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.AvailableSlots <= 0)
-        {
-            return Ok(new ClaimJobsResponse(Array.Empty<ClaimedJob>()));
-        }
+        return Ok(await _controlPlane.ClaimAsync(request, cancellationToken));
+    }
 
-        var jobs = await _claims.ClaimAsync(
-            request,
-            _options.LeaseDuration,
-            _options.MaxClaimBatchSize,
-            cancellationToken);
-        return Ok(new ClaimJobsResponse(jobs));
+    [HttpPost("admissions")]
+    public async Task<ActionResult<AdmitExecutionResponse>> Admit(
+        [FromBody] AdmitExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        return Ok(await _controlPlane.AdmitAsync(request, cancellationToken));
     }
 
     [HttpPost("leases/renew")]
@@ -93,11 +73,7 @@ public sealed class JobRuntimeController : ControllerBase
         [FromBody] RenewLeasesRequest request,
         CancellationToken cancellationToken)
     {
-        var attempts = await _claims.RenewLeasesAsync(
-            request,
-            _options.LeaseDuration,
-            cancellationToken);
-        return Ok(new RenewLeasesResponse(attempts));
+        return Ok(await _controlPlane.RenewLeasesAsync(request, cancellationToken));
     }
 
     [HttpPost("attempts/complete")]
@@ -105,10 +81,7 @@ public sealed class JobRuntimeController : ControllerBase
         [FromBody] CompleteAttemptRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _completions.CompleteAsync(
-            request,
-            _options.RetryDelay,
-            cancellationToken);
+        var result = await _controlPlane.CompleteAsync(request, cancellationToken);
 
         return result.Accepted ? Ok(result) : Conflict(result);
     }

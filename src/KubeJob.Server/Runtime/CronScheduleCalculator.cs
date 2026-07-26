@@ -4,6 +4,25 @@ namespace KubeJob.Server.Runtime;
 
 public static class CronScheduleCalculator
 {
+    public static IReadOnlyList<DateTimeOffset> GetUpcomingOccurrences(
+        string cronExpression,
+        string timeZoneId,
+        DateTimeOffset from,
+        int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+
+        var occurrences = new List<DateTimeOffset>(count);
+        var cursor = from;
+        for (var index = 0; index < count; index++)
+        {
+            cursor = GetRequiredNextOccurrence(cronExpression, timeZoneId, cursor);
+            occurrences.Add(cursor);
+        }
+
+        return occurrences;
+    }
+
     public static DateTimeOffset GetRequiredNextOccurrence(
         string cronExpression,
         string timeZoneId,
@@ -14,7 +33,7 @@ public static class CronScheduleCalculator
         ArgumentException.ThrowIfNullOrWhiteSpace(timeZoneId);
 
         var expression = CronExpression.Parse(cronExpression, CronFormat.Standard);
-        var timeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+        var timeZone = GetTimeZone(timeZoneId);
         return expression.GetNextOccurrence(
                    from.ToUniversalTime(),
                    timeZone,
@@ -30,4 +49,17 @@ public static class CronScheduleCalculator
             timeZoneId,
             DateTimeOffset.UtcNow);
     }
+
+    public static TimeZoneInfo GetTimeZone(string timeZoneId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(timeZoneId);
+        return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+    }
+
+    public static bool IsValidationException(Exception exception) =>
+        exception is CronFormatException
+            or TimeZoneNotFoundException
+            or InvalidTimeZoneException
+            or InvalidOperationException
+            or ArgumentException;
 }
