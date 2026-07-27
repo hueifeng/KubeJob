@@ -241,9 +241,15 @@ public sealed class WorkerRuntimeService : BackgroundService
                     admission.Reason);
             case ExecutionAdmissionStatus.NotFound:
             case ExecutionAdmissionStatus.Rejected:
+                // Defensive: the control plane no longer returns Rejected for
+                // recoverable routing mismatches — those come back as Retry.
+                // Reaching this branch indicates a transport-level fault
+                // (null Job on an Admitted response, an unexpected enum
+                // value, etc.), so surface it as a Reject to drop the envelope
+                // rather than spin in the broker's retry queue.
                 return new ExecutionEnvelopeProcessingResult(
                     ExecutionEnvelopeProcessingStatus.Reject,
-                    admission.Reason);
+                    admission.Reason ?? "invalid_admission_response");
             case ExecutionAdmissionStatus.Retry:
                 return new ExecutionEnvelopeProcessingResult(
                     ExecutionEnvelopeProcessingStatus.Retry,
@@ -282,11 +288,15 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
 
         Interlocked.Increment(ref _reservedSlots);
+        // Combine the session lifetime with the caller's token so a broker-side
+        // cancellation or worker drain can unblock the write even when the
+        // caller passed a token that hasn't observed the session fence yet.
+        using var writeCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            owned.CancellationSource.Token);
         try
         {
-            await _channel.Writer.WriteAsync(
-                job,
-                _sessionLifetime?.Token ?? cancellationToken);
+            await _channel.Writer.WriteAsync(job, writeCts.Token);
             var completionReported = await owned.Completion.Task.WaitAsync(cancellationToken);
             return new ExecutionEnvelopeProcessingResult(
                 completionReported
@@ -800,7 +810,7 @@ public sealed class WorkerRuntimeService : BackgroundService
 
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+                await Task.Delay(GetJitteredBackoff(attempt), cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -812,6 +822,15 @@ public sealed class WorkerRuntimeService : BackgroundService
             "Unable to report completion for attempt {AttemptId}; waiting for lease reconciliation",
             job.AttemptId);
         return false;
+    }
+
+    private static TimeSpan GetJitteredBackoff(int attempt)
+    {
+        // ±20% jitter spreads retry waves so multiple workers reporting the
+        // same failure don't synchronize their next attempt.
+        var seconds = Math.Max(1, attempt);
+        var jitter = 1.0 + ((Random.Shared.NextDouble() * 0.4) - 0.2);
+        return TimeSpan.FromSeconds(seconds * jitter);
     }
 
     private static string? Truncate(string? value, int maximumLength)

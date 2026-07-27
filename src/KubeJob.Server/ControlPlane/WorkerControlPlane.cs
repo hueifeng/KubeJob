@@ -138,8 +138,12 @@ public sealed class WorkerControlPlane
         var run = await _queries.GetRunAsync(request.RunId, cancellationToken);
         if (run is null)
         {
+            // The envelope is for a Run that has been hard-deleted; the broker
+            // will redeliver until the run is found. Retry so the broker keeps
+            // the message until either the Run is recreated or the broker
+            // delivery limit is reached and we reconcile via the outbox.
             return new AdmitExecutionResponse(
-                ExecutionAdmissionStatus.NotFound,
+                ExecutionAdmissionStatus.Retry,
                 Reason: "run_not_found");
         }
 
@@ -156,16 +160,22 @@ public sealed class WorkerControlPlane
 
         if (run.Phase == JobPhase.Running)
         {
+            // Another worker holds the lease; the broker should redeliver to
+            // a different worker once the lease expires or the run completes.
+            // Rejecting here would silently drop the envelope.
             return new AdmitExecutionResponse(
-                ExecutionAdmissionStatus.AlreadyTerminal,
+                ExecutionAdmissionStatus.Retry,
                 Reason: "run_already_running");
         }
 
         if (!request.Queues.Contains(run.Queue, StringComparer.Ordinal)
             || !request.Capabilities.Contains(run.JobKey, StringComparer.Ordinal))
         {
+            // The broker misrouted this envelope to a worker that cannot run
+            // it. Retry so a different worker (with the right queue/capability)
+            // can pick it up after the broker rebalances. Reject would lose it.
             return new AdmitExecutionResponse(
-                ExecutionAdmissionStatus.Rejected,
+                ExecutionAdmissionStatus.Retry,
                 Reason: "worker_not_capable");
         }
 

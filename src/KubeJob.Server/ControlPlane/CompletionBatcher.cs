@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.ControlPlane;
@@ -13,25 +14,21 @@ public sealed class CompletionBatcher
 {
     private readonly IJobCompletionStore _store;
     private readonly JobRuntimeOptions _options;
-    private readonly Channel<PendingCompletion> _channel;
+    private readonly ILogger<CompletionBatcher>? _logger;
     private readonly object _startGate = new();
     private Task? _loop;
+    private Channel<PendingCompletion> _channel;
 
     public CompletionBatcher(
         IJobCompletionStore store,
-        IOptions<JobRuntimeOptions> options)
+        IOptions<JobRuntimeOptions> options,
+        ILogger<CompletionBatcher>? logger = null)
     {
         _store = store;
         _options = options.Value;
+        _logger = logger;
         _options.Validate();
-        _channel = Channel.CreateBounded<PendingCompletion>(new BoundedChannelOptions(
-            Math.Max(256, _options.CompletionBatchSize * 8))
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = false,
-            AllowSynchronousContinuations = false
-        });
+        _channel = CreateChannel();
     }
 
     public async ValueTask<CompleteAttemptResponse> EnqueueAsync(
@@ -44,16 +41,32 @@ public sealed class CompletionBatcher
         return await pending.Completion.Task.WaitAsync(cancellationToken);
     }
 
+    private Channel<PendingCompletion> CreateChannel() =>
+        Channel.CreateBounded<PendingCompletion>(new BoundedChannelOptions(
+            Math.Max(256, _options.CompletionBatchSize * 8))
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false
+        });
+
     private void EnsureStarted()
     {
-        if (_loop is not null)
+        if (_loop is not null && !_loop.IsCompleted)
         {
             return;
         }
 
         lock (_startGate)
         {
-            _loop ??= Task.Run(ProcessLoopAsync);
+            if (_loop is null || _loop.IsCompleted)
+            {
+                // Reset the channel so callers blocked on a full queue or
+                // hung after a loop fault don't wait forever.
+                _channel = CreateChannel();
+                _loop = Task.Run(ProcessLoopAsync);
+            }
         }
     }
 
@@ -107,12 +120,15 @@ public sealed class CompletionBatcher
             }
             catch (Exception ex)
             {
+                _logger?.LogError(ex, "KubeJob completion batch failed");
                 foreach (var item in batch)
                 {
                     item.Completion.TrySetException(ex);
                 }
             }
         }
+
+        _logger?.LogWarning("KubeJob completion batcher loop exited; will restart on next enqueue");
     }
 
     private sealed class PendingCompletion

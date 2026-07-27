@@ -170,9 +170,8 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             _runtime.TryCancelRun(cancel.RunId);
             Ack(channel, channelGate, delivery.DeliveryTag);
             _logger.LogDebug(
-                "ACKed RabbitMQ cancel signal for Run {RunId}; inFlight={InFlight}",
-                cancel.RunId,
-                true);
+                "ACKed RabbitMQ cancel signal for Run {RunId}",
+                cancel.RunId);
         }
         catch (JsonException exception)
         {
@@ -297,10 +296,10 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             }
             catch (Exception reconciliationException)
             {
-                Nack(
-                    channel,
-                    gate,
-                    delivery.DeliveryTag,
+                // Reconciliation failed too: drop into the DLQ via requeue=false
+                // rather than NACK-ing back to the head of the queue, which
+                // would loop indefinitely.
+                Reject(channel, gate, delivery.DeliveryTag,
                     $"{reason}; durable reconciliation failed: {reconciliationException.Message}");
             }
 
@@ -313,31 +312,11 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         }
         catch (Exception retryException)
         {
-            Nack(
-                channel,
-                gate,
-                delivery.DeliveryTag,
-                $"{reason}; retry publication failed: {retryException.Message}");
-        }
-    }
-
-    private void RepublishOrNack(
-        IModel channel,
-        object gate,
-        BasicDeliverEventArgs delivery,
-        string logicalQueue,
-        string reason)
-    {
-        try
-        {
-            RepublishForRetry(channel, gate, delivery, logicalQueue);
-        }
-        catch (Exception retryException)
-        {
-            Nack(
-                channel,
-                gate,
-                delivery.DeliveryTag,
+            // Same NACK-loop risk: prefer reject (no requeue) so the broker
+            // routes the envelope through its DLX. The durable outbox still
+            // owns correctness, so we accept a DLQ entry as a poison-pill
+            // signal rather than spinning forever.
+            Reject(channel, gate, delivery.DeliveryTag,
                 $"{reason}; retry publication failed: {retryException.Message}");
         }
     }

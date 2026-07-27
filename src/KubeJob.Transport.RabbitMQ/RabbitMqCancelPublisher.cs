@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
@@ -18,6 +19,10 @@ namespace KubeJob.Transport.RabbitMQ;
 /// in-flight attempt cancellation; the durable cancel state still lives in
 /// PostgreSQL's <c>Kj2_JobRuns.CancelRequested</c> column and the lease
 /// reaper remains the correctness fallback.
+///
+/// Each group owns its own channel because fanout exchanges are bound at
+/// declare time; sharing one channel across groups would race when two
+/// cancels for different groups land back-to-back.
 /// </summary>
 public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
 {
@@ -27,10 +32,8 @@ public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     private readonly RabbitMqExecutionOptions _options;
-    private readonly object _gate = new();
-    private IConnection? _connection;
-    private IModel? _channel;
-    private string? _declaredGroup;
+    private readonly ConcurrentDictionary<string, GroupChannel> _channels = new(StringComparer.Ordinal);
+    private int _disposed;
 
     public RabbitMqCancelPublisher(IOptions<RabbitMqExecutionOptions> options)
     {
@@ -47,12 +50,17 @@ public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(group);
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
 
-        lock (_gate)
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(RabbitMqCancelPublisher));
+        }
+
+        var channel = GetOrCreateChannel(group);
+        lock (channel.Gate)
         {
             try
             {
-                var channel = EnsureChannel(group);
-                var properties = channel.CreateBasicProperties();
+                var properties = channel.Model.CreateBasicProperties();
                 properties.ContentType = "application/json";
                 properties.DeliveryMode = 2;
                 properties.Type = EventTypeCancel;
@@ -64,14 +72,14 @@ public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
                 var body = Encoding.UTF8.GetBytes(
                     JsonSerializer.Serialize(new { runId }, SerializerOptions));
 
-                channel.BasicPublish(
+                channel.Model.BasicPublish(
                     exchange: _options.GetCancelExchangeName(group),
                     routingKey: string.Empty,
                     mandatory: false,
                     basicProperties: properties,
                     body: body);
 
-                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                if (!channel.Model.WaitForConfirms(_options.PublisherConfirmTimeout))
                 {
                     throw new IOException(
                         $"RabbitMQ did not confirm KubeJob cancel signal for run '{runId}' " +
@@ -80,7 +88,7 @@ public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
             }
             catch
             {
-                ResetConnection();
+                DisposeChannel(group, channel);
                 throw;
             }
         }
@@ -90,20 +98,28 @@ public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
 
     public void Dispose()
     {
-        lock (_gate)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            ResetConnection();
+            return;
         }
+
+        foreach (var entry in _channels)
+        {
+            DisposeChannel(entry.Key, entry.Value);
+        }
+        _channels.Clear();
     }
 
-    private IModel EnsureChannel(string group)
+    private GroupChannel GetOrCreateChannel(string group)
     {
-        if (_channel is { IsOpen: true } && string.Equals(_declaredGroup, group, StringComparison.Ordinal))
+        if (_channels.TryGetValue(group, out var existing) && existing.IsOpen)
         {
-            return _channel;
+            return existing;
         }
 
-        ResetConnection();
+        // Remove any stale entry so concurrent creators race on a fresh slot.
+        _channels.TryRemove(group, out _);
+
         var factory = new ConnectionFactory
         {
             Uri = new Uri(_options.ConnectionString, UriKind.Absolute),
@@ -111,42 +127,60 @@ public sealed class RabbitMqCancelPublisher : ICancelPublisher, IDisposable
             TopologyRecoveryEnabled = true
         };
 
-        _connection = factory.CreateConnection("KubeJob.CancelPublisher");
-        _channel = _connection.CreateModel();
+        var connection = factory.CreateConnection("KubeJob.CancelPublisher");
+        var model = connection.CreateModel();
 
         var exchangeName = _options.GetCancelExchangeName(group);
-        _channel.ExchangeDeclare(
+        model.ExchangeDeclare(
             exchange: exchangeName,
             type: ExchangeType.Fanout,
             durable: true,
             autoDelete: false,
             arguments: null);
 
-        _channel.ConfirmSelect();
-        _declaredGroup = group;
-        return _channel;
+        model.ConfirmSelect();
+
+        var channel = new GroupChannel(connection, model);
+        return _channels.GetOrAdd(group, channel);
     }
 
-    private void ResetConnection()
+    private void DisposeChannel(string group, GroupChannel channel)
     {
-        try
+        _channels.TryRemove(group, out _);
+        channel.Dispose();
+    }
+
+    private sealed class GroupChannel : IDisposable
+    {
+        public GroupChannel(IConnection connection, IModel model)
         {
-            _channel?.Dispose();
-        }
-        catch
-        {
+            Connection = connection;
+            Model = model;
+            Gate = new object();
         }
 
-        try
-        {
-            _connection?.Dispose();
-        }
-        catch
-        {
-        }
+        public IConnection Connection { get; }
+        public IModel Model { get; }
+        public object Gate { get; }
+        public bool IsOpen => Model.IsOpen && Connection.IsOpen;
 
-        _channel = null;
-        _connection = null;
-        _declaredGroup = null;
+        public void Dispose()
+        {
+            try
+            {
+                Model?.Dispose();
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Connection?.Dispose();
+            }
+            catch
+            {
+            }
+        }
     }
 }

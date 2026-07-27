@@ -7,9 +7,12 @@ using Microsoft.Extensions.Options;
 namespace KubeJob.Server.Runtime;
 
 /// <summary>
-/// Default notifier for database-polling deployments. MQ packages replace this service.
+/// Default notifier for database-polling deployments. MQ packages replace
+/// this service via <see cref="KubeJob.Server.Runtime.IWorkAvailableNotifier"/>.
+/// The no-op name reflects the fact that polling workers discover claimable
+/// Runs through the control plane, not via a wake signal.
 /// </summary>
-public sealed class PollingWorkAvailableNotifier : IWorkAvailableNotifier
+public sealed class NoopWorkAvailableNotifier : IWorkAvailableNotifier
 {
     public ValueTask PublishAsync(
         WorkAvailableSignal signal,
@@ -84,11 +87,7 @@ public sealed class OutboxPublisherService : BackgroundService
             var dispatchedAny = false;
             try
             {
-                var results = await DispatchParallelAsync(stoppingToken);
-                var result = new OutboxDispatchBatch(
-                    results.SelectMany(x => x.DispatchedIds).ToArray(),
-                    results.SelectMany(x => x.FailedIds).ToArray(),
-                    results.SelectMany(x => x.Abandoned).ToArray());
+                var result = await DispatchParallelAsync(stoppingToken);
 
                 dispatchedAny = result.DispatchedIds.Count > 0;
 
@@ -130,17 +129,85 @@ public sealed class OutboxPublisherService : BackgroundService
         }
     }
 
-    private Task<OutboxDispatchBatch[]> DispatchParallelAsync(
+    private async Task<OutboxDispatchBatch> DispatchParallelAsync(
         CancellationToken cancellationToken)
     {
-        var workerCount = Math.Min(_options.OutboxBatchSize, _options.OutboxPublishConcurrency);
-        return Task.WhenAll(Enumerable.Range(0, workerCount).Select(_ =>
-            _store.DispatchOnceAsync(
-                _options.OutboxClaimDuration,
-                _options.OutboxFailureDelay,
-                1,
-                DispatchOneAsync,
-                cancellationToken).AsTask()));
+        var workerCount = Math.Clamp(_options.OutboxPublishConcurrency, 1, 32);
+        var perWorkerBatch = Math.Max(1, _options.OutboxBatchSize / workerCount);
+
+        var workers = Enumerable.Range(0, workerCount)
+            .Select(_ => Task.Run(
+                () => DispatchWorkerLoopAsync(perWorkerBatch, cancellationToken),
+                cancellationToken))
+            .ToArray();
+
+        OutboxDispatchBatch[] results;
+        try
+        {
+            results = await Task.WhenAll(workers);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            results = Array.Empty<OutboxDispatchBatch>();
+        }
+
+        var dispatchedIds = results.SelectMany(r => r.DispatchedIds).ToArray();
+        var failedIds = results.SelectMany(r => r.FailedIds).ToArray();
+        var abandonedIds = results.SelectMany(r => r.Abandoned).ToArray();
+        return new OutboxDispatchBatch(dispatchedIds, failedIds, abandonedIds);
+    }
+
+    private async Task<OutboxDispatchBatch> DispatchWorkerLoopAsync(
+        int batchSize,
+        CancellationToken cancellationToken)
+    {
+        var totalDispatched = new List<string>(batchSize);
+        var totalFailed = new List<string>(batchSize);
+        var totalAbandoned = new List<string>(batchSize);
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            OutboxDispatchBatch batch;
+            try
+            {
+                batch = await _store.DispatchOnceAsync(
+                    _options.OutboxClaimDuration,
+                    _options.OutboxFailureDelay,
+                    batchSize,
+                    DispatchOneAsync,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            if (batch.DispatchedIds.Count > 0)
+            {
+                totalDispatched.AddRange(batch.DispatchedIds);
+            }
+
+            if (batch.FailedIds.Count > 0)
+            {
+                totalFailed.AddRange(batch.FailedIds);
+            }
+
+            if (batch.Abandoned.Count > 0)
+            {
+                totalAbandoned.AddRange(batch.Abandoned);
+            }
+
+            // The store drained the queue for this iteration; yield so other
+            // workers can take a turn before the outer poll cadence kicks in.
+            if (batch.DispatchedIds.Count == 0
+                && batch.FailedIds.Count == 0
+                && batch.Abandoned.Count == 0)
+            {
+                break;
+            }
+        }
+
+        return new OutboxDispatchBatch(totalDispatched, totalFailed, totalAbandoned);
     }
 
     private async ValueTask DispatchOneAsync(

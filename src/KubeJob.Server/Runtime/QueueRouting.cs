@@ -20,9 +20,28 @@ public interface IExecutionGroupResolver
 
 public sealed class DefaultExecutionGroupResolver : IExecutionGroupResolver
 {
+    private readonly IOptions<QueueDeliveryOptions> _options;
+
+    public DefaultExecutionGroupResolver(IOptions<QueueDeliveryOptions> options)
+    {
+        _options = options;
+    }
+
     public string Resolve(string logicalQueue)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
+        var options = _options.Value;
+        if (options.QueueGroups.TryGetValue(logicalQueue, out var configured)
+            && !string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.DefaultExecutionGroup))
+        {
+            return options.DefaultExecutionGroup!;
+        }
+
         return "default";
     }
 }
@@ -39,7 +58,25 @@ public sealed class QueueDeliveryOptions
     public Dictionary<string, ExecutionDeliveryProfile> QueueProfiles { get; } =
         new(StringComparer.Ordinal);
 
-    internal void Validate()
+    /// <summary>
+    /// Optional per-queue execution group mapping. When a logical queue is
+    /// routed to BrokerDispatch, this group's identifier is embedded in the
+    /// cancel outbox row so transport adapters (RabbitMQ, NATS, etc.) can
+    /// fan out a per-group cancel signal. Queues not present here fall back
+    /// to <see cref="DefaultExecutionGroup"/>, which itself defaults to
+    /// <c>"default"</c>.
+    /// </summary>
+    public Dictionary<string, string> QueueGroups { get; } =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Default execution group used when a logical queue is not listed in
+    /// <see cref="QueueGroups"/>. Leaving this unset preserves the historical
+    /// single-group behavior (group = <c>"default"</c>).
+    /// </summary>
+    public string? DefaultExecutionGroup { get; set; }
+
+    public void Validate()
     {
         if (!Enum.IsDefined(DefaultProfile))
         {
@@ -63,6 +100,25 @@ public sealed class QueueDeliveryOptions
         {
             throw new InvalidOperationException(
                 "Queue delivery policy contains an unsupported execution profile.");
+        }
+
+        if (QueueGroups.Any(entry => string.IsNullOrWhiteSpace(entry.Key)))
+        {
+            throw new InvalidOperationException(
+                "Queue execution group policy cannot contain an empty logical queue.");
+        }
+
+        if (QueueGroups.Any(entry => string.IsNullOrWhiteSpace(entry.Value)))
+        {
+            throw new InvalidOperationException(
+                "Queue execution group policy cannot contain an empty group identifier.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(DefaultExecutionGroup)
+            && DefaultExecutionGroup!.Length > 200)
+        {
+            throw new InvalidOperationException(
+                "DefaultExecutionGroup cannot exceed 200 characters.");
         }
     }
 }

@@ -306,6 +306,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         var results = new Dictionary<int, CompleteAttemptResponse>();
         var seenAttempts = new HashSet<string>(StringComparer.Ordinal);
+        var itemCount = items.Count;
+        var attemptIndexById = new Dictionary<string, int>(itemCount, StringComparer.Ordinal);
+        for (var index = 0; index < itemCount; index++)
+        {
+            attemptIndexById.TryAdd(items[index].request.AttemptId, index);
+        }
         var valid = new List<(CompleteAttemptRequest request, CompletionStateRow state)>();
         foreach (var item in items)
         {
@@ -365,8 +371,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
             foreach (var item in valid)
             {
-                var index = items.First(x => x.request.AttemptId == item.request.AttemptId).index;
-                results[index] = new CompleteAttemptResponse(
+                if (!attemptIndexById.TryGetValue(item.request.AttemptId, out var originalIndex))
+                {
+                    continue;
+                }
+
+                results[originalIndex] = new CompleteAttemptResponse(
                     true,
                     item.state.CancelRequested ? JobPhase.Canceled : JobPhase.Succeeded,
                     false);

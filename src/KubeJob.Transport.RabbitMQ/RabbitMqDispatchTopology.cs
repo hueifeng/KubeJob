@@ -38,6 +38,8 @@ public sealed class RabbitMqDispatchTopology : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        const int MaxAttempts = 5;
+        var attempt = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -51,9 +53,21 @@ public sealed class RabbitMqDispatchTopology : IHostedService
             }
             catch (Exception exception)
             {
+                attempt++;
+                if (attempt >= MaxAttempts)
+                {
+                    _logger.LogError(
+                        exception,
+                        "RabbitMQ KubeJob topology declaration failed after {Attempts} attempts; aborting startup",
+                        attempt);
+                    throw;
+                }
+
                 _logger.LogWarning(
                     exception,
-                    "RabbitMQ KubeJob topology declaration failed; retrying in {ReconnectDelay}",
+                    "RabbitMQ KubeJob topology declaration failed (attempt {Attempt}/{Max}); retrying in {ReconnectDelay}",
+                    attempt,
+                    MaxAttempts,
                     _options.ReconnectDelay);
                 await Task.Delay(_options.ReconnectDelay, cancellationToken);
             }

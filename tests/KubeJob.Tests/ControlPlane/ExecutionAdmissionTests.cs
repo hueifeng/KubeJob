@@ -9,7 +9,7 @@ namespace KubeJob.Tests.ControlPlane;
 public sealed class ExecutionAdmissionTests
 {
     [Fact]
-    public async Task Admission_claims_the_envelope_run_and_reports_terminal_duplicates()
+    public async Task Admission_claims_the_envelope_run_and_retries_duplicates_until_terminal()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -57,7 +57,7 @@ public sealed class ExecutionAdmissionTests
             new[] { "orders.push" },
             new[] { "order-push-2" }));
 
-        duplicate.Status.Should().Be(ExecutionAdmissionStatus.AlreadyTerminal);
+        duplicate.Status.Should().Be(ExecutionAdmissionStatus.Retry);
         duplicate.Reason.Should().Be("run_already_running");
     }
 }

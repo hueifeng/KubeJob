@@ -40,7 +40,7 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<CompletionBatcher>();
         services.TryAddSingleton<WorkerControlPlane>();
         services.TryAddSingleton<ScheduleControlPlane>();
-        services.TryAddSingleton<IWorkAvailableNotifier, PollingWorkAvailableNotifier>();
+        services.TryAddSingleton<IWorkAvailableNotifier, NoopWorkAvailableNotifier>();
         services.TryAddSingleton<ICancelPublisher, NoopCancelPublisher>();
         services.AddOptions<QueueDeliveryOptions>();
         services.TryAddSingleton<IQueueRouter, ConfigurationQueueRouter>();
