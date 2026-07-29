@@ -12,6 +12,9 @@ using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KubeJob.Server.Extensions;
 
@@ -66,6 +69,12 @@ public static class KubeJobServerExtensions
         services.AddHostedService<LeaseReaperService>();
         services.AddHostedService<OutboxPublisherService>();
         services.AddHostedService<RuntimeRetentionService>();
+        var clientPolicy = options.GetNormalizedClientAuthorizationPolicy();
+        var workerPolicy = options.GetNormalizedWorkerAuthorizationPolicy();
+        services.AddHostedService(sp => new KubeJobAuthorizationPolicyWarningService(
+            new[] { ("client", clientPolicy), ("worker", workerPolicy) },
+            sp.GetService<ILogger<KubeJobAuthorizationPolicyWarningService>>()
+                ?? NullLogger<KubeJobAuthorizationPolicyWarningService>.Instance));
         return services;
     }
 
@@ -137,6 +146,11 @@ public static class KubeJobServerExtensions
                 options.GetNormalizedAuthorizationPolicy()));
         })
         .AddApplicationPart(typeof(DashboardController).Assembly);
+        var dashboardPolicy = options.GetNormalizedAuthorizationPolicy();
+        services.AddHostedService(sp => new KubeJobAuthorizationPolicyWarningService(
+            new[] { ("dashboard", dashboardPolicy) },
+            sp.GetService<ILogger<KubeJobAuthorizationPolicyWarningService>>()
+                ?? NullLogger<KubeJobAuthorizationPolicyWarningService>.Instance));
         return services;
     }
 
@@ -222,4 +236,44 @@ public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
             controller.Filters.Add(new AuthorizeFilter(_authorizationPolicy));
         }
     }
+}
+
+/// <summary>
+/// Emits a one-time startup warning when a KubeJob surface has no
+/// authorization policy configured. Authorization remains opt-in for
+/// backward compatibility, but an unconfigured production deployment would
+/// otherwise expose job submission, worker control, or the dashboard
+/// anonymously with no signal to the operator.
+/// </summary>
+internal sealed class KubeJobAuthorizationPolicyWarningService : IHostedService
+{
+    private readonly (string Surface, string? Policy)[] _surfaces;
+    private readonly ILogger<KubeJobAuthorizationPolicyWarningService> _logger;
+
+    public KubeJobAuthorizationPolicyWarningService(
+        (string Surface, string? Policy)[] surfaces,
+        ILogger<KubeJobAuthorizationPolicyWarningService> logger)
+    {
+        _surfaces = surfaces;
+        _logger = logger;
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        foreach (var (surface, policy) in _surfaces)
+        {
+            if (policy is null)
+            {
+                _logger.LogWarning(
+                    "KubeJob {Surface} endpoints have no authorization policy configured; " +
+                    "they are reachable anonymously. Configure the corresponding policy option " +
+                    "before deploying to production.",
+                    surface);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

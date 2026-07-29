@@ -107,11 +107,16 @@ public sealed class ScheduleControlPlane
                 DateTimeOffset.UtcNow);
         }
 
+        // Enforce the read-then-write as a single optimistic-concurrency
+        // transition even when the caller didn't supply a version: without
+        // this, a concurrent UpsertCronAsync landing between the read above
+        // and this write would be silently clobbered by a NextFireAt computed
+        // from the stale CronExpression we just read.
         return await _store.SetEnabledAsync(
             scheduleId,
             enabled,
             nextFireAt,
-            expectedVersion,
+            expectedVersion ?? schedule.Version,
             cancellationToken: cancellationToken);
     }
 

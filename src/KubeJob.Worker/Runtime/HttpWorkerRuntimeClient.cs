@@ -16,7 +16,15 @@ public sealed class HttpWorkerRuntimeClient : IWorkerRuntimeClient, IDisposable
     {
         var workerOptions = options.Value;
         workerOptions.Validate();
-        _httpClient = new HttpClient
+        var handler = new SocketsHttpHandler
+        {
+            // Without a bounded lifetime, this singleton client would keep
+            // reusing connections to a control-plane endpoint that has since
+            // moved (pod restart/rescale behind a load balancer), silently
+            // failing claims/heartbeats/lease renewals until process restart.
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+        };
+        _httpClient = new HttpClient(handler)
         {
             BaseAddress = new Uri(workerOptions.ServerEndpoint, UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(30)

@@ -23,6 +23,11 @@ public static class UnifiedHostingExtensions
         services.AddKubeJobServer(configureServer);
         services.UseInProcessKubeJobWorkerTransport();
         services.AddKubeJobWorker(configureWorker);
+
+        // The control plane and Worker share one container here, so the
+        // Outbox's work-available hint can pulse the Worker's claim trigger
+        // directly instead of leaving Pull-mode Workers on polling alone.
+        services.UseKubeJobWorkAvailableNotifier<InProcessWorkAvailableNotifier>();
         return services;
     }
 }

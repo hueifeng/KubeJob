@@ -294,9 +294,17 @@ public sealed class WorkerRuntimeService : BackgroundService
         using var writeCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             owned.CancellationSource.Token);
+        // Once the job is handed to a consumer, only ConsumeAsync's finally may
+        // release/untrack the attempt. If the caller's token cancels while the
+        // handler is still running (e.g. an unrelated HTTP request timeout),
+        // this method must not stop tracking the attempt: doing so would stop
+        // lease renewal for a still-executing attempt and let its lease expire
+        // out from under it, fencing violation risk.
+        var dispatched = false;
         try
         {
             await _channel.Writer.WriteAsync(job, writeCts.Token);
+            dispatched = true;
             var completionReported = await owned.Completion.Task.WaitAsync(cancellationToken);
             return new ExecutionEnvelopeProcessingResult(
                 completionReported
@@ -312,7 +320,10 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
         finally
         {
-            ReleaseOwnedAttempt(job.AttemptId);
+            if (!dispatched)
+            {
+                ReleaseOwnedAttempt(job.AttemptId);
+            }
         }
     }
 
