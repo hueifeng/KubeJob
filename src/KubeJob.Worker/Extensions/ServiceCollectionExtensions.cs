@@ -3,6 +3,7 @@ using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
 using KubeJob.Worker.Runtime;
+using KubeJob.Worker.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -20,8 +21,10 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
+        services.AddMetrics();
         services.TryAddSingleton<JobHandlerRegistry>();
         services.AddKubeJobWorkerClaimTrigger();
+        services.TryAddSingleton<KubeJobWorkerMetrics>();
         services.TryAddSingleton<HttpWorkerRuntimeClient>();
         services.TryAddSingleton<IWorkerRuntimeClient>(sp =>
             sp.GetRequiredService<HttpWorkerRuntimeClient>());

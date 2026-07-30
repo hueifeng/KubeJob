@@ -1,5 +1,6 @@
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
+using KubeJob.Transport.RabbitMQ.Telemetry;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -48,8 +49,9 @@ public static class RabbitMqNotificationExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
-        services.Replace(ServiceDescriptor.Singleton<IExecutionGroupResolver, RabbitMqExecutionGroupResolver>());
-        services.Replace(ServiceDescriptor.Singleton<IExecutionDispatcher, RabbitMqExecutionDispatcher>());
+        services.AddMetrics();
+        services.TryAddSingleton<KubeJobRabbitMqMetrics>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, RabbitMqExecutionDispatcher>());
         return services;
     }
 

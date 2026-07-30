@@ -36,12 +36,18 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var now = await GetDatabaseNowAsync(connection, transaction, cancellationToken);
+        var target = command.DeliveryTarget
+            ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null);
+        target.Validate();
         var run = new JobRunRecord
         {
             Id = NewId(),
             JobKey = command.JobKey,
             PayloadJson = command.PayloadJson,
             Queue = command.Queue,
+            DeliveryProfile = target.Profile,
+            ExecutionLane = target.ExecutionLane,
+            TransportId = target.TransportId,
             Priority = command.Priority,
             Phase = JobPhase.Pending,
             AvailableAt = command.AvailableAt.ToUniversalTime(),
@@ -54,11 +60,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         var inserted = await connection.ExecuteAsync(new CommandDefinition(@"
             INSERT INTO Kj2_JobRuns
-                (Id, JobKey, PayloadJson, Queue, Priority, Phase, AvailableAt,
+                (Id, JobKey, PayloadJson, Queue, DeliveryProfile, ExecutionLane, TransportId, Priority, Phase, AvailableAt,
                  CreatedAt, AttemptCount, MaxAttempts, TimeoutSeconds,
                  IdempotencyKey, ConcurrencyKey, CancelRequested, Version)
             VALUES
-                (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @Priority,
+                (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @DeliveryProfile, @ExecutionLane, @TransportId, @Priority,
                  @Phase, @AvailableAt, @CreatedAt, 0, @MaxAttempts,
                  @TimeoutSeconds, @IdempotencyKey, @ConcurrencyKey, FALSE, 0)
             ON CONFLICT (IdempotencyKey) DO NOTHING;",
@@ -68,6 +74,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.JobKey,
                 run.PayloadJson,
                 run.Queue,
+                DeliveryProfile = (int)run.DeliveryProfile,
+                run.ExecutionLane,
+                run.TransportId,
                 run.Priority,
                 Phase = (int)run.Phase,
                 run.AvailableAt,
@@ -102,7 +111,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             OutboxEventTypes.WorkAvailable,
             JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
             run.AvailableAt,
-            cancellationToken);
+            cancellationToken,
+            target);
         await transaction.CommitAsync(cancellationToken);
         return new SubmitJobResult(run, Existing: false);
     }

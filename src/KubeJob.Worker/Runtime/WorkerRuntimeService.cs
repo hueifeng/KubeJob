@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading.Channels;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
+using KubeJob.Worker.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,6 +25,7 @@ public sealed class WorkerRuntimeService : BackgroundService
     private readonly IWorkerRuntimeClient _runtimeClient;
     private readonly IWorkerClaimTrigger _claimTrigger;
     private readonly KubeJobWorkerOptions _options;
+    private readonly KubeJobWorkerMetrics? _metrics;
     private readonly ILogger<WorkerRuntimeService> _logger;
     private Channel<ClaimedJob> _channel;
     private readonly ConcurrentDictionary<string, OwnedAttempt> _owned = new(StringComparer.Ordinal);
@@ -41,13 +44,15 @@ public sealed class WorkerRuntimeService : BackgroundService
         IWorkerRuntimeClient runtimeClient,
         IWorkerClaimTrigger claimTrigger,
         IOptions<KubeJobWorkerOptions> options,
-        ILogger<WorkerRuntimeService> logger)
+        ILogger<WorkerRuntimeService> logger,
+        KubeJobWorkerMetrics? metrics = null)
     {
         _scopeFactory = scopeFactory;
         _registry = registry;
         _runtimeClient = runtimeClient;
         _claimTrigger = claimTrigger;
         _options = options.Value;
+        _metrics = metrics;
         _logger = logger;
         _options.Validate();
 
@@ -144,6 +149,13 @@ public sealed class WorkerRuntimeService : BackgroundService
         {
             sessionLifetime.Cancel();
             _channel.Writer.TryComplete();
+            foreach (var owned in _owned.Values
+                         .Where(owned => string.Equals(owned.SessionId, _sessionId, StringComparison.Ordinal))
+                         .ToArray())
+            {
+                owned.Completion.TrySetResult(false);
+                ReleaseOwnedAttempt(owned.Job.AttemptId);
+            }
             if (!_sessionReady.Task.IsCompleted)
             {
                 _sessionReady.TrySetCanceled();
@@ -278,7 +290,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         ClaimedJob job,
         CancellationToken cancellationToken)
     {
-        var owned = new OwnedAttempt(job, _sessionId);
+        var owned = new OwnedAttempt(job, _sessionId, WorkerExecutionKind.BrokerDispatch);
         if (!_owned.TryAdd(job.AttemptId, owned))
         {
             owned.CancellationSource.Dispose();
@@ -288,6 +300,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
 
         Interlocked.Increment(ref _reservedSlots);
+        _metrics?.AttemptStarted(owned.ExecutionKind);
         // Combine the session lifetime with the caller's token so a broker-side
         // cancellation or worker drain can unblock the write even when the
         // caller passed a token that hasn't observed the session fence yet.
@@ -334,11 +347,16 @@ public sealed class WorkerRuntimeService : BackgroundService
         await SendHeartbeatBestEffortAsync(WorkerSessionState.Draining, cancellationToken);
 
         var deadline = DateTimeOffset.UtcNow.Add(_options.DrainTimeout);
-        while (!_owned.IsEmpty
-               && DateTimeOffset.UtcNow < deadline
-               && !cancellationToken.IsCancellationRequested)
+        while (!_owned.IsEmpty && DateTimeOffset.UtcNow < deadline)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
 
         if (!_owned.IsEmpty)
@@ -346,7 +364,7 @@ public sealed class WorkerRuntimeService : BackgroundService
             CancelOwnedAttempts();
         }
 
-        await CloseSessionBestEffortAsync(cancellationToken);
+        await CloseSessionBestEffortAsync(CancellationToken.None);
         await base.StopAsync(cancellationToken);
     }
 
@@ -432,7 +450,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                         continue;
                     }
 
-                    var owned = new OwnedAttempt(job, _sessionId);
+                    var owned = new OwnedAttempt(job, _sessionId, WorkerExecutionKind.Pull);
                     if (!_owned.TryAdd(job.AttemptId, owned))
                     {
                         owned.CancellationSource.Dispose();
@@ -440,6 +458,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                     }
 
                     Interlocked.Increment(ref _reservedSlots);
+                    _metrics?.AttemptStarted(owned.ExecutionKind);
                     try
                     {
                         await _channel.Writer.WriteAsync(job, stoppingToken);
@@ -480,6 +499,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
 
                 var completionReported = false;
+                var handlerStartedAt = 0L;
                 try
                 {
                     if (!_registry.TryGet(job.JobKey, out var handler))
@@ -521,12 +541,16 @@ public sealed class WorkerRuntimeService : BackgroundService
                         job.AttemptNumber,
                         job.JobKey);
 
+                    handlerStartedAt = _metrics?.IsHandlerDurationEnabled == true
+                        ? Stopwatch.GetTimestamp()
+                        : 0L;
                     await handler.InvokeAsync(
                         scope.ServiceProvider,
                         job.PayloadJson,
                         context,
                         executionSource.Token);
 
+                    RecordHandlerDuration(handlerStartedAt, "succeeded");
                     completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.Succeeded,
@@ -536,6 +560,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
                 catch (OperationCanceledException) when (owned.CancellationSource.IsCancellationRequested)
                 {
+                    RecordHandlerDuration(handlerStartedAt, "canceled");
                     completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.Canceled,
@@ -545,6 +570,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
                 catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                 {
+                    RecordHandlerDuration(handlerStartedAt, "timed_out");
                     completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.TimedOut,
@@ -554,6 +580,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
                 catch (System.Text.Json.JsonException ex)
                 {
+                    RecordHandlerDuration(handlerStartedAt, "payload_invalid");
                     completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.PermanentFailure,
@@ -564,6 +591,7 @@ public sealed class WorkerRuntimeService : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "KubeJob attempt {AttemptId} failed", job.AttemptId);
+                    RecordHandlerDuration(handlerStartedAt, "failed");
                     completionReported = await ReportAsync(
                         job,
                         JobAttemptOutcome.RetryableFailure,
@@ -739,6 +767,14 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
     }
 
+    private void RecordHandlerDuration(long startedAt, string outcome)
+    {
+        if (startedAt != 0)
+        {
+            _metrics?.HandlerCompleted(Stopwatch.GetElapsedTime(startedAt), outcome);
+        }
+    }
+
     private void ReleaseOwnedAttempt(string attemptId)
     {
         if (!_owned.TryRemove(attemptId, out var removed))
@@ -747,6 +783,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
 
         removed.CancellationSource.Dispose();
+        _metrics?.AttemptFinished(removed.ExecutionKind);
         if (string.Equals(removed.SessionId, _sessionId, StringComparison.Ordinal))
         {
             Interlocked.Decrement(ref _reservedSlots);
@@ -856,15 +893,18 @@ public sealed class WorkerRuntimeService : BackgroundService
 
     private sealed class OwnedAttempt
     {
-        public OwnedAttempt(ClaimedJob job, string sessionId)
+        public OwnedAttempt(ClaimedJob job, string sessionId, WorkerExecutionKind executionKind)
         {
             Job = job;
             SessionId = sessionId;
+            ExecutionKind = executionKind;
         }
 
         public ClaimedJob Job { get; }
 
         public string SessionId { get; }
+
+        public WorkerExecutionKind ExecutionKind { get; }
 
         public CancellationTokenSource CancellationSource { get; } = new();
 

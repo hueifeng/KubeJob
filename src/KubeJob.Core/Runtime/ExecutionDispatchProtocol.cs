@@ -11,6 +11,42 @@ public enum ExecutionDeliveryProfile
 }
 
 /// <summary>
+/// A durable, transport-neutral destination selected by deployment policy when
+/// a Run is created. An execution lane is a logical Worker eligibility and
+/// isolation boundary; it is not a RabbitMQ, Kafka, or RocketMQ group name.
+/// </summary>
+public sealed record DeliveryTarget(
+    ExecutionDeliveryProfile Profile,
+    string ExecutionLane,
+    string? TransportId)
+{
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(ExecutionLane))
+        {
+            throw new InvalidOperationException("KubeJob execution lane is required.");
+        }
+
+        if (Profile == ExecutionDeliveryProfile.Pull)
+        {
+            if (!string.IsNullOrWhiteSpace(TransportId))
+            {
+                throw new InvalidOperationException("Pull delivery cannot specify a transport ID.");
+            }
+
+            return;
+        }
+
+        if (Profile != ExecutionDeliveryProfile.BrokerDispatch
+            || string.IsNullOrWhiteSpace(TransportId))
+        {
+            throw new InvalidOperationException(
+                "Broker dispatch requires a supported delivery profile and transport ID.");
+        }
+    }
+}
+
+/// <summary>
 /// A transport-neutral carrier for an already accepted logical Run. The
 /// envelope is not execution authority; the Worker still needs admission and
 /// a valid lease from the control plane.
@@ -19,9 +55,10 @@ public sealed record ExecutionEnvelope(
     int SchemaVersion,
     string EventId,
     string Queue,
+    string ExecutionLane,
     string RunId)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public static ExecutionEnvelope FromWorkAvailableSignal(
         WorkAvailableSignal signal)
@@ -31,17 +68,21 @@ public sealed record ExecutionEnvelope(
             CurrentSchemaVersion,
             signal.EventId,
             signal.Queue,
+            signal.ExecutionLane,
             signal.RunId);
     }
 }
 
 /// <summary>
-/// Publishes execution envelopes to a broker-backed execution adapter. The
-/// adapter must not treat publication as a lease or bypass completion fencing.
+/// Publishes execution envelopes for one named transport. Adapter packages own
+/// physical topics, queues, confirms, commits, and retry mechanics; they never
+/// own KubeJob Run, Attempt, lease, or completion state.
 /// </summary>
-public interface IExecutionDispatcher
+public interface IExecutionTransport
 {
-    ValueTask DispatchAsync(
+    string TransportId { get; }
+
+    ValueTask PublishAsync(
         ExecutionEnvelope envelope,
         CancellationToken cancellationToken);
 }

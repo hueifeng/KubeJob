@@ -329,8 +329,15 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
     {
         lock (gate)
         {
+            var messageId = delivery.BasicProperties.MessageId;
             BasicReturnEventArgs? returned = null;
-            EventHandler<BasicReturnEventArgs> returnHandler = (_, args) => returned = args;
+            EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
+            {
+                if (string.Equals(args.BasicProperties.MessageId, messageId, StringComparison.Ordinal))
+                {
+                    returned = args;
+                }
+            };
             channel.BasicReturn += returnHandler;
             try
             {

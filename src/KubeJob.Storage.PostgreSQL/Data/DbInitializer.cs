@@ -6,7 +6,7 @@ namespace KubeJob.Storage.PostgreSQL.Data;
 
 public sealed class DbInitializer : IStorageInitializer
 {
-    private const int CurrentSchemaVersion = 1;
+    private const int CurrentSchemaVersion = 2;
 
     private readonly string _connectionString;
 
@@ -43,6 +43,9 @@ public sealed class DbInitializer : IStorageInitializer
                 JobKey VARCHAR(300) NOT NULL,
                 PayloadJson JSONB NOT NULL,
                 Queue VARCHAR(100) NOT NULL,
+                DeliveryProfile INTEGER NOT NULL DEFAULT 0,
+                ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                TransportId VARCHAR(100),
                 Priority INTEGER NOT NULL DEFAULT 0,
                 Phase INTEGER NOT NULL,
                 AvailableAt TIMESTAMPTZ NOT NULL,
@@ -197,6 +200,9 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE TABLE IF NOT EXISTS Kj2_Outbox (
                 Id VARCHAR(64) PRIMARY KEY,
                 Queue VARCHAR(100) NOT NULL,
+                DeliveryProfile INTEGER NOT NULL DEFAULT 0,
+                ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                TransportId VARCHAR(100),
                 EventType VARCHAR(100) NOT NULL,
                 PayloadJson JSONB NOT NULL,
                 State INTEGER NOT NULL,
@@ -229,6 +235,20 @@ public sealed class DbInitializer : IStorageInitializer
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (@Version, CURRENT_TIMESTAMP);",
                     new { Version = CurrentSchemaVersion });
+            }
+            else if (appliedVersion == 1)
+            {
+                connection.Execute(@"
+                    ALTER TABLE Kj2_JobRuns
+                        ADD COLUMN IF NOT EXISTS DeliveryProfile INTEGER NOT NULL DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                        ADD COLUMN IF NOT EXISTS TransportId VARCHAR(100);
+                    ALTER TABLE Kj2_Outbox
+                        ADD COLUMN IF NOT EXISTS DeliveryProfile INTEGER NOT NULL DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                        ADD COLUMN IF NOT EXISTS TransportId VARCHAR(100);");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (2, CURRENT_TIMESTAMP);");
             }
             else if (appliedVersion != CurrentSchemaVersion)
             {

@@ -2,6 +2,8 @@ using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
+using KubeJob.Core.Telemetry;
+using KubeJob.ControlPlane.Telemetry;
 using KubeJob.Server.Runtime;
 using Microsoft.Extensions.Options;
 
@@ -20,19 +22,22 @@ public sealed class JobControlPlane
     private readonly IQueueRouter _queueRouter;
     private readonly IExecutionGroupResolver _executionGroupResolver;
     private readonly JobRuntimeOptions _options;
+    private readonly KubeJobControlPlaneMetrics? _metrics;
 
     public JobControlPlane(
         IJobSubmissionStore submissions,
         IJobQueryStore queries,
         IQueueRouter queueRouter,
         IExecutionGroupResolver executionGroupResolver,
-        IOptions<JobRuntimeOptions> options)
+        IOptions<JobRuntimeOptions> options,
+        KubeJobControlPlaneMetrics? metrics = null)
     {
         _submissions = submissions;
         _queries = queries;
         _queueRouter = queueRouter;
         _executionGroupResolver = executionGroupResolver;
         _options = options.Value;
+        _metrics = metrics;
     }
 
     public async ValueTask<JobSubmissionReceipt> SubmitAsync(
@@ -40,6 +45,8 @@ public sealed class JobControlPlane
         CancellationToken cancellationToken = default)
     {
         ValidateSubmission(request);
+        using var activity = KubeJobTelemetry.ActivitySource.StartActivity("kubejob.submit");
+        var route = _queueRouter.Resolve(request.Queue);
 
         var result = await _submissions.SubmitAsync(
             new SubmitJobCommand(
@@ -51,8 +58,15 @@ public sealed class JobControlPlane
                 request.IdempotencyKey,
                 request.ConcurrencyKey,
                 request.MaxAttempts,
-                request.TimeoutSeconds),
+                request.TimeoutSeconds,
+                DeliveryTarget: route.Target),
             cancellationToken);
+
+        _metrics?.SubmissionCompleted(result.Existing);
+        if (activity?.IsAllDataRequested == true)
+        {
+            activity.SetTag("kubejob.idempotency.existing", result.Existing);
+        }
 
         return new JobSubmissionReceipt(new JobHandle(result.Run.Id), result.Existing);
     }
@@ -78,7 +92,7 @@ public sealed class JobControlPlane
         {
             var run = await _queries.GetRunAsync(runId, cancellationToken);
             if (run is not null
-                && _queueRouter.Resolve(run.Queue).Profile == ExecutionDeliveryProfile.BrokerDispatch)
+                && _queueRouter.Resolve(run.Queue).Target.Profile == ExecutionDeliveryProfile.BrokerDispatch)
             {
                 group = _executionGroupResolver.Resolve(run.Queue);
             }

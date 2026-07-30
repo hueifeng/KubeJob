@@ -10,13 +10,15 @@ public sealed class QueueRoutingTests
     [Fact]
     public void Unconfigured_logical_queue_uses_pull_profile()
     {
+        var options = Options.Create(new QueueDeliveryOptions());
         var router = new ConfigurationQueueRouter(
-            Options.Create(new QueueDeliveryOptions()));
+            options,
+            new DefaultExecutionGroupResolver(options));
 
         var route = router.Resolve("orders.push");
 
         route.Queue.Should().Be("orders.push");
-        route.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
     }
 
     [Fact]
@@ -24,11 +26,15 @@ public sealed class QueueRoutingTests
     {
         var options = new QueueDeliveryOptions();
         options.QueueProfiles["orders.push"] = ExecutionDeliveryProfile.BrokerDispatch;
-        var router = new ConfigurationQueueRouter(Options.Create(options));
+        options.DefaultTransportId = "default";
+        var optionsWrapper = Options.Create(options);
+        var router = new ConfigurationQueueRouter(
+            optionsWrapper,
+            new DefaultExecutionGroupResolver(optionsWrapper));
 
         var route = router.Resolve("orders.push");
 
-        route.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
     }
 
     [Fact]
@@ -38,6 +44,7 @@ public sealed class QueueRoutingTests
             WorkAvailableSignal.CurrentSchemaVersion,
             "outbox-42",
             "orders.push",
+            "default",
             "run-42");
 
         var envelope = ExecutionEnvelope.FromWorkAvailableSignal(signal);

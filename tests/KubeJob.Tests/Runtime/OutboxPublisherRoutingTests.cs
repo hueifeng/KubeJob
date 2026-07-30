@@ -22,17 +22,18 @@ public sealed class OutboxPublisherRoutingTests
                 "order-event:1001",
                 "order:O-1001",
                 3,
-                60),
+                60,
+                DeliveryTarget: new DeliveryTarget(
+                    ExecutionDeliveryProfile.BrokerDispatch,
+                    "default",
+                    "recording")),
             CancellationToken.None);
-        var dispatcher = new RecordingDispatcher();
+        var transport = new RecordingTransport();
         using var cancellation = new CancellationTokenSource();
         var publisher = new OutboxPublisherService(
             store,
             new RecordingNotifier(),
-            new FixedQueueRouter(new QueueRoute(
-                "orders.push",
-                ExecutionDeliveryProfile.BrokerDispatch)),
-            dispatcher,
+            new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
             Options.Create(new JobRuntimeOptions
             {
@@ -42,7 +43,7 @@ public sealed class OutboxPublisherRoutingTests
             NullLogger<OutboxPublisherService>.Instance);
 
         await publisher.StartAsync(cancellation.Token);
-        var envelope = await dispatcher.Published.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var envelope = await transport.Published.Task.WaitAsync(TimeSpan.FromSeconds(2));
         cancellation.Cancel();
         await publisher.StopAsync(CancellationToken.None);
 
@@ -51,25 +52,14 @@ public sealed class OutboxPublisherRoutingTests
         envelope.EventId.Should().NotBeNullOrWhiteSpace();
     }
 
-    private sealed class FixedQueueRouter : IQueueRouter
+    private sealed class RecordingTransport : IExecutionTransport
     {
-        private readonly QueueRoute _route;
+        public string TransportId => "recording";
 
-        public FixedQueueRouter(QueueRoute route)
-        {
-            _route = route;
-        }
-
-        public QueueRoute Resolve(string logicalQueue) =>
-            _route with { Queue = logicalQueue };
-    }
-
-    private sealed class RecordingDispatcher : IExecutionDispatcher
-    {
         public TaskCompletionSource<ExecutionEnvelope> Published { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public ValueTask DispatchAsync(
+        public ValueTask PublishAsync(
             ExecutionEnvelope envelope,
             CancellationToken cancellationToken)
         {

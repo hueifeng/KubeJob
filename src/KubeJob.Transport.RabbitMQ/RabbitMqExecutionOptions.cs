@@ -4,6 +4,8 @@ namespace KubeJob.Transport.RabbitMQ;
 
 public sealed class RabbitMqExecutionOptions
 {
+    public string TransportId { get; set; } = "rabbitmq";
+
     public string ConnectionString { get; set; } = "amqp://guest:guest@localhost:5672/";
 
     public string ConsumerGroup { get; set; } = "default";
@@ -50,6 +52,8 @@ public sealed class RabbitMqExecutionOptions
 
     public void Validate()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(TransportId);
+
         if (!Uri.TryCreate(ConnectionString, UriKind.Absolute, out var uri)
             || uri.Scheme is not ("amqp" or "amqps"))
         {

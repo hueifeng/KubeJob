@@ -10,6 +10,7 @@ public sealed record WorkAvailableSignal(
     int SchemaVersion,
     string EventId,
     string Queue,
+    string ExecutionLane,
     string RunId)
 {
     public const int CurrentSchemaVersion = 1;
@@ -41,6 +42,7 @@ public sealed record WorkAvailableSignal(
             CurrentSchemaVersion,
             message.Id,
             message.Queue,
+            message.ExecutionLane,
             payload.RunId);
     }
 

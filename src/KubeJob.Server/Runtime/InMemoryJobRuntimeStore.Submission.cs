@@ -23,12 +23,18 @@ public sealed partial class InMemoryJobRuntimeStore
             }
 
             var now = DateTimeOffset.UtcNow;
+            var target = command.DeliveryTarget
+                ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null);
+            target.Validate();
             var run = new JobRunRecord
             {
                 Id = NewId(),
                 JobKey = command.JobKey,
                 PayloadJson = command.PayloadJson,
                 Queue = command.Queue,
+                DeliveryProfile = target.Profile,
+                ExecutionLane = target.ExecutionLane,
+                TransportId = target.TransportId,
                 Priority = command.Priority,
                 AvailableAt = command.AvailableAt.ToUniversalTime(),
                 CreatedAt = now,

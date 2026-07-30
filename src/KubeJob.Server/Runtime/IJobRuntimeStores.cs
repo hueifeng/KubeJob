@@ -14,7 +14,8 @@ public sealed record SubmitJobCommand(
     int MaxAttempts,
     int TimeoutSeconds,
     string? ScheduleId = null,
-    DateTimeOffset? ScheduledFor = null);
+    DateTimeOffset? ScheduledFor = null,
+    DeliveryTarget? DeliveryTarget = null);
 
 public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
 

@@ -10,6 +10,7 @@
 - [任务提交与物理投递解耦](../adr/011-hide-physical-delivery-from-job-submitters.md)
 - [Control-plane adapter decision](../adr/009-converge-transports-on-control-plane-modules.md)
 - [Security and Trust Boundaries](./security.md)
+- [Telemetry and host-side OpenTelemetry setup](./telemetry.md)
 - [V2 Hardening Review](./hardening-review.md)
 - [RabbitMQ Notification Acceleration](./rabbitmq-notifications.md)
 - [Message Transport Adapters](./message-transport.md)

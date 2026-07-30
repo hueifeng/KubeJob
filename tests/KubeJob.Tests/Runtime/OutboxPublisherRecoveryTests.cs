@@ -32,16 +32,16 @@ public sealed class OutboxPublisherRecoveryTests
                     IdempotencyKey: $"key-{index}",
                     ConcurrencyKey: null,
                     MaxAttempts: 1,
-                    TimeoutSeconds: 30),
+                    TimeoutSeconds: 30,
+                    DeliveryTarget: BrokerTarget),
                 CancellationToken.None);
         }
 
-        var dispatcher = new RecordingDispatcher();
+        var transport = new RecordingTransport();
         var publisher = new OutboxPublisherService(
             store,
             new NullNotifier(),
-            new FixedQueueRouter(),
-            dispatcher,
+            new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
             Options.Create(new JobRuntimeOptions
             {
@@ -56,7 +56,7 @@ public sealed class OutboxPublisherRecoveryTests
 
         // Wait until all three envelopes have been dispatched.
         var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (dispatcher.Count < 3 && DateTimeOffset.UtcNow < deadline)
+        while (transport.Count < 3 && DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(10, cancellation.Token);
         }
@@ -64,7 +64,7 @@ public sealed class OutboxPublisherRecoveryTests
         cancellation.Cancel();
         await publisher.StopAsync(CancellationToken.None);
 
-        dispatcher.Count.Should().Be(3);
+        transport.Count.Should().Be(3);
 
         // Inspect the underlying store: every outbox row should be in
         // Published state, never stranded in Publishing.
@@ -88,16 +88,16 @@ public sealed class OutboxPublisherRecoveryTests
                     IdempotencyKey: $"key-{index}",
                     ConcurrencyKey: null,
                     MaxAttempts: 1,
-                    TimeoutSeconds: 30),
+                    TimeoutSeconds: 30,
+                    DeliveryTarget: BrokerTarget),
                 CancellationToken.None);
         }
 
-        var dispatcher = new ThrowingDispatcher(failOnDispatchIndex: 2);
+        var transport = new ThrowingTransport(failOnDispatchIndex: 2);
         var publisher = new OutboxPublisherService(
             store,
             new NullNotifier(),
-            new FixedQueueRouter(),
-            dispatcher,
+            new ExecutionTransportRegistry(new[] { (IExecutionTransport)transport }),
             new NoopCancelPublisher(),
             Options.Create(new JobRuntimeOptions
             {
@@ -114,7 +114,7 @@ public sealed class OutboxPublisherRecoveryTests
         // Wait until two envelopes have been dispatched before the failure,
         // then the failed one retries, then a third and fourth succeed.
         var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (dispatcher.SuccessfulDispatchCount < 3 && DateTimeOffset.UtcNow < deadline)
+        while (transport.SuccessfulDispatchCount < 3 && DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(10, cancellation.Token);
         }
@@ -122,15 +122,12 @@ public sealed class OutboxPublisherRecoveryTests
         cancellation.Cancel();
         await publisher.StopAsync(CancellationToken.None);
 
-        dispatcher.SuccessfulDispatchCount.Should().BeGreaterThanOrEqualTo(3);
-        dispatcher.FailedDispatchCount.Should().BeGreaterThanOrEqualTo(1);
+        transport.SuccessfulDispatchCount.Should().BeGreaterThanOrEqualTo(3);
+        transport.FailedDispatchCount.Should().BeGreaterThanOrEqualTo(1);
     }
 
-    private sealed class FixedQueueRouter : IQueueRouter
-    {
-        public QueueRoute Resolve(string logicalQueue) =>
-            new(logicalQueue, ExecutionDeliveryProfile.BrokerDispatch);
-    }
+    private static readonly DeliveryTarget BrokerTarget =
+        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "recording");
 
     private sealed class NullNotifier : IWorkAvailableNotifier
     {
@@ -139,13 +136,15 @@ public sealed class OutboxPublisherRecoveryTests
             CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 
-    private sealed class RecordingDispatcher : IExecutionDispatcher
+    private sealed class RecordingTransport : IExecutionTransport
     {
         private int _count;
 
+        public string TransportId => "recording";
+
         public int Count => Volatile.Read(ref _count);
 
-        public ValueTask DispatchAsync(
+        public ValueTask PublishAsync(
             ExecutionEnvelope envelope,
             CancellationToken cancellationToken)
         {
@@ -154,22 +153,24 @@ public sealed class OutboxPublisherRecoveryTests
         }
     }
 
-    private sealed class ThrowingDispatcher : IExecutionDispatcher
+    private sealed class ThrowingTransport : IExecutionTransport
     {
         private readonly int _failOnDispatchIndex;
         private int _successes;
         private int _failures;
         private int _totalSeen;
 
-        public ThrowingDispatcher(int failOnDispatchIndex)
+        public ThrowingTransport(int failOnDispatchIndex)
         {
             _failOnDispatchIndex = failOnDispatchIndex;
         }
 
+        public string TransportId => "recording";
+
         public int SuccessfulDispatchCount => Volatile.Read(ref _successes);
         public int FailedDispatchCount => Volatile.Read(ref _failures);
 
-        public ValueTask DispatchAsync(
+        public ValueTask PublishAsync(
             ExecutionEnvelope envelope,
             CancellationToken cancellationToken)
         {

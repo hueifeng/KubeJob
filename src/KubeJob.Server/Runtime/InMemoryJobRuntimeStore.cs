@@ -55,6 +55,9 @@ public sealed partial class InMemoryJobRuntimeStore :
         {
             Id = NewId(),
             Queue = run.Queue,
+            DeliveryProfile = run.DeliveryProfile,
+            ExecutionLane = run.ExecutionLane,
+            TransportId = run.TransportId,
             EventType = OutboxEventTypes.WorkAvailable,
             PayloadJson = JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }),
             AvailableAt = run.AvailableAt > now ? run.AvailableAt : now,

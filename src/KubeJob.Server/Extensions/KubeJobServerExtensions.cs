@@ -2,6 +2,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Server.ControlPlane;
+using KubeJob.ControlPlane.Telemetry;
 using KubeJob.Server.Data;
 using KubeJob.Server.Controllers;
 using KubeJob.Server.Dashboard;
@@ -28,6 +29,7 @@ public static class KubeJobServerExtensions
         configure?.Invoke(options);
         options.StorageConfigurator?.Invoke(services);
 
+        services.AddMetrics();
         services.TryAddSingleton<InMemoryJobRuntimeStore>();
         services.TryAddSingleton<IJobSubmissionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
@@ -38,6 +40,7 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IOutboxStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+        services.TryAddSingleton<KubeJobControlPlaneMetrics>();
         services.TryAddSingleton<JobControlPlane>();
         services.TryAddSingleton<IJobMessageIngress, JobMessageIngress>();
         services.TryAddSingleton<CompletionBatcher>();
@@ -48,7 +51,8 @@ public static class KubeJobServerExtensions
         services.AddOptions<QueueDeliveryOptions>();
         services.TryAddSingleton<IQueueRouter, ConfigurationQueueRouter>();
         services.TryAddSingleton<IExecutionGroupResolver, DefaultExecutionGroupResolver>();
-        services.TryAddSingleton<IExecutionDispatcher, UnconfiguredExecutionDispatcher>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, UnconfiguredExecutionTransport>());
+        services.TryAddSingleton<IExecutionTransportRegistry, ExecutionTransportRegistry>();
         services.TryAddSingleton<IJobClient, DefaultJobClient>();
         services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
         services.AddOptions<JobRuntimeOptions>();
@@ -105,14 +109,14 @@ public static class KubeJobServerExtensions
     }
 
     /// <summary>
-    /// Registers the broker-specific execution dispatcher used by queues that
-    /// are routed to BrokerDispatch.
+    /// Registers one named transport adapter. Multiple adapters may coexist;
+    /// persisted delivery targets select the adapter by transport ID.
     /// </summary>
-    public static IServiceCollection UseKubeJobExecutionDispatcher<TDispatcher>(
+    public static IServiceCollection AddKubeJobExecutionTransport<TTransport>(
         this IServiceCollection services)
-        where TDispatcher : class, IExecutionDispatcher
+        where TTransport : class, IExecutionTransport
     {
-        services.Replace(ServiceDescriptor.Singleton<IExecutionDispatcher, TDispatcher>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, TTransport>());
         return services;
     }
 

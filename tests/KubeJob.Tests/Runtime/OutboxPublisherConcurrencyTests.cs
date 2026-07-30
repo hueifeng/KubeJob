@@ -34,16 +34,16 @@ public sealed class OutboxPublisherConcurrencyTests
                     IdempotencyKey: $"key-{index}",
                     ConcurrencyKey: null,
                     MaxAttempts: 1,
-                    TimeoutSeconds: 30),
+                    TimeoutSeconds: 30,
+                    DeliveryTarget: BrokerTarget),
                 CancellationToken.None);
         }
 
-        var dispatcher = new RecordingDispatcher();
+        var transport = new RecordingTransport();
         var publisher = new OutboxPublisherService(
             store,
             new NullNotifier(),
-            new FixedQueueRouter(),
-            dispatcher,
+            new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
             Options.Create(new JobRuntimeOptions
             {
@@ -58,7 +58,7 @@ public sealed class OutboxPublisherConcurrencyTests
         await publisher.StartAsync(cancellation.Token);
 
         var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (dispatcher.Count < messageCount && DateTimeOffset.UtcNow < deadline)
+        while (transport.Count < messageCount && DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(5, cancellation.Token);
         }
@@ -66,7 +66,7 @@ public sealed class OutboxPublisherConcurrencyTests
         cancellation.Cancel();
         await publisher.StopAsync(CancellationToken.None);
 
-        dispatcher.Count.Should().Be(messageCount);
+        transport.Count.Should().Be(messageCount);
         var overview = await store.GetOverviewAsync(10, CancellationToken.None);
         overview.PendingOutboxMessages.Should().Be(0);
     }
@@ -93,16 +93,16 @@ public sealed class OutboxPublisherConcurrencyTests
                     IdempotencyKey: $"key-{index}",
                     ConcurrencyKey: null,
                     MaxAttempts: 1,
-                    TimeoutSeconds: 30),
+                    TimeoutSeconds: 30,
+                    DeliveryTarget: BrokerTarget),
                 CancellationToken.None);
         }
 
-        var dispatcher = new RecordingDispatcher();
+        var transport = new RecordingTransport();
         var publisher = new OutboxPublisherService(
             store,
             new NullNotifier(),
-            new FixedQueueRouter(),
-            dispatcher,
+            new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
             Options.Create(new JobRuntimeOptions
             {
@@ -117,7 +117,7 @@ public sealed class OutboxPublisherConcurrencyTests
         await publisher.StartAsync(cancellation.Token);
 
         var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (dispatcher.Count < messageCount && DateTimeOffset.UtcNow < deadline)
+        while (transport.Count < messageCount && DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(5, cancellation.Token);
         }
@@ -125,14 +125,11 @@ public sealed class OutboxPublisherConcurrencyTests
         cancellation.Cancel();
         await publisher.StopAsync(CancellationToken.None);
 
-        dispatcher.Count.Should().Be(messageCount);
+        transport.Count.Should().Be(messageCount);
     }
 
-    private sealed class FixedQueueRouter : IQueueRouter
-    {
-        public QueueRoute Resolve(string logicalQueue) =>
-            new(logicalQueue, ExecutionDeliveryProfile.BrokerDispatch);
-    }
+    private static readonly DeliveryTarget BrokerTarget =
+        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "recording");
 
     private sealed class NullNotifier : IWorkAvailableNotifier
     {
@@ -141,13 +138,15 @@ public sealed class OutboxPublisherConcurrencyTests
             CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 
-    private sealed class RecordingDispatcher : IExecutionDispatcher
+    private sealed class RecordingTransport : IExecutionTransport
     {
         private int _count;
 
+        public string TransportId => "recording";
+
         public int Count => Volatile.Read(ref _count);
 
-        public ValueTask DispatchAsync(
+        public ValueTask PublishAsync(
             ExecutionEnvelope envelope,
             CancellationToken cancellationToken)
         {

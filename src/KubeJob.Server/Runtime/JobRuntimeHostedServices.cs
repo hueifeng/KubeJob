@@ -54,8 +54,7 @@ public sealed class OutboxPublisherService : BackgroundService
 {
     private readonly IOutboxStore _store;
     private readonly IWorkAvailableNotifier _notifier;
-    private readonly IQueueRouter _queueRouter;
-    private readonly IExecutionDispatcher _dispatcher;
+    private readonly IExecutionTransportRegistry _transports;
     private readonly ICancelPublisher _cancelPublisher;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<OutboxPublisherService> _logger;
@@ -63,16 +62,14 @@ public sealed class OutboxPublisherService : BackgroundService
     public OutboxPublisherService(
         IOutboxStore store,
         IWorkAvailableNotifier notifier,
-        IQueueRouter queueRouter,
-        IExecutionDispatcher dispatcher,
+        IExecutionTransportRegistry transports,
         ICancelPublisher cancelPublisher,
         IOptions<JobRuntimeOptions> options,
         ILogger<OutboxPublisherService> logger)
     {
         _store = store;
         _notifier = notifier;
-        _queueRouter = queueRouter;
-        _dispatcher = dispatcher;
+        _transports = transports;
         _cancelPublisher = cancelPublisher;
         _options = options.Value;
         _logger = logger;
@@ -237,20 +234,22 @@ public sealed class OutboxPublisherService : BackgroundService
         CancellationToken cancellationToken)
     {
         var signal = WorkAvailableSignal.FromOutbox(message);
-        var route = _queueRouter.Resolve(message.Queue);
-        switch (route.Profile)
+        switch (message.DeliveryProfile)
         {
             case ExecutionDeliveryProfile.Pull:
                 await _notifier.PublishAsync(signal, cancellationToken);
                 break;
             case ExecutionDeliveryProfile.BrokerDispatch:
-                await _dispatcher.DispatchAsync(
+                var transport = _transports.Resolve(message.TransportId
+                    ?? throw new InvalidOperationException(
+                        $"KubeJob outbox row {message.Id} is missing a transport ID."));
+                await transport.PublishAsync(
                     ExecutionEnvelope.FromWorkAvailableSignal(signal),
                     cancellationToken);
                 break;
             default:
                 throw new InvalidOperationException(
-                    $"Unsupported execution delivery profile '{route.Profile}'.");
+                    $"Unsupported execution delivery profile '{message.DeliveryProfile}'.");
         }
     }
 

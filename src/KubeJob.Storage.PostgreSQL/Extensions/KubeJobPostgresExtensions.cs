@@ -3,6 +3,7 @@ using KubeJob.Server.Options;
 using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Data;
 using KubeJob.Storage.PostgreSQL.Runtime;
+using KubeJob.Storage.PostgreSQL.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
@@ -39,7 +40,9 @@ public static class KubeJobPostgresExtensions
 
         options.StorageConfigurator = services =>
         {
+            services.AddMetrics();
             services.AddSingleton(storageOptions);
+            services.AddSingleton<KubeJobPostgreSqlMetrics>();
             services.AddSingleton<IStorageInitializer>(_ => new DbInitializer(connectionOptions.ConnectionString));
             services.AddSingleton(_ => NpgsqlDataSource.Create(connectionOptions.ConnectionString));
             services.AddSingleton<PostgreSqlJobRuntimeStore>();

@@ -38,8 +38,8 @@ public sealed class RabbitMqNotificationTests
 
         using var provider = services.BuildServiceProvider();
 
-        provider.GetRequiredService<IExecutionDispatcher>()
-            .Should().BeOfType<RabbitMqExecutionDispatcher>();
+        provider.GetServices<IExecutionTransport>()
+            .Should().ContainSingle(transport => transport is RabbitMqExecutionDispatcher);
     }
 
     [Fact]

@@ -114,7 +114,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             LIMIT 1;";
         var version = Convert.ToInt32(await command.ExecuteScalarAsync());
 
-        version.Should().Be(1);
+        version.Should().Be(2);
     }
 
     [Fact]

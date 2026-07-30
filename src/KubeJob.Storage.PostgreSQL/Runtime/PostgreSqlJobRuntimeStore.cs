@@ -1,10 +1,12 @@
 using System.Data;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Extensions;
+using KubeJob.Storage.PostgreSQL.Telemetry;
 using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;
@@ -23,6 +25,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly NpgsqlDataSource _dataSource;
     private readonly SemaphoreSlim _databaseGate;
+    private readonly KubeJobPostgreSqlMetrics? _metrics;
 
     static PostgreSqlJobRuntimeStore()
     {
@@ -33,22 +36,31 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     }
 
     public PostgreSqlJobRuntimeStore(NpgsqlDataSource dataSource)
-        : this(dataSource, new PostgreSqlStorageOptions())
+        : this(dataSource, new PostgreSqlStorageOptions(), metrics: null)
     {
     }
 
     public PostgreSqlJobRuntimeStore(
         NpgsqlDataSource dataSource,
-        PostgreSqlStorageOptions options)
+        PostgreSqlStorageOptions options,
+        KubeJobPostgreSqlMetrics? metrics = null)
     {
         _dataSource = dataSource;
         _databaseGate = new SemaphoreSlim(options.MaximumConcurrentOperations);
+        _metrics = metrics;
     }
 
     private async ValueTask<DatabaseOperationPermit> AcquireDatabaseOperationAsync(
         CancellationToken cancellationToken)
     {
+        var startedAt = _metrics?.IsDatabaseGateWaitEnabled == true
+            ? Stopwatch.GetTimestamp()
+            : 0L;
         await _databaseGate.WaitAsync(cancellationToken);
+        if (startedAt != 0)
+        {
+            _metrics!.DatabaseGateWaited(Stopwatch.GetElapsedTime(startedAt));
+        }
         return new DatabaseOperationPermit(_databaseGate);
     }
 
@@ -104,20 +116,27 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         string eventType,
         string payloadJson,
         DateTimeOffset availableAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DeliveryTarget? deliveryTarget = null)
     {
+        var target = deliveryTarget
+            ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null);
+        target.Validate();
         var command = new CommandDefinition(@"
             INSERT INTO Kj2_Outbox
-                (Id, Queue, EventType, PayloadJson, State, PublishAttempts,
+                (Id, Queue, DeliveryProfile, ExecutionLane, TransportId, EventType, PayloadJson, State, PublishAttempts,
                  AvailableAt, CreatedAt)
             VALUES
-                (@Id, @Queue, @EventType, CAST(@PayloadJson AS jsonb),
+                (@Id, @Queue, @DeliveryProfile, @ExecutionLane, @TransportId, @EventType, CAST(@PayloadJson AS jsonb),
                  @State, 0, GREATEST(@AvailableAt, clock_timestamp()),
                  clock_timestamp());",
             new
             {
                 Id = NewId(),
                 Queue = queue,
+                DeliveryProfile = (int)target.Profile,
+                target.ExecutionLane,
+                target.TransportId,
                 EventType = eventType,
                 PayloadJson = payloadJson,
                 State = (int)OutboxDeliveryState.Pending,

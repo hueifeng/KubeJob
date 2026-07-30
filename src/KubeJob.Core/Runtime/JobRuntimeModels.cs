@@ -66,6 +66,9 @@ public sealed class JobRunRecord
     public required string JobKey { get; init; }
     public required string PayloadJson { get; init; }
     public string Queue { get; init; } = "default";
+    public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.Pull;
+    public string ExecutionLane { get; init; } = "default";
+    public string? TransportId { get; init; }
     public int Priority { get; init; }
     public JobPhase Phase { get; set; } = JobPhase.Pending;
     public DateTimeOffset AvailableAt { get; set; }
@@ -130,6 +133,9 @@ public sealed class OutboxMessageRecord
 {
     public required string Id { get; init; }
     public required string Queue { get; init; }
+    public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.Pull;
+    public string ExecutionLane { get; init; } = "default";
+    public string? TransportId { get; init; }
     public required string EventType { get; init; }
     public required string PayloadJson { get; init; }
     public OutboxDeliveryState State { get; set; } = OutboxDeliveryState.Pending;

@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
+using KubeJob.Transport.RabbitMQ.Telemetry;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -12,23 +14,29 @@ namespace KubeJob.Transport.RabbitMQ;
 /// RabbitMQ channels. RabbitMQ IModel instances are not thread-safe, so each
 /// slot owns its connection, channel, confirm wait, and return handler.
 /// </summary>
-public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposable
+public sealed class RabbitMqExecutionDispatcher : IExecutionTransport, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly RabbitMqExecutionOptions _options;
     private readonly PublisherSlot[] _slots;
+    private readonly KubeJobRabbitMqMetrics? _metrics;
     private int _nextSlot;
 
-    public RabbitMqExecutionDispatcher(IOptions<RabbitMqExecutionOptions> options)
+    public RabbitMqExecutionDispatcher(
+        IOptions<RabbitMqExecutionOptions> options,
+        KubeJobRabbitMqMetrics? metrics = null)
     {
         _options = options.Value;
+        _metrics = metrics;
         _options.Validate();
         _slots = Enumerable.Range(0, _options.PublisherConcurrency)
             .Select(_ => new PublisherSlot())
             .ToArray();
     }
 
-    public ValueTask DispatchAsync(
+    public string TransportId => _options.TransportId;
+
+    public ValueTask PublishAsync(
         ExecutionEnvelope envelope,
         CancellationToken cancellationToken)
     {
@@ -40,6 +48,9 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
                 "RabbitMQ execution routing keys must be shorter than 255 UTF-8 bytes.");
         }
 
+        var startedAt = _metrics?.IsPublishDurationEnabled == true
+            ? Stopwatch.GetTimestamp()
+            : 0L;
         var slotIndex = (int)((uint)Interlocked.Increment(ref _nextSlot) % (uint)_slots.Length);
         var slot = _slots[slotIndex];
         lock (slot.Gate)
@@ -93,11 +104,15 @@ public sealed class RabbitMqExecutionDispatcher : IExecutionDispatcher, IDisposa
             }
             catch
             {
+                _metrics?.PublishFailed();
                 ResetConnection(slot);
                 throw;
             }
         }
 
+        _metrics?.Published(startedAt == 0
+            ? TimeSpan.Zero
+            : Stopwatch.GetElapsedTime(startedAt));
         return ValueTask.CompletedTask;
     }
 
