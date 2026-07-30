@@ -11,7 +11,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         await connection.ExecuteAsync(new CommandDefinition(
@@ -137,7 +137,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         await connection.ExecuteAsync(new CommandDefinition(
@@ -212,7 +212,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         var affected = await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_WorkerSessions
             SET State = @Closed,

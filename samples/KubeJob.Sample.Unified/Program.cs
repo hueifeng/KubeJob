@@ -34,7 +34,7 @@ builder.Services.AddKubeJob(
                 postgresConnectionString,
                 postgres =>
                 {
-                    postgres.MaximumPoolSize = databasePoolSize;
+                    postgres.BusinessPoolSize = databasePoolSize;
                     postgres.MaximumConcurrentOperations = databaseConcurrency;
                 });
         }

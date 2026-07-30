@@ -57,6 +57,24 @@ public sealed class HostingConfigurationTests
             .Should().BeOfType<PostgreSqlJobRuntimeStore>();
     }
 
+    [Fact]
+    public void PostgreSQL_registration_fails_fast_when_background_pool_is_undersized()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer(options =>
+            options.UsePostgreSql(
+                "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres",
+                postgres => postgres.BackgroundPoolSize = 1));
+
+        using var provider = services.BuildServiceProvider();
+
+        var act = () => provider.GetRequiredService<IJobScheduleStore>();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*BackgroundPoolSize*");
+    }
+
     private static bool HasHostedService<THostedService>(IServiceCollection services)
         where THostedService : class, IHostedService
         => services.Any(descriptor =>

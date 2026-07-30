@@ -25,7 +25,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         var session = await connection.QuerySingleOrDefaultAsync<ClaimSessionRow>(new CommandDefinition(@"

@@ -23,7 +23,21 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     IJobRuntimeMaintenanceStore
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly NpgsqlDataSource _dataSource;
+
+    /// <summary>
+    /// Backs request-driven store methods (submission, claim, completion,
+    /// sessions, dashboard/query). Kept separate from
+    /// <see cref="_backgroundDataSource"/> so a traffic spike on the
+    /// business side cannot starve the always-on background loops.
+    /// </summary>
+    private readonly NpgsqlDataSource _businessDataSource;
+
+    /// <summary>
+    /// Backs the continuous background loops (outbox publisher, schedule
+    /// reconciler, lease reaper, retention) exclusively.
+    /// </summary>
+    private readonly NpgsqlDataSource _backgroundDataSource;
+
     private readonly SemaphoreSlim _databaseGate;
     private readonly KubeJobPostgreSqlMetrics? _metrics;
 
@@ -36,16 +50,18 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     }
 
     public PostgreSqlJobRuntimeStore(NpgsqlDataSource dataSource)
-        : this(dataSource, new PostgreSqlStorageOptions(), metrics: null)
+        : this(dataSource, dataSource, new PostgreSqlStorageOptions(), metrics: null)
     {
     }
 
     public PostgreSqlJobRuntimeStore(
-        NpgsqlDataSource dataSource,
+        NpgsqlDataSource businessDataSource,
+        NpgsqlDataSource backgroundDataSource,
         PostgreSqlStorageOptions options,
         KubeJobPostgreSqlMetrics? metrics = null)
     {
-        _dataSource = dataSource;
+        _businessDataSource = businessDataSource;
+        _backgroundDataSource = backgroundDataSource;
         _databaseGate = new SemaphoreSlim(options.MaximumConcurrentOperations);
         _metrics = metrics;
     }

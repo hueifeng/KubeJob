@@ -12,7 +12,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         return await connection.QuerySingleOrDefaultAsync<JobRunRecord>(new CommandDefinition(@"
             SELECT *
             FROM Kj2_JobRuns
@@ -27,7 +27,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         return (await connection.QueryAsync<JobAttemptRecord>(new CommandDefinition(@"
             SELECT *
             FROM Kj2_JobAttempts
@@ -54,7 +54,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var databaseNow = await connection.ExecuteScalarAsync<DateTimeOffset>(new CommandDefinition(
             "SELECT clock_timestamp();",
@@ -136,7 +136,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox outbox
             SET State = @Published,
@@ -166,7 +166,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox
             SET State = @Failed,
@@ -193,7 +193,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox
             SET State = @Abandoned,
@@ -249,7 +249,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         NpgsqlConnection? connection = null;
         try
         {
-            connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+            connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
 
             for (var iteration = 0; iteration < batchSize; iteration++)
             {
@@ -477,7 +477,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         try
         {
             await using var databasePermit = await AcquireDatabaseOperationAsync(timeoutCts.Token);
-            await using var connection = await _dataSource.OpenConnectionAsync(timeoutCts.Token);
+            await using var connection = await _backgroundDataSource.OpenConnectionAsync(timeoutCts.Token);
             await connection.ExecuteAsync(new CommandDefinition(@"
                 UPDATE Kj2_Outbox
                 SET State = @Abandoned,

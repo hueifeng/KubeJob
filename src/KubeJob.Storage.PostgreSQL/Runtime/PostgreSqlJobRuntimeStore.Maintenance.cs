@@ -18,7 +18,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         return await connection.ExecuteAsync(new CommandDefinition(@"
             WITH doomed AS (
                 SELECT Id
@@ -53,7 +53,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
         return await connection.ExecuteAsync(new CommandDefinition(@"
             WITH doomed AS (
                 SELECT Id
