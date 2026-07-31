@@ -82,6 +82,48 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
     }
 
     [Fact]
+    public async Task Reconciliation_path_recovers_execution_after_broker_retry_budget_is_exhausted()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-reconcile-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(
+            connectionString,
+            group,
+            out _,
+            maxBrokerRetryAttempts: 1,
+            brokerRetryReconciliationDelay: TimeSpan.FromSeconds(2));
+        await host.StartAsync();
+        try
+        {
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+            var startedAt = DateTimeOffset.UtcNow;
+            var handle = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("fail-then-succeed", FailAttempts: 2),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 5 });
+
+            var status = await jobs.WaitForCompletionAsync(
+                handle,
+                pollInterval: TimeSpan.FromMilliseconds(100),
+                cancellationToken: new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+
+            status.Phase.Should().Be(JobPhase.Succeeded);
+            status.AttemptCount.Should().BeGreaterThan(1);
+            (DateTimeOffset.UtcNow - startedAt).Should().BeGreaterThanOrEqualTo(
+                TimeSpan.FromSeconds(2),
+                "exhausting MaxBrokerRetryAttempts=1 on the second failure must hand off to durable "
+                    + "Postgres/in-memory reconciliation (RequeueExecutionAsync) gated by "
+                    + "BrokerRetryReconciliationDelay, not an immediate broker-level retry");
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    [Fact]
     public async Task Reject_path_drops_malformed_envelope_to_the_group_dlq_without_wedging_the_consumer()
     {
         var connectionString = RequireConnectionString();
@@ -134,16 +176,18 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
     private static IHost BuildHost(
         string connectionString,
         string group,
-        out RabbitMqExecutionOptions capturedOptions)
+        out RabbitMqExecutionOptions capturedOptions,
+        int maxBrokerRetryAttempts = 2,
+        TimeSpan? brokerRetryReconciliationDelay = null)
     {
         var options = new RabbitMqExecutionOptions
         {
             ConnectionString = connectionString,
             ConsumerGroup = group,
             ConsumerQueuePrefix = "kubejob.test.execution",
-            MaxBrokerRetryAttempts = 2,
+            MaxBrokerRetryAttempts = maxBrokerRetryAttempts,
             RetryDelay = TimeSpan.FromMilliseconds(200),
-            BrokerRetryReconciliationDelay = TimeSpan.FromSeconds(2)
+            BrokerRetryReconciliationDelay = brokerRetryReconciliationDelay ?? TimeSpan.FromSeconds(2)
         };
         capturedOptions = options;
 
