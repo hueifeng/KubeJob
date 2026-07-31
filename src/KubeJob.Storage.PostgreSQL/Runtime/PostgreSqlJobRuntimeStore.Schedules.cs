@@ -202,39 +202,52 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken))).ToArray();
 
-        var claims = new List<ClaimedSchedule>(schedules.Length);
-        foreach (var schedule in schedules)
+        if (schedules.Length == 0)
         {
-            var claimToken = NewId();
-            var version = schedule.Version + 1;
-            await connection.ExecuteAsync(new CommandDefinition(@"
-                UPDATE Kj2_JobSchedules
-                SET ClaimToken = @ClaimToken,
-                    ClaimUntil = @ClaimUntil,
-                    UpdatedAt = @Now,
-                    Version = @Version
-                WHERE Id = @ScheduleId
-                  AND Version = @PreviousVersion;",
-                new
-                {
-                    ScheduleId = schedule.Id,
-                    ClaimToken = claimToken,
-                    ClaimUntil = claimUntil,
-                    Now = databaseNow,
-                    Version = version,
-                    PreviousVersion = schedule.Version
-                },
-                transaction,
-                cancellationToken: cancellationToken));
-
-            schedule.ClaimToken = claimToken;
-            schedule.ClaimUntil = claimUntil;
-            schedule.UpdatedAt = databaseNow;
-            schedule.Version = version;
-            claims.Add(new ClaimedSchedule(schedule, claimToken, version));
+            await transaction.CommitAsync(cancellationToken);
+            return Array.Empty<ClaimedSchedule>();
         }
 
+        var claimTokens = schedules.Select(_ => NewId()).ToArray();
+        var previousVersions = schedules.Select(schedule => schedule.Version).ToArray();
+        var nextVersions = previousVersions.Select(version => version + 1).ToArray();
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobSchedules schedule
+            SET ClaimToken = claimed.ClaimToken,
+                ClaimUntil = @ClaimUntil,
+                UpdatedAt = @Now,
+                Version = claimed.NextVersion
+            FROM unnest(
+                CAST(@Ids AS text[]),
+                CAST(@ClaimTokens AS text[]),
+                CAST(@NextVersions AS bigint[]))
+                AS claimed(Id, ClaimToken, NextVersion)
+            WHERE schedule.Id = claimed.Id;",
+            new
+            {
+                ClaimUntil = claimUntil,
+                Now = databaseNow,
+                Ids = schedules.Select(schedule => schedule.Id).ToArray(),
+                ClaimTokens = claimTokens,
+                NextVersions = nextVersions
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
         await transaction.CommitAsync(cancellationToken);
+
+        var claims = new List<ClaimedSchedule>(schedules.Length);
+        for (var index = 0; index < schedules.Length; index++)
+        {
+            var schedule = schedules[index];
+            schedule.ClaimToken = claimTokens[index];
+            schedule.ClaimUntil = claimUntil;
+            schedule.UpdatedAt = databaseNow;
+            schedule.Version = nextVersions[index];
+            claims.Add(new ClaimedSchedule(schedule, claimTokens[index], nextVersions[index]));
+        }
+
         return claims;
     }
 
