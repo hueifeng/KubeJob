@@ -124,6 +124,45 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
     }
 
     [Fact]
+    public async Task Cancel_signal_aborts_the_in_flight_attempt_through_the_broker_cancel_queue()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-cancel-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(connectionString, group, out _, enableCancelQueue: true);
+        await host.StartAsync();
+        try
+        {
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+            var handle = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("wait-for-cancel", FailAttempts: 0),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 1 });
+
+            await EventuallyAsync(async () =>
+            {
+                var running = await jobs.GetStatusAsync(handle.JobId);
+                return running?.Phase == JobPhase.Running;
+            });
+
+            var canceled = await jobs.CancelAsync(handle.JobId, "test cancellation");
+            canceled.Should().BeTrue();
+
+            var status = await jobs.WaitForCompletionAsync(
+                handle,
+                pollInterval: TimeSpan.FromMilliseconds(100),
+                cancellationToken: new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+
+            status.Phase.Should().Be(JobPhase.Canceled);
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    [Fact]
     public async Task Reject_path_drops_malformed_envelope_to_the_group_dlq_without_wedging_the_consumer()
     {
         var connectionString = RequireConnectionString();
@@ -178,7 +217,8 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
         string group,
         out RabbitMqExecutionOptions capturedOptions,
         int maxBrokerRetryAttempts = 2,
-        TimeSpan? brokerRetryReconciliationDelay = null)
+        TimeSpan? brokerRetryReconciliationDelay = null,
+        bool enableCancelQueue = false)
     {
         var options = new RabbitMqExecutionOptions
         {
@@ -187,7 +227,8 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
             ConsumerQueuePrefix = "kubejob.test.execution",
             MaxBrokerRetryAttempts = maxBrokerRetryAttempts,
             RetryDelay = TimeSpan.FromMilliseconds(200),
-            BrokerRetryReconciliationDelay = brokerRetryReconciliationDelay ?? TimeSpan.FromSeconds(2)
+            BrokerRetryReconciliationDelay = brokerRetryReconciliationDelay ?? TimeSpan.FromSeconds(2),
+            EnableCancelQueue = enableCancelQueue
         };
         capturedOptions = options;
 
@@ -212,6 +253,10 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
                 });
                 services.UseRabbitMqKubeJobExecutionDispatcher(o => CopyInto(options, o));
                 services.AddRabbitMqKubeJobExecutionConsumer(o => CopyInto(options, o));
+                if (options.EnableCancelQueue)
+                {
+                    services.UseRabbitMqKubeJobCancelPublisher(o => CopyInto(options, o));
+                }
             })
             .Build();
         return host;
@@ -225,6 +270,7 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
         target.MaxBrokerRetryAttempts = source.MaxBrokerRetryAttempts;
         target.RetryDelay = source.RetryDelay;
         target.BrokerRetryReconciliationDelay = source.BrokerRetryReconciliationDelay;
+        target.EnableCancelQueue = source.EnableCancelQueue;
     }
 
     private static string RequireConnectionString() =>
@@ -297,7 +343,17 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
                     $"Simulated transient failure on attempt {context.AttemptNumber}.");
             }
 
+            if (payload.Scenario == "wait-for-cancel")
+            {
+                return WaitForCancellationAsync(cancellationToken);
+            }
+
             return ValueTask.CompletedTask;
+        }
+
+        private static async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 }
