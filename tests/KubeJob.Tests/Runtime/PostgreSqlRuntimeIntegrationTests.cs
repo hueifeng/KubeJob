@@ -233,6 +233,76 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Completion_batch_handles_mixed_outcomes_in_a_single_call()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var succeededRun = (await store.SubmitAsync(
+            NewSubmission("batch-mixed:succeeded"),
+            CancellationToken.None)).Run;
+        var failedRun = (await store.SubmitAsync(
+            NewSubmission("batch-mixed:failed"),
+            CancellationToken.None)).Run;
+        var retryRun = (await store.SubmitAsync(
+            NewSubmission("batch-mixed:retry"),
+            CancellationToken.None)).Run;
+        var deadRun = (await store.SubmitAsync(
+            NewSubmission("batch-mixed:dead", maxAttempts: 1),
+            CancellationToken.None)).Run;
+        var canceledRun = (await store.SubmitAsync(
+            NewSubmission("batch-mixed:canceled"),
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "batch-mixed-worker", "batch-mixed-session", 5);
+        var claims = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                5,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            5,
+            CancellationToken.None);
+
+        claims.Should().HaveCount(5);
+        var claimsByRunId = claims.ToDictionary(job => job.RunId);
+
+        (await store.RequestCancelAsync(
+            canceledRun.Id,
+            "cancel while batch completes",
+            null,
+            CancellationToken.None)).Requested.Should().BeTrue();
+
+        var requests = new[]
+        {
+            Completion(worker, claimsByRunId[succeededRun.Id], JobAttemptOutcome.Succeeded),
+            Completion(worker, claimsByRunId[failedRun.Id], JobAttemptOutcome.PermanentFailure),
+            Completion(worker, claimsByRunId[retryRun.Id], JobAttemptOutcome.RetryableFailure),
+            Completion(worker, claimsByRunId[deadRun.Id], JobAttemptOutcome.RetryableFailure),
+            Completion(worker, claimsByRunId[canceledRun.Id], JobAttemptOutcome.Succeeded),
+        };
+
+        var completions = await store.CompleteBatchAsync(
+            requests,
+            TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        completions.Should().OnlyContain(result => result.Accepted);
+        (await store.GetRunAsync(succeededRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Succeeded);
+        (await store.GetRunAsync(failedRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Failed);
+        (await store.GetRunAsync(retryRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Pending);
+        (await store.GetRunAsync(deadRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Dead);
+        (await store.GetRunAsync(canceledRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Canceled);
+    }
+
+    [Fact]
     public async Task Completion_batch_honors_cancel_requested_before_success()
     {
         if (!Enabled) return;

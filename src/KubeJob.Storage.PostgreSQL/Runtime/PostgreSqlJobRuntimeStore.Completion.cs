@@ -219,9 +219,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
         foreach (var group in groups)
         {
             var items = group.ToArray();
-            if (items.Length > 1 && items.All(x => x.request.Outcome == JobAttemptOutcome.Succeeded))
+            if (items.Length > 1)
             {
-                var batchResults = await CompleteSucceededBatchAsync(items, cancellationToken);
+                var batchResults = await CompleteGroupAsync(items, retryDelay, cancellationToken);
                 foreach (var item in items)
                 {
                     results[item.index] = batchResults[item.index];
@@ -239,8 +239,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
         return results;
     }
 
-    private async ValueTask<Dictionary<int, CompleteAttemptResponse>> CompleteSucceededBatchAsync(
+    private async ValueTask<Dictionary<int, CompleteAttemptResponse>> CompleteGroupAsync(
         IReadOnlyList<(CompleteAttemptRequest request, int index)> items,
+        TimeSpan retryDelay,
         CancellationToken cancellationToken)
     {
         var first = items[0].request;
@@ -306,13 +307,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         var results = new Dictionary<int, CompleteAttemptResponse>();
         var seenAttempts = new HashSet<string>(StringComparer.Ordinal);
-        var itemCount = items.Count;
-        var attemptIndexById = new Dictionary<string, int>(itemCount, StringComparer.Ordinal);
-        for (var index = 0; index < itemCount; index++)
-        {
-            attemptIndexById.TryAdd(items[index].request.AttemptId, index);
-        }
-        var valid = new List<(CompleteAttemptRequest request, CompletionStateRow state)>();
+        var valid = new List<(CompleteAttemptRequest request, int index, CompletionStateRow state)>();
         foreach (var item in items)
         {
             var state = states.GetValueOrDefault(item.request.AttemptId);
@@ -329,57 +324,105 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 continue;
             }
 
-            valid.Add((item.request, state));
+            valid.Add((item.request, item.index, state));
         }
 
         if (valid.Count > 0)
         {
-            var attemptIds = valid.Select(x => x.request.AttemptId).ToArray();
-            var canceled = valid.Where(x => x.state.CancelRequested).ToArray();
-            var succeeded = valid.Where(x => !x.state.CancelRequested).ToArray();
-
             await connection.ExecuteAsync(new CommandDefinition(@"
                 UPDATE Kj2_JobAttempts
-                SET Phase = @Succeeded,
+                SET Phase = item.Phase::smallint,
                     CompletedAt = @CompletedAt,
-                    FailureCode = NULL,
-                    FailureMessage = NULL
-                WHERE Id = ANY(@AttemptIds)
-                  AND Phase = @Running;",
+                    FailureCode = item.FailureCode,
+                    FailureMessage = item.FailureMessage
+                FROM unnest(
+                    CAST(@AttemptIds AS text[]),
+                    CAST(@Phases AS smallint[]),
+                    CAST(@FailureCodes AS text[]),
+                    CAST(@FailureMessages AS text[]))
+                    AS item(AttemptId, Phase, FailureCode, FailureMessage)
+                WHERE Kj2_JobAttempts.Id = item.AttemptId
+                  AND Kj2_JobAttempts.Phase = @Running;",
                 new
                 {
-                    Succeeded = (int)JobAttemptPhase.Succeeded,
-                    Running = (int)JobAttemptPhase.Running,
+                    AttemptIds = valid.Select(x => x.request.AttemptId).ToArray(),
+                    Phases = valid.Select(x => (short)MapAttemptPhase(x.request.Outcome)).ToArray(),
+                    FailureCodes = valid.Select(x => x.request.FailureCode).ToArray(),
+                    FailureMessages = valid.Select(x => x.request.FailureMessage).ToArray(),
                     CompletedAt = now,
-                    AttemptIds = attemptIds
+                    Running = (int)JobAttemptPhase.Running
                 },
                 transaction,
                 cancellationToken: cancellationToken));
 
-            await CompleteSucceededRunsAsync(
-                connection,
-                transaction,
-                succeeded,
-                now,
-                cancellationToken);
-            await CompleteCanceledRunsAsync(
-                connection,
-                transaction,
-                canceled,
-                now,
-                cancellationToken);
+            var canceled = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
+            var succeeded = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
+            var failed = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
+            var retryable = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
+            var dead = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
 
-            foreach (var item in valid)
+            foreach (var (request, index, state) in valid)
             {
-                if (!attemptIndexById.TryGetValue(item.request.AttemptId, out var originalIndex))
+                if (state.CancelRequested || request.Outcome == JobAttemptOutcome.Canceled)
                 {
+                    canceled.Add((request.RunId, request.AttemptId, request.FailureCode ?? "canceled", request.FailureMessage));
+                    results[index] = new CompleteAttemptResponse(true, JobPhase.Canceled, false);
                     continue;
                 }
 
-                results[originalIndex] = new CompleteAttemptResponse(
-                    true,
-                    item.state.CancelRequested ? JobPhase.Canceled : JobPhase.Succeeded,
-                    false);
+                switch (request.Outcome)
+                {
+                    case JobAttemptOutcome.Succeeded:
+                        succeeded.Add((request.RunId, request.AttemptId, null, null));
+                        results[index] = new CompleteAttemptResponse(true, JobPhase.Succeeded, false);
+                        break;
+
+                    case JobAttemptOutcome.PermanentFailure:
+                        failed.Add((request.RunId, request.AttemptId, request.FailureCode, request.FailureMessage));
+                        results[index] = new CompleteAttemptResponse(true, JobPhase.Failed, false);
+                        break;
+
+                    case JobAttemptOutcome.RetryableFailure:
+                    case JobAttemptOutcome.TimedOut:
+                        if (state.AttemptCount < state.MaxAttempts)
+                        {
+                            retryable.Add((request.RunId, request.AttemptId, request.FailureCode, request.FailureMessage));
+                            results[index] = new CompleteAttemptResponse(true, JobPhase.Pending, true);
+                        }
+                        else
+                        {
+                            dead.Add((request.RunId, request.AttemptId, request.FailureCode, request.FailureMessage));
+                            results[index] = new CompleteAttemptResponse(true, JobPhase.Dead, false);
+                        }
+
+                        break;
+
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(request.Outcome), request.Outcome, null);
+                }
+            }
+
+            await SetTerminalRunBatchAsync(connection, transaction, succeeded, JobPhase.Succeeded, now, cancellationToken);
+            await SetTerminalRunBatchAsync(connection, transaction, canceled, JobPhase.Canceled, now, cancellationToken);
+            await SetTerminalRunBatchAsync(connection, transaction, failed, JobPhase.Failed, now, cancellationToken);
+            await SetTerminalRunBatchAsync(connection, transaction, dead, JobPhase.Dead, now, cancellationToken);
+
+            if (retryable.Count > 0)
+            {
+                var availableAt = now.Add(retryDelay);
+                await RequeueRunBatchWithReasonsAsync(connection, transaction, retryable, availableAt, cancellationToken);
+                var stateByRunId = valid.ToDictionary(x => x.request.RunId, x => x.state.Queue, StringComparer.Ordinal);
+                await AddOutboxBatchAsync(
+                    connection,
+                    transaction,
+                    retryable
+                        .Select(x => (
+                            Queue: stateByRunId[x.RunId],
+                            Payload: JsonSerializer.Serialize(new { runId = x.RunId, queue = stateByRunId[x.RunId] }, SerializerOptions)))
+                        .ToArray(),
+                    OutboxEventTypes.WorkAvailable,
+                    availableAt,
+                    cancellationToken);
             }
         }
 
@@ -387,10 +430,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
         return results;
     }
 
-    private static async ValueTask CompleteSucceededRunsAsync(
+    private static async ValueTask SetTerminalRunBatchAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        IReadOnlyList<(CompleteAttemptRequest request, CompletionStateRow state)> items,
+        IReadOnlyList<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)> items,
+        JobPhase phase,
         DateTimeOffset completedAt,
         CancellationToken cancellationToken)
     {
@@ -401,34 +445,42 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobRuns
-            SET Phase = @Succeeded,
+            SET Phase = @Phase,
                 CompletedAt = @CompletedAt,
                 CurrentAttemptId = NULL,
                 CurrentWorkerId = NULL,
                 CurrentSessionId = NULL,
-                FailureCode = NULL,
-                FailureMessage = NULL,
+                FailureCode = item.FailureCode,
+                FailureMessage = item.FailureMessage,
                 Version = Version + 1
-            WHERE Id = ANY(@RunIds)
-              AND Phase = @Running
-              AND CurrentAttemptId = ANY(@AttemptIds);",
+            FROM unnest(
+                CAST(@RunIds AS text[]),
+                CAST(@AttemptIds AS text[]),
+                CAST(@FailureCodes AS text[]),
+                CAST(@FailureMessages AS text[]))
+                AS item(RunId, AttemptId, FailureCode, FailureMessage)
+            WHERE Kj2_JobRuns.Id = item.RunId
+              AND Kj2_JobRuns.Phase = @Running
+              AND Kj2_JobRuns.CurrentAttemptId = item.AttemptId;",
             new
             {
-                Succeeded = (int)JobPhase.Succeeded,
-                Running = (int)JobPhase.Running,
+                RunIds = items.Select(x => x.RunId).ToArray(),
+                AttemptIds = items.Select(x => x.AttemptId).ToArray(),
+                FailureCodes = items.Select(x => x.FailureCode).ToArray(),
+                FailureMessages = items.Select(x => x.FailureMessage).ToArray(),
+                Phase = (int)phase,
                 CompletedAt = completedAt,
-                RunIds = items.Select(x => x.request.RunId).Distinct().ToArray(),
-                AttemptIds = items.Select(x => x.request.AttemptId).ToArray()
+                Running = (int)JobPhase.Running
             },
             transaction,
             cancellationToken: cancellationToken));
     }
 
-    private static async ValueTask CompleteCanceledRunsAsync(
+    private static async ValueTask RequeueRunBatchWithReasonsAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        IReadOnlyList<(CompleteAttemptRequest request, CompletionStateRow state)> items,
-        DateTimeOffset completedAt,
+        IReadOnlyList<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)> items,
+        DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
         if (items.Count == 0)
@@ -438,25 +490,32 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobRuns
-            SET Phase = @Canceled,
-                CompletedAt = @CompletedAt,
+            SET Phase = @Pending,
+                AvailableAt = @AvailableAt,
                 CurrentAttemptId = NULL,
                 CurrentWorkerId = NULL,
                 CurrentSessionId = NULL,
-                FailureCode = @FailureCode,
-                FailureMessage = NULL,
+                FailureCode = item.FailureCode,
+                FailureMessage = item.FailureMessage,
                 Version = Version + 1
-            WHERE Id = ANY(@RunIds)
-              AND Phase = @Running
-              AND CurrentAttemptId = ANY(@AttemptIds);",
+            FROM unnest(
+                CAST(@RunIds AS text[]),
+                CAST(@AttemptIds AS text[]),
+                CAST(@FailureCodes AS text[]),
+                CAST(@FailureMessages AS text[]))
+                AS item(RunId, AttemptId, FailureCode, FailureMessage)
+            WHERE Kj2_JobRuns.Id = item.RunId
+              AND Kj2_JobRuns.Phase = @Running
+              AND Kj2_JobRuns.CurrentAttemptId = item.AttemptId;",
             new
             {
-                Canceled = (int)JobPhase.Canceled,
-                Running = (int)JobPhase.Running,
-                CompletedAt = completedAt,
-                FailureCode = "canceled",
-                RunIds = items.Select(x => x.request.RunId).Distinct().ToArray(),
-                AttemptIds = items.Select(x => x.request.AttemptId).ToArray()
+                RunIds = items.Select(x => x.RunId).ToArray(),
+                AttemptIds = items.Select(x => x.AttemptId).ToArray(),
+                FailureCodes = items.Select(x => x.FailureCode).ToArray(),
+                FailureMessages = items.Select(x => x.FailureMessage).ToArray(),
+                Pending = (int)JobPhase.Pending,
+                AvailableAt = availableAt,
+                Running = (int)JobPhase.Running
             },
             transaction,
             cancellationToken: cancellationToken));
