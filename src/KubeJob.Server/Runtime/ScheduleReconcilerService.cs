@@ -40,10 +40,10 @@ public sealed class ScheduleReconcilerService : BackgroundService
                     _options.ScheduleBatchSize,
                     stoppingToken);
 
-                foreach (var claim in claims)
+                if (claims.Count > 0)
                 {
                     processedAny = true;
-                    await ProcessClaimAsync(claim, now, stoppingToken);
+                    await ProcessClaimsAsync(claims, now, stoppingToken);
                 }
 
                 if (!processedAny)
@@ -61,6 +61,32 @@ public sealed class ScheduleReconcilerService : BackgroundService
                 await Task.Delay(_options.ScheduleFailureDelay, stoppingToken);
             }
         }
+    }
+
+    private async Task ProcessClaimsAsync(
+        IReadOnlyList<ClaimedSchedule> claims,
+        DateTimeOffset observedNow,
+        CancellationToken cancellationToken)
+    {
+        var concurrency = Math.Clamp(_options.ScheduleReconcileConcurrency, 1, 32);
+        if (concurrency == 1 || claims.Count == 1)
+        {
+            foreach (var claim in claims)
+            {
+                await ProcessClaimAsync(claim, observedNow, cancellationToken);
+            }
+
+            return;
+        }
+
+        await Parallel.ForEachAsync(
+            claims,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = concurrency,
+                CancellationToken = cancellationToken
+            },
+            (claim, token) => new ValueTask(ProcessClaimAsync(claim, observedNow, token)));
     }
 
     private async Task ProcessClaimAsync(

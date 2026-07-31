@@ -34,6 +34,9 @@ public sealed class JobRuntimeOptions
 
     public int ScheduleBatchSize { get; set; } = 128;
 
+    /// <summary>How many claimed schedules the reconciler fires concurrently per iteration.</summary>
+    public int ScheduleReconcileConcurrency { get; set; } = 4;
+
     /// Maximum UTF-8 encoded payload size accepted at the control-plane boundary.
     public int MaxPayloadBytes { get; set; } = 1_048_576;
 
@@ -148,6 +151,11 @@ public sealed class JobRuntimeOptions
         if (ScheduleBatchSize is < 1 or > 10_000)
         {
             throw new InvalidOperationException("ScheduleBatchSize must be between 1 and 10000.");
+        }
+
+        if (ScheduleReconcileConcurrency is < 1 or > 64)
+        {
+            throw new InvalidOperationException("ScheduleReconcileConcurrency must be between 1 and 64.");
         }
 
         if (MaxPayloadBytes is < 1 or > 16 * 1024 * 1024)
