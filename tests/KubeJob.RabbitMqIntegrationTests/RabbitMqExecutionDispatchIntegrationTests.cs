@@ -7,9 +7,11 @@ using KubeJob.Core.Interfaces;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.Server.Runtime;
 using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
 
@@ -163,6 +165,68 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
     }
 
     [Fact]
+    public async Task Reject_path_drops_malformed_envelope_to_the_group_dlq_when_reconciliation_itself_fails()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-reconcile-fail-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(
+            connectionString,
+            group,
+            out var options,
+            maxBrokerRetryAttempts: 1,
+            faultReconciliation: true,
+            maxConcurrentJobs: 1);
+        await host.StartAsync();
+        try
+        {
+            using var connection = CreateConnection(connectionString);
+            using var channel = connection.CreateModel();
+            await EventuallyAsync(
+                () => Task.FromResult(channel.ConsumerCount(options.GetSharedConsumerQueueName()) >= 1),
+                attempts: 200);
+
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+
+            // Occupy the worker's single slot so the next envelope is admitted
+            // with worker_capacity_exhausted (Retry) rather than executing.
+            var blocker = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("wait-for-cancel", FailAttempts: 0),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 1 });
+            await EventuallyAsync(async () =>
+            {
+                var running = await jobs.GetStatusAsync(blocker.JobId);
+                return running?.Phase == JobPhase.Running;
+            });
+
+            await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("succeed", FailAttempts: 0),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 1 });
+
+            // With the single slot occupied, admission always returns
+            // worker_capacity_exhausted (Retry), so the delivery cycles through the
+            // broker retry queue. Once it exceeds MaxBrokerRetryAttempts=1, the
+            // consumer hands off to durable reconciliation (RequeueExecutionAsync);
+            // the faulty client makes that throw, which must route the delivery to
+            // the DLQ (Reject) rather than looping the broker retry forever.
+            await EventuallyAsync(
+                () => Task.FromResult(channel.MessageCount(options.GetGroupDlqName()) >= 1),
+                attempts: 200);
+
+            // The consumer must still be alive after the reject: prove it by
+            // observing it is still registered on the shared queue.
+            channel.ConsumerCount(options.GetSharedConsumerQueueName()).Should().BeGreaterThan(0);
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    [Fact]
     public async Task Reject_path_drops_malformed_envelope_to_the_group_dlq_without_wedging_the_consumer()
     {
         var connectionString = RequireConnectionString();
@@ -218,7 +282,9 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
         out RabbitMqExecutionOptions capturedOptions,
         int maxBrokerRetryAttempts = 2,
         TimeSpan? brokerRetryReconciliationDelay = null,
-        bool enableCancelQueue = false)
+        bool enableCancelQueue = false,
+        bool faultReconciliation = false,
+        int maxConcurrentJobs = 4)
     {
         var options = new RabbitMqExecutionOptions
         {
@@ -243,7 +309,7 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
                     {
                         worker.WorkerId = $"worker-{group}";
                         worker.Queues = new List<string> { "default" };
-                        worker.MaxConcurrentJobs = 4;
+                        worker.MaxConcurrentJobs = maxConcurrentJobs;
                         worker.EmptyPollDelay = TimeSpan.FromSeconds(30);
                     });
                 services.ConfigureKubeJobQueueRouting(routing =>
@@ -257,9 +323,47 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
                 {
                     services.UseRabbitMqKubeJobCancelPublisher(o => CopyInto(options, o));
                 }
+                if (faultReconciliation)
+                {
+                    services.Replace(ServiceDescriptor.Singleton<IWorkerRuntimeClient>(
+                        sp => new ReconciliationFaultingWorkerRuntimeClient(
+                            ActivatorUtilities.CreateInstance<InProcessWorkerRuntimeClient>(sp))));
+                }
             })
             .Build();
         return host;
+    }
+
+    private sealed class ReconciliationFaultingWorkerRuntimeClient : IWorkerRuntimeClient
+    {
+        private readonly IWorkerRuntimeClient _inner;
+
+        public ReconciliationFaultingWorkerRuntimeClient(IWorkerRuntimeClient inner) => _inner = inner;
+
+        public ValueTask<RegisterWorkerSessionResponse> RegisterAsync(
+            RegisterWorkerSessionRequest request, CancellationToken cancellationToken) =>
+            _inner.RegisterAsync(request, cancellationToken);
+
+        public ValueTask<bool> HeartbeatAsync(WorkerHeartbeatRequest request, CancellationToken cancellationToken) =>
+            _inner.HeartbeatAsync(request, cancellationToken);
+
+        public ValueTask<bool> CloseAsync(WorkerHeartbeatRequest request, CancellationToken cancellationToken) =>
+            _inner.CloseAsync(request, cancellationToken);
+
+        public ValueTask<ClaimJobsResponse> ClaimAsync(ClaimJobsRequest request, CancellationToken cancellationToken) =>
+            _inner.ClaimAsync(request, cancellationToken);
+
+        public ValueTask<AdmitExecutionResponse> AdmitAsync(AdmitExecutionRequest request, CancellationToken cancellationToken) =>
+            _inner.AdmitAsync(request, cancellationToken);
+
+        public ValueTask<RenewLeasesResponse> RenewLeasesAsync(RenewLeasesRequest request, CancellationToken cancellationToken) =>
+            _inner.RenewLeasesAsync(request, cancellationToken);
+
+        public ValueTask<CompleteAttemptResponse> CompleteAsync(CompleteAttemptRequest request, CancellationToken cancellationToken) =>
+            _inner.CompleteAsync(request, cancellationToken);
+
+        public ValueTask<bool> RequeueExecutionAsync(RequeueExecutionRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Simulated durable reconciliation failure.");
     }
 
     private static void CopyInto(RabbitMqExecutionOptions source, RabbitMqExecutionOptions target)
