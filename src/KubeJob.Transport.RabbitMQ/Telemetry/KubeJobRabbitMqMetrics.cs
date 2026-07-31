@@ -11,6 +11,8 @@ public sealed class KubeJobRabbitMqMetrics : IDisposable
     private readonly Counter<long> _published;
     private readonly Counter<long> _failed;
     private readonly Histogram<double> _publishDuration;
+    private readonly Counter<long> _brokerRetries;
+    private readonly Counter<long> _reconciliationHandoffs;
 
     public KubeJobRabbitMqMetrics(IMeterFactory meterFactory)
     {
@@ -20,6 +22,14 @@ public sealed class KubeJobRabbitMqMetrics : IDisposable
         _published = _meter.CreateCounter<long>("kubejob.rabbitmq.execution.published", "{message}");
         _failed = _meter.CreateCounter<long>("kubejob.rabbitmq.execution.publish_failures", "{message}");
         _publishDuration = _meter.CreateHistogram<double>("kubejob.rabbitmq.execution.publish.duration", "s");
+        _brokerRetries = _meter.CreateCounter<long>(
+            "kubejob.rabbitmq.execution.broker_retries",
+            unit: "{message}",
+            description: "Number of execution envelopes republished to the broker retry queue after a non-admitted delivery.");
+        _reconciliationHandoffs = _meter.CreateCounter<long>(
+            "kubejob.rabbitmq.execution.reconciliation_handoffs",
+            unit: "{message}",
+            description: "Number of execution envelopes handed off to durable Postgres/in-memory reconciliation after exhausting MaxBrokerRetryAttempts.");
     }
 
     public bool IsPublishDurationEnabled => _publishDuration.Enabled;
@@ -41,6 +51,22 @@ public sealed class KubeJobRabbitMqMetrics : IDisposable
         if (_failed.Enabled)
         {
             _failed.Add(1);
+        }
+    }
+
+    public void BrokerRetried()
+    {
+        if (_brokerRetries.Enabled)
+        {
+            _brokerRetries.Add(1);
+        }
+    }
+
+    public void ReconciliationHandedOff()
+    {
+        if (_reconciliationHandoffs.Enabled)
+        {
+            _reconciliationHandoffs.Add(1);
         }
     }
 

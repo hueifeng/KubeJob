@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using KubeJob.ControlPlane.Telemetry;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Runtime;
@@ -18,6 +20,7 @@ public sealed class WorkerControlPlane
     private readonly IJobSubmissionStore _submissions;
     private readonly CompletionBatcher? _completionBatcher;
     private readonly JobRuntimeOptions _options;
+    private readonly KubeJobControlPlaneMetrics? _metrics;
 
     public WorkerControlPlane(
         IWorkerSessionStore sessions,
@@ -26,7 +29,8 @@ public sealed class WorkerControlPlane
         IJobQueryStore queries,
         IJobSubmissionStore submissions,
         IOptions<JobRuntimeOptions> options,
-        CompletionBatcher? completionBatcher = null)
+        CompletionBatcher? completionBatcher = null,
+        KubeJobControlPlaneMetrics? metrics = null)
     {
         _sessions = sessions;
         _claims = claims;
@@ -35,6 +39,7 @@ public sealed class WorkerControlPlane
         _submissions = submissions;
         _completionBatcher = completionBatcher;
         _options = options.Value;
+        _metrics = metrics;
     }
 
     public async ValueTask<RegisterWorkerSessionResponse> RegisterAsync(
@@ -112,6 +117,7 @@ public sealed class WorkerControlPlane
                 Reason: "worker_capacity_exhausted");
         }
 
+        var stopwatch = _metrics?.IsAdmissionDurationEnabled == true ? Stopwatch.StartNew() : null;
         var jobs = await _claims.ClaimAsync(
             new ClaimJobsRequest(
                 request.WorkerId,
@@ -126,6 +132,11 @@ public sealed class WorkerControlPlane
             cancellationToken);
         if (jobs.Count == 1)
         {
+            if (stopwatch is not null)
+            {
+                _metrics!.AdmissionCompleted(stopwatch.Elapsed, "admitted");
+            }
+
             return new AdmitExecutionResponse(
                 ExecutionAdmissionStatus.Admitted,
                 jobs[0]);
@@ -136,52 +147,59 @@ public sealed class WorkerControlPlane
         // unclaimable envelopes need the diagnostic read below. This removes
         // one PostgreSQL round-trip from every successfully admitted message.
         var run = await _queries.GetRunAsync(request.RunId, cancellationToken);
+        AdmitExecutionResponse response;
         if (run is null)
         {
             // The envelope is for a Run that has been hard-deleted; the broker
             // will redeliver until the run is found. Retry so the broker keeps
             // the message until either the Run is recreated or the broker
             // delivery limit is reached and we reconcile via the outbox.
-            return new AdmitExecutionResponse(
+            response = new AdmitExecutionResponse(
                 ExecutionAdmissionStatus.Retry,
                 Reason: "run_not_found");
         }
-
-        if (run.Phase is JobPhase.Succeeded
+        else if (run.Phase is JobPhase.Succeeded
             or JobPhase.Failed
             or JobPhase.Canceled
             or JobPhase.Dead
             || run.CancelRequested)
         {
-            return new AdmitExecutionResponse(
+            response = new AdmitExecutionResponse(
                 ExecutionAdmissionStatus.AlreadyTerminal,
                 Reason: "run_already_terminal");
         }
-
-        if (run.Phase == JobPhase.Running)
+        else if (run.Phase == JobPhase.Running)
         {
             // Another worker holds the lease; the broker should redeliver to
             // a different worker once the lease expires or the run completes.
             // Rejecting here would silently drop the envelope.
-            return new AdmitExecutionResponse(
+            response = new AdmitExecutionResponse(
                 ExecutionAdmissionStatus.Retry,
                 Reason: "run_already_running");
         }
-
-        if (!request.Queues.Contains(run.Queue, StringComparer.Ordinal)
+        else if (!request.Queues.Contains(run.Queue, StringComparer.Ordinal)
             || !request.Capabilities.Contains(run.JobKey, StringComparer.Ordinal))
         {
             // The broker misrouted this envelope to a worker that cannot run
             // it. Retry so a different worker (with the right queue/capability)
             // can pick it up after the broker rebalances. Reject would lose it.
-            return new AdmitExecutionResponse(
+            response = new AdmitExecutionResponse(
                 ExecutionAdmissionStatus.Retry,
                 Reason: "worker_not_capable");
         }
+        else
+        {
+            response = new AdmitExecutionResponse(
+                ExecutionAdmissionStatus.Retry,
+                Reason: "run_not_claimable");
+        }
 
-        return new AdmitExecutionResponse(
-            ExecutionAdmissionStatus.Retry,
-            Reason: "run_not_claimable");
+        if (stopwatch is not null)
+        {
+            _metrics!.AdmissionCompleted(stopwatch.Elapsed, response.Reason ?? response.Status.ToString());
+        }
+
+        return response;
     }
 
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(

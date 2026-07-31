@@ -68,6 +68,8 @@ public static class RabbitMqNotificationExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
+        services.AddMetrics();
+        services.TryAddSingleton<KubeJobRabbitMqMetrics>();
         services.AddSingleton<RabbitMqDispatchTopology>();
         services.AddHostedService(services => services.GetRequiredService<RabbitMqDispatchTopology>());
         services.AddHostedService<RabbitMqExecutionConsumerService>();

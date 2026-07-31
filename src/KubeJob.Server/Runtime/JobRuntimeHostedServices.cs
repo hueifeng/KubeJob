@@ -1,4 +1,5 @@
 using System.Text.Json;
+using KubeJob.ControlPlane.Telemetry;
 using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -58,6 +59,7 @@ public sealed class OutboxPublisherService : BackgroundService
     private readonly ICancelPublisher _cancelPublisher;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<OutboxPublisherService> _logger;
+    private readonly KubeJobControlPlaneMetrics? _metrics;
 
     public OutboxPublisherService(
         IOutboxStore store,
@@ -65,7 +67,8 @@ public sealed class OutboxPublisherService : BackgroundService
         IExecutionTransportRegistry transports,
         ICancelPublisher cancelPublisher,
         IOptions<JobRuntimeOptions> options,
-        ILogger<OutboxPublisherService> logger)
+        ILogger<OutboxPublisherService> logger,
+        KubeJobControlPlaneMetrics? metrics = null)
     {
         _store = store;
         _notifier = notifier;
@@ -73,6 +76,7 @@ public sealed class OutboxPublisherService : BackgroundService
         _cancelPublisher = cancelPublisher;
         _options = options.Value;
         _logger = logger;
+        _metrics = metrics;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -251,6 +255,11 @@ public sealed class OutboxPublisherService : BackgroundService
                 throw new InvalidOperationException(
                     $"Unsupported execution delivery profile '{message.DeliveryProfile}'.");
         }
+
+        if (_metrics?.IsOutboxPublishLagEnabled == true)
+        {
+            _metrics.OutboxPublished(DateTimeOffset.UtcNow - message.AvailableAt);
+        }
     }
 
     private async ValueTask DispatchCancelAsync(
@@ -357,15 +366,18 @@ public sealed class LeaseReaperService : BackgroundService
     private readonly IJobCompletionStore _store;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<LeaseReaperService> _logger;
+    private readonly KubeJobControlPlaneMetrics? _metrics;
 
     public LeaseReaperService(
         IJobCompletionStore store,
         IOptions<JobRuntimeOptions> options,
-        ILogger<LeaseReaperService> logger)
+        ILogger<LeaseReaperService> logger,
+        KubeJobControlPlaneMetrics? metrics = null)
     {
         _store = store;
         _options = options.Value;
         _logger = logger;
+        _metrics = metrics;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -389,6 +401,8 @@ public sealed class LeaseReaperService : BackgroundService
                     {
                         _logger.LogWarning("Reconciled {Count} expired KubeJob attempt leases", count);
                     }
+
+                    _metrics?.LeasesReclaimed(count);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

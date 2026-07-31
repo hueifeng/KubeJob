@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
+using KubeJob.Transport.RabbitMQ.Telemetry;
 using KubeJob.Worker.Options;
 using KubeJob.Worker.Runtime;
 using Microsoft.Extensions.Hosting;
@@ -26,6 +27,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
     private readonly IWorkerRuntimeClient _runtimeClient;
     private readonly RabbitMqDispatchTopology _topology;
     private readonly ILogger<RabbitMqExecutionConsumerService> _logger;
+    private readonly KubeJobRabbitMqMetrics? _metrics;
 
     public RabbitMqExecutionConsumerService(
         IOptions<RabbitMqExecutionOptions> options,
@@ -33,7 +35,8 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         WorkerRuntimeService runtime,
         IWorkerRuntimeClient runtimeClient,
         RabbitMqDispatchTopology topology,
-        ILogger<RabbitMqExecutionConsumerService> logger)
+        ILogger<RabbitMqExecutionConsumerService> logger,
+        KubeJobRabbitMqMetrics? metrics = null)
     {
         _options = options.Value;
         _worker = worker.Value;
@@ -41,6 +44,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         _runtimeClient = runtimeClient;
         _topology = topology;
         _logger = logger;
+        _metrics = metrics;
         _options.Validate();
         _worker.Validate();
     }
@@ -288,6 +292,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
                         DateTimeOffset.UtcNow + _options.BrokerRetryReconciliationDelay),
                     cancellationToken);
                 Ack(channel, gate, delivery.DeliveryTag);
+                _metrics?.ReconciliationHandedOff();
                 _logger.LogWarning(
                     "ACKed RabbitMQ execution envelope {EventId} after broker retry budget; durable reconciliation scheduled={Scheduled} for Run {RunId}",
                     envelope.EventId,
@@ -309,6 +314,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         try
         {
             RepublishForRetry(channel, gate, delivery, envelope.Queue);
+            _metrics?.BrokerRetried();
         }
         catch (Exception retryException)
         {
