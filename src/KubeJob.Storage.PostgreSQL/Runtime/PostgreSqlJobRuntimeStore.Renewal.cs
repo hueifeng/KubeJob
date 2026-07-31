@@ -64,62 +64,64 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction: transaction,
             cancellationToken: cancellationToken));
         var leaseExpiresAt = now.Add(leaseDuration);
-        var results = new List<LeaseRenewalResult>(request.Attempts.Count);
 
+        var renewed = (await connection.QueryAsync<RenewalRow>(new CommandDefinition(@"
+            UPDATE Kj2_JobAttempts attempt
+            SET LeaseExpiresAt = @LeaseExpiresAt
+            FROM Kj2_JobRuns run,
+                 unnest(CAST(@AttemptIds AS text[]), CAST(@LeaseTokens AS text[]))
+                     AS renewal(AttemptId, LeaseToken)
+            WHERE attempt.Id = renewal.AttemptId
+              AND attempt.LeaseToken = renewal.LeaseToken
+              AND attempt.RunId = run.Id
+              AND attempt.Phase = @AttemptRunning
+              AND attempt.LeaseExpiresAt > @Now
+              AND attempt.WorkerId = @WorkerId
+              AND attempt.SessionId = @SessionId
+              AND attempt.SessionEpoch = @SessionEpoch
+              AND EXISTS (
+                  SELECT 1
+                  FROM Kj2_WorkerSessions worker_session
+                  WHERE worker_session.WorkerId = @WorkerId
+                    AND worker_session.SessionId = @SessionId
+                    AND worker_session.Epoch = @SessionEpoch
+                    AND worker_session.State IN (@Ready, @Draining)
+              )
+              AND run.Phase = @RunRunning
+              AND run.CurrentAttemptId = attempt.Id
+            RETURNING attempt.Id AS AttemptId, run.CancelRequested;",
+            new
+            {
+                AttemptIds = request.Attempts.Select(x => x.AttemptId).ToArray(),
+                LeaseTokens = request.Attempts.Select(x => x.LeaseToken).ToArray(),
+                Now = now,
+                LeaseExpiresAt = leaseExpiresAt,
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                Ready = (int)WorkerSessionState.Ready,
+                Draining = (int)WorkerSessionState.Draining,
+                AttemptRunning = (int)JobAttemptPhase.Running,
+                RunRunning = (int)JobPhase.Running
+            },
+            transaction,
+            cancellationToken: cancellationToken))).ToDictionary(row => row.AttemptId, StringComparer.Ordinal);
+
+        var results = new List<LeaseRenewalResult>(request.Attempts.Count);
         foreach (var renewal in request.Attempts)
         {
-            var row = await connection.QuerySingleOrDefaultAsync<RenewalRow>(new CommandDefinition(@"
-                UPDATE Kj2_JobAttempts attempt
-                SET LeaseExpiresAt = @LeaseExpiresAt
-                FROM Kj2_JobRuns run
-                WHERE attempt.Id = @AttemptId
-                  AND attempt.RunId = run.Id
-                  AND attempt.Phase = @AttemptRunning
-                  AND attempt.LeaseExpiresAt > @Now
-                  AND attempt.WorkerId = @WorkerId
-                  AND attempt.SessionId = @SessionId
-                  AND attempt.SessionEpoch = @SessionEpoch
-                  AND attempt.LeaseToken = @LeaseToken
-                  AND EXISTS (
-                      SELECT 1
-                      FROM Kj2_WorkerSessions worker_session
-                      WHERE worker_session.WorkerId = @WorkerId
-                        AND worker_session.SessionId = @SessionId
-                        AND worker_session.Epoch = @SessionEpoch
-                        AND worker_session.State IN (@Ready, @Draining)
-                  )
-                  AND run.Phase = @RunRunning
-                  AND run.CurrentAttemptId = attempt.Id
-                RETURNING run.CancelRequested;",
-                new
-                {
-                    renewal.AttemptId,
-                    renewal.LeaseToken,
-                    Now = now,
-                    LeaseExpiresAt = leaseExpiresAt,
-                    request.WorkerId,
-                    request.SessionId,
-                    request.SessionEpoch,
-                    Ready = (int)WorkerSessionState.Ready,
-                    Draining = (int)WorkerSessionState.Draining,
-                    AttemptRunning = (int)JobAttemptPhase.Running,
-                    RunRunning = (int)JobPhase.Running
-                },
-                transaction,
-                cancellationToken: cancellationToken));
-
-            results.Add(row is null
+            results.Add(renewed.TryGetValue(renewal.AttemptId, out var row)
                 ? new LeaseRenewalResult(
+                    renewal.AttemptId,
+                    true,
+                    row.CancelRequested,
+                    leaseExpiresAt)
+                : new LeaseRenewalResult(
                     renewal.AttemptId,
                     false,
                     false,
                     null,
-                    "attempt_expired_or_fencing_token_mismatch")
-                : new LeaseRenewalResult(
-                    renewal.AttemptId,
-                    true,
-                    row.CancelRequested,
-                    leaseExpiresAt));
+                    "attempt_expired_or_fencing_token_mismatch"));
         }
 
         await connection.ExecuteAsync(new CommandDefinition(@"
@@ -147,6 +149,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     private sealed class RenewalRow
     {
+        public string AttemptId { get; set; } = string.Empty;
+
         public bool CancelRequested { get; set; }
     }
 }

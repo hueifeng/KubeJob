@@ -265,6 +265,49 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Batch_lease_renewal_commits_matching_attempts_and_rejects_mismatched_token()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        foreach (var index in Enumerable.Range(0, 3))
+        {
+            await store.SubmitAsync(
+                NewSubmission($"batch-renewal-{index}"),
+                CancellationToken.None);
+        }
+
+        var worker = await RegisterAsync(store, "renewal-worker", "renewal-session", 3);
+        var claims = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                3,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            3,
+            CancellationToken.None);
+
+        claims.Should().HaveCount(3);
+        var renewals = claims
+            .Select((job, index) => new LeaseRenewal(
+                job.AttemptId,
+                index == 0 ? "wrong-token" : job.LeaseToken))
+            .ToArray();
+
+        var results = await store.RenewLeasesAsync(
+            new RenewLeasesRequest(worker.WorkerId, worker.SessionId, worker.Epoch, renewals),
+            TimeSpan.FromMinutes(1),
+            CancellationToken.None);
+
+        results.Should().HaveCount(3);
+        results.Single(r => r.AttemptId == claims[0].AttemptId).Renewed.Should().BeFalse();
+        results.Where(r => r.AttemptId != claims[0].AttemptId)
+            .Should().OnlyContain(r => r.Renewed);
+    }
+
+    [Fact]
     public async Task Schedule_fire_advances_cursor_and_writes_run_and_outbox_atomically()
     {
         if (!Enabled) return;
