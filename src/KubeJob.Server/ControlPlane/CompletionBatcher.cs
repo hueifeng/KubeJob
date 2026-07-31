@@ -105,7 +105,7 @@ public sealed class CompletionBatcher
             {
                 var responses = await _store.CompleteBatchAsync(
                     batch.Select(x => x.Request).ToArray(),
-                    _options.RetryDelay,
+                    _options.RetryPolicy,
                     CancellationToken.None);
                 if (responses.Count != batch.Count)
                 {

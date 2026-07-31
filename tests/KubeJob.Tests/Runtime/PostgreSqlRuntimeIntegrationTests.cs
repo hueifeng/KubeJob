@@ -18,6 +18,11 @@ public sealed class PostgreSqlRuntimeCollection
 [Collection(PostgreSqlRuntimeCollection.Name)]
 public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 {
+    private static readonly RetryPolicy TestRetryPolicy =
+        new(BackoffStrategy.Fixed, TimeSpan.Zero, TimeSpan.Zero);
+    private static readonly RetryPolicy TestRetryPolicyLong =
+        new(BackoffStrategy.Fixed, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+
     private string? _adminConnectionString;
     private string? _databaseName;
     private string? _testConnectionString;
@@ -187,7 +192,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 
         var completion = await store.CompleteAsync(
             Completion(oldSession, claim, JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
 
         completion.Accepted.Should().BeFalse();
@@ -221,7 +226,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         claims.Should().HaveCount(3);
         var completions = await store.CompleteBatchAsync(
             claims.Select(job => Completion(worker, job, JobAttemptOutcome.Succeeded)).ToArray(),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
 
         completions.Should().OnlyContain(result => result.Accepted);
@@ -286,7 +291,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 
         var completions = await store.CompleteBatchAsync(
             requests,
-            TimeSpan.FromSeconds(30),
+            TestRetryPolicyLong,
             CancellationToken.None);
 
         completions.Should().OnlyContain(result => result.Accepted);
@@ -325,7 +330,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 
         var response = (await store.CompleteBatchAsync(
             new[] { Completion(worker, claim, JobAttemptOutcome.Succeeded) },
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None)).Single();
 
         response.Accepted.Should().BeTrue();
@@ -416,7 +421,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         await Task.Delay(150);
         var reconciled = await store.RequeueExpiredLeasesAsync(
             DateTimeOffset.UtcNow,
-            TimeSpan.FromSeconds(30),
+            TestRetryPolicyLong,
             10,
             CancellationToken.None);
 
@@ -610,7 +615,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None)).Single();
         var completion = await store.CompleteAsync(
             Completion(worker, completedClaim, JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
 
         var readyAt = DateTimeOffset.UtcNow.AddMinutes(-7);
@@ -633,6 +638,41 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         readyQueue.OldestReadyAt.Should().BeCloseTo(readyAt, TimeSpan.FromMilliseconds(1));
         futureQueue.OldestReadyAt.Should().BeNull();
         overview.ObservedAt.Should().BeAfter(readyAt);
+    }
+
+    [Fact]
+    public async Task Exponential_retry_policy_grows_delay_with_attempt_count()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var run = (await store.SubmitAsync(
+            NewSubmission("exponential-backoff", maxAttempts: 3),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "backoff-worker", "backoff-session");
+        var exponentialPolicy = new RetryPolicy(
+            BackoffStrategy.Exponential,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromMinutes(10),
+            Multiplier: 4.0);
+
+        var firstClaim = (await store.ClaimAsync(Claim(worker), TimeSpan.FromMinutes(1), 1, CancellationToken.None)).Single();
+        var beforeFirstRetry = DateTimeOffset.UtcNow;
+        await store.CompleteAsync(
+            Completion(worker, firstClaim, JobAttemptOutcome.RetryableFailure),
+            exponentialPolicy,
+            CancellationToken.None);
+        var firstDelay = (await store.GetRunAsync(run.Id, CancellationToken.None))!.AvailableAt - beforeFirstRetry;
+
+        await Task.Delay(1500);
+        var secondClaim = (await store.ClaimAsync(Claim(worker), TimeSpan.FromMinutes(1), 1, CancellationToken.None)).Single();
+        var beforeSecondRetry = DateTimeOffset.UtcNow;
+        await store.CompleteAsync(
+            Completion(worker, secondClaim, JobAttemptOutcome.RetryableFailure),
+            exponentialPolicy,
+            CancellationToken.None);
+        var secondDelay = (await store.GetRunAsync(run.Id, CancellationToken.None))!.AvailableAt - beforeSecondRetry;
+
+        secondDelay.Should().BeGreaterThan(firstDelay);
     }
 
     private static SubmitJobCommand NewSubmission(

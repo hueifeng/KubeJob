@@ -1,10 +1,13 @@
+using KubeJob.Core.Runtime;
+
 namespace KubeJob.Server.Runtime;
 
 public sealed class JobRuntimeOptions
 {
     public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(30);
 
-    public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(5);
+    public RetryPolicy RetryPolicy { get; set; } =
+        new(BackoffStrategy.Fixed, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
 
     public TimeSpan LeaseReaperInterval { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -78,10 +81,7 @@ public sealed class JobRuntimeOptions
             throw new InvalidOperationException("LeaseDuration must be positive.");
         }
 
-        if (RetryDelay < TimeSpan.Zero)
-        {
-            throw new InvalidOperationException("RetryDelay cannot be negative.");
-        }
+        RetryPolicy.Validate();
 
         if (LeaseReaperInterval <= TimeSpan.Zero)
         {

@@ -6,6 +6,9 @@ namespace KubeJob.Tests.Runtime;
 
 public sealed class WorkerSessionFencingTests
 {
+    private static readonly RetryPolicy TestRetryPolicy =
+        new(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
     [Fact]
     public async Task Old_session_cannot_complete_after_new_session_is_registered()
     {
@@ -29,7 +32,7 @@ public sealed class WorkerSessionFencingTests
                 claim.AttemptNumber,
                 claim.LeaseToken,
                 JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
 
         completion.Accepted.Should().BeFalse();

@@ -381,7 +381,7 @@ public sealed class LeaseReaperService : BackgroundService
                 {
                     var count = await _store.RequeueExpiredLeasesAsync(
                         DateTimeOffset.UtcNow,
-                        _options.RetryDelay,
+                        _options.RetryPolicy,
                         _options.LeaseReaperBatchSize,
                         stoppingToken);
 

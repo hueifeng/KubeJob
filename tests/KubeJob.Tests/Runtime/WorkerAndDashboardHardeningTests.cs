@@ -218,7 +218,7 @@ public sealed class WorkerAndDashboardHardeningTests
                 claim.AttemptNumber,
                 claim.LeaseToken,
                 JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)),
             CancellationToken.None);
 
         var oldestReadyAt = DateTimeOffset.UtcNow.AddMinutes(-8);

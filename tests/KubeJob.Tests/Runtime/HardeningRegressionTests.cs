@@ -141,7 +141,7 @@ public sealed class HardeningRegressionTests
 
         public ValueTask<CompleteAttemptResponse> CompleteAsync(
             CompleteAttemptRequest request,
-            TimeSpan retryDelay,
+            RetryPolicy retryPolicy,
             CancellationToken cancellationToken)
         {
             if (ThrowOnNextBatch)
@@ -155,7 +155,7 @@ public sealed class HardeningRegressionTests
 
         public ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
             IReadOnlyList<CompleteAttemptRequest> requests,
-            TimeSpan retryDelay,
+            RetryPolicy retryPolicy,
             CancellationToken cancellationToken)
         {
             if (ThrowOnNextBatch)
@@ -173,7 +173,7 @@ public sealed class HardeningRegressionTests
 
         public ValueTask<int> RequeueExpiredLeasesAsync(
             DateTimeOffset now,
-            TimeSpan retryDelay,
+            RetryPolicy retryPolicy,
             int batchSize,
             CancellationToken cancellationToken)
         {

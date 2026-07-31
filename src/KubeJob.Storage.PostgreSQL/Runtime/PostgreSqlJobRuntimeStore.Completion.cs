@@ -10,7 +10,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 {
     public async ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
@@ -158,7 +158,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     {
                         phase = JobPhase.Pending;
                         requeued = true;
-                        var availableAt = now.Add(retryDelay);
+                        var availableAt = now.Add(retryPolicy.ComputeDelay(state.AttemptCount));
                         await RequeueRunAsync(
                             connection,
                             transaction,
@@ -202,7 +202,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     public async ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
         IReadOnlyList<CompleteAttemptRequest> requests,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(requests);
@@ -221,7 +221,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             var items = group.ToArray();
             if (items.Length > 1)
             {
-                var batchResults = await CompleteGroupAsync(items, retryDelay, cancellationToken);
+                var batchResults = await CompleteGroupAsync(items, retryPolicy, cancellationToken);
                 foreach (var item in items)
                 {
                     results[item.index] = batchResults[item.index];
@@ -231,7 +231,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 foreach (var item in items)
                 {
-                    results[item.index] = await CompleteAsync(item.request, retryDelay, cancellationToken);
+                    results[item.index] = await CompleteAsync(item.request, retryPolicy, cancellationToken);
                 }
             }
         }
@@ -241,7 +241,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     private async ValueTask<Dictionary<int, CompleteAttemptResponse>> CompleteGroupAsync(
         IReadOnlyList<(CompleteAttemptRequest request, int index)> items,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken)
     {
         var first = items[0].request;
@@ -358,7 +358,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             var canceled = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
             var succeeded = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
             var failed = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
-            var retryable = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
+            var retryable = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage, DateTimeOffset AvailableAt)>();
             var dead = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)>();
 
             foreach (var (request, index, state) in valid)
@@ -386,7 +386,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     case JobAttemptOutcome.TimedOut:
                         if (state.AttemptCount < state.MaxAttempts)
                         {
-                            retryable.Add((request.RunId, request.AttemptId, request.FailureCode, request.FailureMessage));
+                            var availableAt = now.Add(retryPolicy.ComputeDelay(state.AttemptCount));
+                            retryable.Add((request.RunId, request.AttemptId, request.FailureCode, request.FailureMessage, availableAt));
                             results[index] = new CompleteAttemptResponse(true, JobPhase.Pending, true);
                         }
                         else
@@ -409,8 +410,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
             if (retryable.Count > 0)
             {
-                var availableAt = now.Add(retryDelay);
-                await RequeueRunBatchWithReasonsAsync(connection, transaction, retryable, availableAt, cancellationToken);
+                await RequeueRunBatchWithReasonsAsync(connection, transaction, retryable, cancellationToken);
                 var stateByRunId = valid.ToDictionary(x => x.request.RunId, x => x.state.Queue, StringComparer.Ordinal);
                 await AddOutboxBatchAsync(
                     connection,
@@ -418,10 +418,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     retryable
                         .Select(x => (
                             Queue: stateByRunId[x.RunId],
-                            Payload: JsonSerializer.Serialize(new { runId = x.RunId, queue = stateByRunId[x.RunId] }, SerializerOptions)))
+                            Payload: JsonSerializer.Serialize(new { runId = x.RunId, queue = stateByRunId[x.RunId] }, SerializerOptions),
+                            x.AvailableAt))
                         .ToArray(),
                     OutboxEventTypes.WorkAvailable,
-                    availableAt,
                     cancellationToken);
             }
         }
@@ -479,8 +479,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
     private static async ValueTask RequeueRunBatchWithReasonsAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        IReadOnlyList<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage)> items,
-        DateTimeOffset availableAt,
+        IReadOnlyList<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage, DateTimeOffset AvailableAt)> items,
         CancellationToken cancellationToken)
     {
         if (items.Count == 0)
@@ -491,7 +490,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobRuns
             SET Phase = @Pending,
-                AvailableAt = @AvailableAt,
+                AvailableAt = item.AvailableAt,
                 CurrentAttemptId = NULL,
                 CurrentWorkerId = NULL,
                 CurrentSessionId = NULL,
@@ -502,8 +501,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 CAST(@RunIds AS text[]),
                 CAST(@AttemptIds AS text[]),
                 CAST(@FailureCodes AS text[]),
-                CAST(@FailureMessages AS text[]))
-                AS item(RunId, AttemptId, FailureCode, FailureMessage)
+                CAST(@FailureMessages AS text[]),
+                CAST(@AvailableAts AS timestamptz[]))
+                AS item(RunId, AttemptId, FailureCode, FailureMessage, AvailableAt)
             WHERE Kj2_JobRuns.Id = item.RunId
               AND Kj2_JobRuns.Phase = @Running
               AND Kj2_JobRuns.CurrentAttemptId = item.AttemptId;",
@@ -513,8 +513,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 AttemptIds = items.Select(x => x.AttemptId).ToArray(),
                 FailureCodes = items.Select(x => x.FailureCode).ToArray(),
                 FailureMessages = items.Select(x => x.FailureMessage).ToArray(),
+                AvailableAts = items.Select(x => x.AvailableAt.ToUniversalTime()).ToArray(),
                 Pending = (int)JobPhase.Pending,
-                AvailableAt = availableAt,
                 Running = (int)JobPhase.Running
             },
             transaction,
@@ -523,7 +523,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
     public async ValueTask<int> RequeueExpiredLeasesAsync(
         DateTimeOffset now,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         int batchSize,
         CancellationToken cancellationToken)
     {
@@ -622,25 +622,27 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         if (retryable.Length > 0)
         {
-            var availableAt = databaseNow.Add(retryDelay);
+            var retryItems = retryable
+                .Select(x => (x.AttemptRunId, AvailableAt: databaseNow.Add(retryPolicy.ComputeDelay(x.AttemptCount))))
+                .ToArray();
             await RequeueRunBatchAsync(
                 connection,
                 transaction,
-                retryable.Select(x => x.AttemptRunId).ToArray(),
-                availableAt,
+                retryItems,
                 failureCode,
                 failureMessage,
                 cancellationToken);
+            var availableAtByRunId = retryItems.ToDictionary(x => x.AttemptRunId, x => x.AvailableAt, StringComparer.Ordinal);
             await AddOutboxBatchAsync(
                 connection,
                 transaction,
                 retryable
                     .Select(x => (
                         x.Queue,
-                        JsonSerializer.Serialize(new { runId = x.AttemptRunId, queue = x.Queue }, SerializerOptions)))
+                        Payload: JsonSerializer.Serialize(new { runId = x.AttemptRunId, queue = x.Queue }, SerializerOptions),
+                        AvailableAt: availableAtByRunId[x.AttemptRunId]))
                     .ToArray(),
                 OutboxEventTypes.WorkAvailable,
-                availableAt,
                 cancellationToken);
         }
 
@@ -747,13 +749,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
     private static async ValueTask RequeueRunBatchAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        IReadOnlyList<string> runIds,
-        DateTimeOffset availableAt,
+        IReadOnlyList<(string RunId, DateTimeOffset AvailableAt)> items,
         string? failureCode,
         string? failureMessage,
         CancellationToken cancellationToken)
     {
-        if (runIds.Count == 0)
+        if (items.Count == 0)
         {
             return;
         }
@@ -761,19 +762,21 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobRuns
             SET Phase = @Pending,
-                AvailableAt = @AvailableAt,
+                AvailableAt = item.AvailableAt,
                 CurrentAttemptId = NULL,
                 CurrentWorkerId = NULL,
                 CurrentSessionId = NULL,
                 FailureCode = @FailureCode,
                 FailureMessage = @FailureMessage,
                 Version = Version + 1
-            WHERE Id = ANY(@RunIds);",
+            FROM unnest(CAST(@RunIds AS text[]), CAST(@AvailableAts AS timestamptz[]))
+                AS item(RunId, AvailableAt)
+            WHERE Kj2_JobRuns.Id = item.RunId;",
             new
             {
-                RunIds = runIds.ToArray(),
+                RunIds = items.Select(x => x.RunId).ToArray(),
+                AvailableAts = items.Select(x => x.AvailableAt.ToUniversalTime()).ToArray(),
                 Pending = (int)JobPhase.Pending,
-                AvailableAt = availableAt,
                 FailureCode = failureCode,
                 FailureMessage = failureMessage
             },
@@ -784,9 +787,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
     private static async ValueTask AddOutboxBatchAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        IReadOnlyList<(string Queue, string PayloadJson)> items,
+        IReadOnlyList<(string Queue, string PayloadJson, DateTimeOffset AvailableAt)> items,
         string eventType,
-        DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
         if (items.Count == 0)
@@ -804,20 +806,24 @@ public sealed partial class PostgreSqlJobRuntimeStore
             SELECT
                 item.Id, item.Queue, @DeliveryProfile, @ExecutionLane, @TransportId, @EventType,
                 CAST(item.PayloadJson AS jsonb), @State, 0,
-                GREATEST(@AvailableAt, clock_timestamp()), clock_timestamp()
-            FROM unnest(CAST(@Ids AS text[]), CAST(@Queues AS text[]), CAST(@Payloads AS text[]))
-                AS item(Id, Queue, PayloadJson);",
+                GREATEST(item.AvailableAt, clock_timestamp()), clock_timestamp()
+            FROM unnest(
+                CAST(@Ids AS text[]),
+                CAST(@Queues AS text[]),
+                CAST(@Payloads AS text[]),
+                CAST(@AvailableAts AS timestamptz[]))
+                AS item(Id, Queue, PayloadJson, AvailableAt);",
             new
             {
                 Ids = items.Select(_ => NewId()).ToArray(),
                 Queues = items.Select(x => x.Queue).ToArray(),
                 Payloads = items.Select(x => x.PayloadJson).ToArray(),
+                AvailableAts = items.Select(x => x.AvailableAt.ToUniversalTime()).ToArray(),
                 DeliveryProfile = (int)target.Profile,
                 target.ExecutionLane,
                 target.TransportId,
                 EventType = eventType,
-                State = (int)OutboxDeliveryState.Pending,
-                AvailableAt = availableAt.ToUniversalTime()
+                State = (int)OutboxDeliveryState.Pending
             },
             transaction,
             cancellationToken: cancellationToken));

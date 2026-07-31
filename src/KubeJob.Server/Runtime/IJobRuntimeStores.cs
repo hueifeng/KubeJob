@@ -85,17 +85,17 @@ public interface IJobCompletionStore
 {
     ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
         IReadOnlyList<CompleteAttemptRequest> requests,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken);
 
     ValueTask<int> RequeueExpiredLeasesAsync(
         DateTimeOffset now,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         int batchSize,
         CancellationToken cancellationToken);
 }

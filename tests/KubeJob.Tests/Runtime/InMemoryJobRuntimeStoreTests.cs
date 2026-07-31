@@ -7,6 +7,9 @@ namespace KubeJob.Tests.Runtime;
 
 public sealed class InMemoryJobRuntimeStoreTests
 {
+    private static readonly RetryPolicy TestRetryPolicy =
+        new(BackoffStrategy.Fixed, TimeSpan.Zero, TimeSpan.Zero);
+
     [Fact]
     public async Task Submit_with_same_idempotency_key_returns_same_logical_run()
     {
@@ -89,7 +92,7 @@ public sealed class InMemoryJobRuntimeStoreTests
 
         var failed = await store.CompleteAsync(
             NewCompletion(worker, first, JobAttemptOutcome.RetryableFailure),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
         var second = (await store.ClaimAsync(
             NewClaim(worker),
@@ -117,7 +120,7 @@ public sealed class InMemoryJobRuntimeStoreTests
 
         var completion = await store.CompleteAsync(
             NewCompletion(worker, claim, JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
 
         completion.Accepted.Should().BeFalse();
@@ -162,7 +165,7 @@ public sealed class InMemoryJobRuntimeStoreTests
 
         await store.RequeueExpiredLeasesAsync(
             DateTimeOffset.UtcNow,
-            TimeSpan.Zero,
+            TestRetryPolicy,
             10,
             CancellationToken.None);
         var second = (await store.ClaimAsync(
@@ -173,11 +176,11 @@ public sealed class InMemoryJobRuntimeStoreTests
 
         var stale = await store.CompleteAsync(
             NewCompletion(workerA, first, JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
         var current = await store.CompleteAsync(
             NewCompletion(workerB, second, JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
 
         stale.Accepted.Should().BeFalse();
@@ -449,7 +452,7 @@ public sealed class InMemoryJobRuntimeStoreTests
             CancellationToken.None)).Single();
         await store.CompleteAsync(
             NewCompletion(worker, claim, JobAttemptOutcome.Succeeded),
-            TimeSpan.Zero,
+            TestRetryPolicy,
             CancellationToken.None);
         await store.DispatchOnceAsync(
             TimeSpan.FromMinutes(1),

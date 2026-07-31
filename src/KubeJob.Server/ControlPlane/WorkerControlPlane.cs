@@ -199,7 +199,7 @@ public sealed class WorkerControlPlane
         CompleteAttemptRequest request,
         CancellationToken cancellationToken = default) =>
         _completionBatcher is null
-            ? _completions.CompleteAsync(request, _options.RetryDelay, cancellationToken)
+            ? _completions.CompleteAsync(request, _options.RetryPolicy, cancellationToken)
             : _completionBatcher.EnqueueAsync(request, cancellationToken);
 
     public ValueTask<bool> RequeueExecutionAsync(

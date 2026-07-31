@@ -274,7 +274,7 @@ public sealed class DashboardApiTests
                 JobAttemptOutcome.PermanentFailure,
                 "smtp_rejected",
                 "The recipient was rejected."),
-            TimeSpan.Zero,
+            new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)),
             CancellationToken.None);
         var exhaustedCompletion = await store.CompleteAsync(
             new CompleteAttemptRequest(
@@ -288,7 +288,7 @@ public sealed class DashboardApiTests
                 JobAttemptOutcome.RetryableFailure,
                 "socket_timeout",
                 "The upstream service did not respond."),
-            TimeSpan.Zero,
+            new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)),
             CancellationToken.None);
 
         permanentCompletion.Phase.Should().Be(JobPhase.Failed);

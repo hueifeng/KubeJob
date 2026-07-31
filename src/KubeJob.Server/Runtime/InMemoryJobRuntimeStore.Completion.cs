@@ -7,7 +7,7 @@ public sealed partial class InMemoryJobRuntimeStore
 {
     public ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -67,7 +67,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 case JobAttemptOutcome.TimedOut:
                     if (run.AttemptCount < run.MaxAttempts)
                     {
-                        Requeue(run, now.Add(retryDelay), request.FailureCode, request.FailureMessage);
+                        Requeue(run, now.Add(retryPolicy.ComputeDelay(run.AttemptCount)), request.FailureCode, request.FailureMessage);
                         AddWorkAvailableOutbox(run, now);
                         return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, true));
                     }
@@ -83,23 +83,23 @@ public sealed partial class InMemoryJobRuntimeStore
 
     public ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
         IReadOnlyList<CompleteAttemptRequest> requests,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(requests);
         cancellationToken.ThrowIfCancellationRequested();
-        return CompleteBatchCoreAsync(requests, retryDelay, cancellationToken);
+        return CompleteBatchCoreAsync(requests, retryPolicy, cancellationToken);
     }
 
     private async ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchCoreAsync(
         IReadOnlyList<CompleteAttemptRequest> requests,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         CancellationToken cancellationToken)
     {
         var results = new CompleteAttemptResponse[requests.Count];
         for (var index = 0; index < requests.Count; index++)
         {
-            results[index] = await CompleteAsync(requests[index], retryDelay, cancellationToken);
+            results[index] = await CompleteAsync(requests[index], retryPolicy, cancellationToken);
         }
 
         return results;
@@ -107,7 +107,7 @@ public sealed partial class InMemoryJobRuntimeStore
 
     public ValueTask<int> RequeueExpiredLeasesAsync(
         DateTimeOffset now,
-        TimeSpan retryDelay,
+        RetryPolicy retryPolicy,
         int batchSize,
         CancellationToken cancellationToken)
     {
@@ -140,7 +140,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 }
                 else if (run.AttemptCount < run.MaxAttempts)
                 {
-                    Requeue(run, now.Add(retryDelay), attempt.FailureCode, attempt.FailureMessage);
+                    Requeue(run, now.Add(retryPolicy.ComputeDelay(run.AttemptCount)), attempt.FailureCode, attempt.FailureMessage);
                     AddWorkAvailableOutbox(run, now);
                 }
                 else
