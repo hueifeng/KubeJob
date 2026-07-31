@@ -694,18 +694,171 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         completions.Should().OnlyContain(result => result.Accepted);
     }
 
+    [Fact]
+    public async Task Batch_claim_admits_only_the_requested_limit_and_leaves_remainder_pending()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var runs = new List<JobRunRecord>();
+        foreach (var index in Enumerable.Range(0, 5))
+        {
+            runs.Add((await store.SubmitAsync(
+                NewSubmission($"partial-batch-{index}"),
+                CancellationToken.None)).Run);
+        }
+
+        var worker = await RegisterAsync(store, "partial-batch-worker", "partial-batch-session", 5);
+        var claimed = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                5,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            3,
+            CancellationToken.None);
+
+        claimed.Should().HaveCount(3);
+        var claimedRunIds = claimed.Select(job => job.RunId).ToHashSet(StringComparer.Ordinal);
+        var unclaimedRunIds = runs.Select(run => run.Id).Where(id => !claimedRunIds.Contains(id));
+        foreach (var runId in unclaimedRunIds)
+        {
+            var run = await store.GetRunAsync(runId, CancellationToken.None);
+            run!.Phase.Should().Be(JobPhase.Pending);
+        }
+
+        var attemptCounts = await Task.WhenAll(
+            runs.Select(run => store.GetAttemptsAsync(run.Id, CancellationToken.None).AsTask()));
+        attemptCounts.Sum(attempts => attempts.Count).Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Batch_claim_admits_candidates_in_descending_priority_order()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var low = (await store.SubmitAsync(
+            NewSubmission("priority-low", priority: 0),
+            CancellationToken.None)).Run;
+        var high = (await store.SubmitAsync(
+            NewSubmission("priority-high", priority: 10),
+            CancellationToken.None)).Run;
+        var medium = (await store.SubmitAsync(
+            NewSubmission("priority-medium", priority: 5),
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "priority-worker", "priority-session", 2);
+        var claimed = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                2,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+
+        claimed.Select(job => job.RunId).Should().Equal(high.Id, medium.Id);
+        (await store.GetRunAsync(low.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Pending);
+    }
+
+    [Fact]
+    public async Task Batch_claim_admits_only_one_run_per_concurrency_key()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        const string concurrencyKey = "batch-concurrency-key";
+        var first = (await store.SubmitAsync(
+            NewSubmission("concurrency-batch-1", concurrencyKey: concurrencyKey),
+            CancellationToken.None)).Run;
+        var second = (await store.SubmitAsync(
+            NewSubmission("concurrency-batch-2", concurrencyKey: concurrencyKey),
+            CancellationToken.None)).Run;
+        var unrelated = (await store.SubmitAsync(
+            NewSubmission("concurrency-batch-unrelated"),
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "concurrency-batch-worker", "concurrency-batch-session", 3);
+        var claimed = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                3,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            3,
+            CancellationToken.None);
+
+        claimed.Should().HaveCount(2);
+        claimed.Select(job => job.RunId).Should().Contain(unrelated.Id);
+        var claimedFromPair = claimed.Select(job => job.RunId)
+            .Intersect(new[] { first.Id, second.Id })
+            .ToArray();
+        claimedFromPair.Should().ContainSingle();
+        var otherFromPair = claimedFromPair.Single() == first.Id ? second.Id : first.Id;
+        (await store.GetRunAsync(otherFromPair, CancellationToken.None))!.Phase.Should().Be(JobPhase.Pending);
+    }
+
+    [Fact]
+    public async Task Batch_claim_excludes_a_run_that_loses_its_update_race_without_leaving_an_orphaned_attempt()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var contested = (await store.SubmitAsync(
+            NewSubmission("race-loss-contested"),
+            CancellationToken.None)).Run;
+        var sibling = (await store.SubmitAsync(
+            NewSubmission("race-loss-sibling"),
+            CancellationToken.None)).Run;
+
+        var soloWorker = await RegisterAsync(store, "race-solo-worker", "race-solo-session", 1);
+        var soloClaim = await store.ClaimAsync(
+            Claim(soloWorker) with { RunIds = new[] { contested.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+        soloClaim.Should().ContainSingle();
+
+        var batchWorker = await RegisterAsync(store, "race-batch-worker", "race-batch-session", 2);
+        var batchClaim = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                batchWorker.WorkerId,
+                batchWorker.SessionId,
+                batchWorker.Epoch,
+                2,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+
+        batchClaim.Should().ContainSingle(job => job.RunId == sibling.Id);
+        var contestedAttempts = await store.GetAttemptsAsync(contested.Id, CancellationToken.None);
+        contestedAttempts.Should().ContainSingle();
+        (await store.GetRunAsync(contested.Id, CancellationToken.None))!
+            .CurrentWorkerId.Should().Be(soloWorker.WorkerId);
+    }
+
     private static SubmitJobCommand NewSubmission(
         string? idempotencyKey = null,
         string queue = "default",
         DateTimeOffset? availableAt = null,
-        int maxAttempts = 3) => new(
+        int maxAttempts = 3,
+        int priority = 0,
+        string? concurrencyKey = null) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         queue,
-        0,
+        priority,
         availableAt ?? DateTimeOffset.UtcNow,
         idempotencyKey,
-        null,
+        concurrencyKey,
         maxAttempts,
         60);
 

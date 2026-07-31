@@ -138,12 +138,19 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken))).ToArray();
 
-        var claimed = new List<ClaimedJob>(Math.Min(limit, candidates.Length));
+        var reserved = new List<JobRunRecord>(Math.Min(limit, candidates.Length));
+        var reservedConcurrencyKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var run in candidates)
         {
-            if (claimed.Count >= limit)
+            if (reserved.Count >= limit)
             {
                 break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(run.ConcurrencyKey)
+                && reservedConcurrencyKeys.Contains(run.ConcurrencyKey))
+            {
+                continue;
             }
 
             if (!await TryReserveConcurrencyKeyAsync(connection, transaction, run, cancellationToken))
@@ -151,82 +158,31 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 continue;
             }
 
-            var attemptNumber = run.AttemptCount + 1;
-            var attemptId = NewId();
-            var leaseToken = NewId();
-            var leaseExpiresAt = now.Add(leaseDuration);
-
-            await connection.ExecuteAsync(new CommandDefinition(@"
-                INSERT INTO Kj2_JobAttempts
-                    (Id, RunId, AttemptNumber, WorkerId, SessionId, SessionEpoch,
-                     LeaseToken, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
-                VALUES
-                    (@Id, @RunId, @AttemptNumber, @WorkerId, @SessionId,
-                     @SessionEpoch, @LeaseToken, @Phase, @ClaimedAt,
-                     @StartedAt, @LeaseExpiresAt);",
-                new
-                {
-                    Id = attemptId,
-                    RunId = run.Id,
-                    AttemptNumber = attemptNumber,
-                    request.WorkerId,
-                    request.SessionId,
-                    request.SessionEpoch,
-                    LeaseToken = leaseToken,
-                    Phase = (int)JobAttemptPhase.Running,
-                    ClaimedAt = now,
-                    StartedAt = now,
-                    LeaseExpiresAt = leaseExpiresAt
-                },
-                transaction,
-                cancellationToken: cancellationToken));
-
-            var updated = await connection.ExecuteAsync(new CommandDefinition(@"
-                UPDATE Kj2_JobRuns
-                SET Phase = @Running,
-                    AttemptCount = @AttemptNumber,
-                    CurrentAttemptId = @AttemptId,
-                    CurrentWorkerId = @WorkerId,
-                    CurrentSessionId = @SessionId,
-                    StartedAt = COALESCE(StartedAt, @StartedAt),
-                    Version = Version + 1
-                WHERE Id = @RunId
-                  AND Phase = @Pending
-                  AND CancelRequested = FALSE;",
-                new
-                {
-                    RunId = run.Id,
-                    Running = (int)JobPhase.Running,
-                    Pending = (int)JobPhase.Pending,
-                    AttemptNumber = attemptNumber,
-                    AttemptId = attemptId,
-                    request.WorkerId,
-                    request.SessionId,
-                    StartedAt = now
-                },
-                transaction,
-                cancellationToken: cancellationToken));
-
-            if (updated == 0)
+            if (!string.IsNullOrWhiteSpace(run.ConcurrencyKey))
             {
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM Kj2_JobAttempts WHERE Id = @AttemptId;",
-                    new { AttemptId = attemptId },
-                    transaction,
-                    cancellationToken: cancellationToken));
-                continue;
+                reservedConcurrencyKeys.Add(run.ConcurrencyKey);
             }
 
-            claimed.Add(new ClaimedJob(
-                run.Id,
-                attemptId,
-                attemptNumber,
-                leaseToken,
-                leaseExpiresAt,
-                run.JobKey,
-                run.PayloadJson,
-                run.Queue,
-                run.TimeoutSeconds));
+            reserved.Add(run);
+        }
+
+        List<ClaimedJob> claimed;
+        if (reserved.Count == 0)
+        {
+            claimed = new List<ClaimedJob>();
+        }
+        else if (reserved.Count == 1)
+        {
+            claimed = new List<ClaimedJob>(1);
+            var job = await ClaimSingleAsync(connection, transaction, reserved[0], request, now, leaseDuration, cancellationToken);
+            if (job is not null)
+            {
+                claimed.Add(job);
+            }
+        }
+        else
+        {
+            claimed = await ClaimBatchAsync(connection, transaction, reserved, request, now, leaseDuration, cancellationToken);
         }
 
         await connection.ExecuteAsync(new CommandDefinition(@"
@@ -249,6 +205,205 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken: cancellationToken));
 
         await transaction.CommitAsync(cancellationToken);
+        return claimed;
+    }
+
+    private static async ValueTask<ClaimedJob?> ClaimSingleAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        JobRunRecord run,
+        ClaimJobsRequest request,
+        DateTimeOffset now,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        var attemptNumber = run.AttemptCount + 1;
+        var attemptId = NewId();
+        var leaseToken = NewId();
+        var leaseExpiresAt = now.Add(leaseDuration);
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            INSERT INTO Kj2_JobAttempts
+                (Id, RunId, AttemptNumber, WorkerId, SessionId, SessionEpoch,
+                 LeaseToken, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
+            VALUES
+                (@Id, @RunId, @AttemptNumber, @WorkerId, @SessionId,
+                 @SessionEpoch, @LeaseToken, @Phase, @ClaimedAt,
+                 @StartedAt, @LeaseExpiresAt);",
+            new
+            {
+                Id = attemptId,
+                RunId = run.Id,
+                AttemptNumber = attemptNumber,
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                LeaseToken = leaseToken,
+                Phase = (int)JobAttemptPhase.Running,
+                ClaimedAt = now,
+                StartedAt = now,
+                LeaseExpiresAt = leaseExpiresAt
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var updated = await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = @Running,
+                AttemptCount = @AttemptNumber,
+                CurrentAttemptId = @AttemptId,
+                CurrentWorkerId = @WorkerId,
+                CurrentSessionId = @SessionId,
+                StartedAt = COALESCE(StartedAt, @StartedAt),
+                Version = Version + 1
+            WHERE Id = @RunId
+              AND Phase = @Pending
+              AND CancelRequested = FALSE;",
+            new
+            {
+                RunId = run.Id,
+                Running = (int)JobPhase.Running,
+                Pending = (int)JobPhase.Pending,
+                AttemptNumber = attemptNumber,
+                AttemptId = attemptId,
+                request.WorkerId,
+                request.SessionId,
+                StartedAt = now
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (updated == 0)
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM Kj2_JobAttempts WHERE Id = @AttemptId;",
+                new { AttemptId = attemptId },
+                transaction,
+                cancellationToken: cancellationToken));
+            return null;
+        }
+
+        return new ClaimedJob(
+            run.Id,
+            attemptId,
+            attemptNumber,
+            leaseToken,
+            leaseExpiresAt,
+            run.JobKey,
+            run.PayloadJson,
+            run.Queue,
+            run.TimeoutSeconds);
+    }
+
+    private static async ValueTask<List<ClaimedJob>> ClaimBatchAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IReadOnlyList<JobRunRecord> reserved,
+        ClaimJobsRequest request,
+        DateTimeOffset now,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        var leaseExpiresAt = now.Add(leaseDuration);
+        var items = reserved
+            .Select(run => (
+                Run: run,
+                AttemptId: NewId(),
+                AttemptNumber: run.AttemptCount + 1,
+                LeaseToken: NewId()))
+            .ToArray();
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            INSERT INTO Kj2_JobAttempts
+                (Id, RunId, AttemptNumber, WorkerId, SessionId, SessionEpoch,
+                 LeaseToken, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
+            SELECT item.Id, item.RunId, item.AttemptNumber, @WorkerId, @SessionId, @SessionEpoch,
+                   item.LeaseToken, @Phase, @ClaimedAt, @ClaimedAt, item.LeaseExpiresAt
+            FROM unnest(
+                CAST(@AttemptIds AS text[]),
+                CAST(@RunIds AS text[]),
+                CAST(@AttemptNumbers AS int[]),
+                CAST(@LeaseTokens AS text[]),
+                CAST(@LeaseExpiresAts AS timestamptz[]))
+                AS item(Id, RunId, AttemptNumber, LeaseToken, LeaseExpiresAt);",
+            new
+            {
+                AttemptIds = items.Select(x => x.AttemptId).ToArray(),
+                RunIds = items.Select(x => x.Run.Id).ToArray(),
+                AttemptNumbers = items.Select(x => x.AttemptNumber).ToArray(),
+                LeaseTokens = items.Select(x => x.LeaseToken).ToArray(),
+                LeaseExpiresAts = items.Select(_ => leaseExpiresAt).ToArray(),
+                request.WorkerId,
+                request.SessionId,
+                request.SessionEpoch,
+                Phase = (int)JobAttemptPhase.Running,
+                ClaimedAt = now
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var updatedRunIds = (await connection.QueryAsync<string>(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = @Running,
+                AttemptCount = item.AttemptNumber,
+                CurrentAttemptId = item.AttemptId,
+                CurrentWorkerId = @WorkerId,
+                CurrentSessionId = @SessionId,
+                StartedAt = COALESCE(StartedAt, @StartedAt),
+                Version = Version + 1
+            FROM unnest(
+                CAST(@RunIds AS text[]),
+                CAST(@AttemptIds AS text[]),
+                CAST(@AttemptNumbers AS int[]))
+                AS item(RunId, AttemptId, AttemptNumber)
+            WHERE Kj2_JobRuns.Id = item.RunId
+              AND Kj2_JobRuns.Phase = @Pending
+              AND Kj2_JobRuns.CancelRequested = FALSE
+            RETURNING Kj2_JobRuns.Id;",
+            new
+            {
+                RunIds = items.Select(x => x.Run.Id).ToArray(),
+                AttemptIds = items.Select(x => x.AttemptId).ToArray(),
+                AttemptNumbers = items.Select(x => x.AttemptNumber).ToArray(),
+                Running = (int)JobPhase.Running,
+                Pending = (int)JobPhase.Pending,
+                request.WorkerId,
+                request.SessionId,
+                StartedAt = now
+            },
+            transaction,
+            cancellationToken: cancellationToken))).ToHashSet(StringComparer.Ordinal);
+
+        var losers = items.Where(x => !updatedRunIds.Contains(x.Run.Id)).ToArray();
+        if (losers.Length > 0)
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM Kj2_JobAttempts WHERE Id = ANY(@AttemptIds);",
+                new { AttemptIds = losers.Select(x => x.AttemptId).ToArray() },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        var claimed = new List<ClaimedJob>(items.Length);
+        foreach (var item in items)
+        {
+            if (!updatedRunIds.Contains(item.Run.Id))
+            {
+                continue;
+            }
+
+            claimed.Add(new ClaimedJob(
+                item.Run.Id,
+                item.AttemptId,
+                item.AttemptNumber,
+                item.LeaseToken,
+                leaseExpiresAt,
+                item.Run.JobKey,
+                item.Run.PayloadJson,
+                item.Run.Queue,
+                item.Run.TimeoutSeconds));
+        }
+
         return claimed;
     }
 
