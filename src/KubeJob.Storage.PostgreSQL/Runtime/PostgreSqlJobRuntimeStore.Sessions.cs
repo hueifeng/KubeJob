@@ -14,18 +14,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        await connection.ExecuteAsync(new CommandDefinition(
-            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
-            new { request.WorkerId },
-            transaction,
-            cancellationToken: cancellationToken));
-
         var existing = await connection.QuerySingleOrDefaultAsync<ExistingSessionRow>(new CommandDefinition(@"
             SELECT Epoch, State, StartedAt
             FROM Kj2_WorkerSessions
             WHERE WorkerId = @WorkerId
               AND SessionId = @SessionId
-            LIMIT 1;",
+            LIMIT 1
+            FOR UPDATE;",
             new { request.WorkerId, request.SessionId },
             transaction,
             cancellationToken: cancellationToken));
@@ -76,6 +71,21 @@ public sealed partial class PostgreSqlJobRuntimeStore
             await transaction.CommitAsync(cancellationToken);
             return CreateSessionRecord(request, existing.Epoch, existing.StartedAt, now);
         }
+
+        await connection.QueryAsync<string>(new CommandDefinition(@"
+            SELECT SessionId
+            FROM Kj2_WorkerSessions
+            WHERE WorkerId = @WorkerId
+              AND State IN (@Ready, @Draining)
+            FOR UPDATE;",
+            new
+            {
+                request.WorkerId,
+                Ready = (int)WorkerSessionState.Ready,
+                Draining = (int)WorkerSessionState.Draining
+            },
+            transaction,
+            cancellationToken: cancellationToken));
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_WorkerSessions
@@ -139,12 +149,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-        await connection.ExecuteAsync(new CommandDefinition(
-            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
-            new { request.WorkerId },
-            transaction,
-            cancellationToken: cancellationToken));
 
         var session = await connection.QuerySingleOrDefaultAsync<SessionCapacityRow>(new CommandDefinition(@"
             SELECT MaxConcurrency, State

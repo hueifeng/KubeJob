@@ -20,12 +20,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        await connection.ExecuteAsync(new CommandDefinition(
-            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
-            new { request.WorkerId },
-            transaction,
-            cancellationToken: cancellationToken));
-
         var sessionValid = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
             SELECT EXISTS (
                 SELECT 1
@@ -34,6 +28,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                   AND SessionId = @SessionId
                   AND Epoch = @SessionEpoch
                   AND State NOT IN (@Closed, @Stale)
+                FOR UPDATE
             );",
             new
             {

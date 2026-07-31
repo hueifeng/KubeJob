@@ -17,14 +17,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        // Registration uses the same lock. Whichever transaction commits first defines
-        // whether this session is still current when the completion is evaluated.
-        await connection.ExecuteAsync(new CommandDefinition(
-            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
-            new { request.WorkerId },
-            transaction,
-            cancellationToken: cancellationToken));
-
         var sessionActive = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
             SELECT EXISTS (
                 SELECT 1
@@ -33,6 +25,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                   AND SessionId = @SessionId
                   AND Epoch = @SessionEpoch
                   AND State IN (@Ready, @Draining)
+                FOR UPDATE
             );",
             new
             {
@@ -249,12 +242,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        await connection.ExecuteAsync(new CommandDefinition(
-            "SELECT pg_advisory_xact_lock(hashtext(@WorkerId));",
-            new { first.WorkerId },
-            transaction,
-            cancellationToken: cancellationToken));
-
         var sessionActive = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
             SELECT EXISTS (
                 SELECT 1
@@ -263,6 +250,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                   AND SessionId = @SessionId
                   AND Epoch = @SessionEpoch
                   AND State IN (@Ready, @Draining)
+                FOR UPDATE
             );",
             new
             {

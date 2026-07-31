@@ -675,6 +675,25 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         secondDelay.Should().BeGreaterThan(firstDelay);
     }
 
+    [Fact]
+    public async Task Different_workers_can_complete_concurrently_without_serializing_on_a_shared_lock()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        await store.SubmitAsync(NewSubmission("concurrent-worker-a"), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission("concurrent-worker-b"), CancellationToken.None);
+        var workerA = await RegisterAsync(store, "concurrent-a", "concurrent-a-session");
+        var workerB = await RegisterAsync(store, "concurrent-b", "concurrent-b-session");
+        var claimA = (await store.ClaimAsync(Claim(workerA), TimeSpan.FromMinutes(1), 1, CancellationToken.None)).Single();
+        var claimB = (await store.ClaimAsync(Claim(workerB), TimeSpan.FromMinutes(1), 1, CancellationToken.None)).Single();
+
+        var completions = await Task.WhenAll(
+            store.CompleteAsync(Completion(workerA, claimA, JobAttemptOutcome.Succeeded), TestRetryPolicy, CancellationToken.None).AsTask(),
+            store.CompleteAsync(Completion(workerB, claimB, JobAttemptOutcome.Succeeded), TestRetryPolicy, CancellationToken.None).AsTask());
+
+        completions.Should().OnlyContain(result => result.Accepted);
+    }
+
     private static SubmitJobCommand NewSubmission(
         string? idempotencyKey = null,
         string queue = "default",
