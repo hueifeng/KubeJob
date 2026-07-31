@@ -54,7 +54,14 @@ services.UseKubeJobWorkAvailableNotifier<MyTransportPublisher>();
 For high-throughput execution, the platform has a separate
 `IExecutionDispatcher` seam. Its `ExecutionEnvelope` carries the accepted
 logical `RunId`, Queue, and EventId, but not a lease or execution authority.
-The included RabbitMQ publisher can be registered with:
+`QueueDeliveryOptions.DefaultProfile` defaults to
+`ExecutionDeliveryProfile.BrokerDispatch` (see [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)),
+so a host that wires the RabbitMQ execution extensions below gets targeted
+broker admission for every queue unless it pins a specific queue back to
+`Pull` via `QueueProfiles`. A host that does not want a broker dependency must
+either register the extensions or explicitly set `DefaultProfile = Pull`;
+otherwise `UnconfiguredExecutionTransport` throws at dispatch time. The
+included RabbitMQ publisher can be registered with:
 
 ```csharp
 services.UseRabbitMqKubeJobExecutionDispatcher(options =>

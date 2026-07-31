@@ -5,6 +5,7 @@
 Accepted — Direct Dispatch implemented via `ExecutionDeliveryProfile.BrokerDispatch`
 (see [`docs/v2/logical-architecture.md` Section 7](../v2/logical-architecture.md)
 and [`docs/v2/message-transport.md` Direct Dispatch section](../v2/message-transport.md)).
+Promoted to the default delivery profile by [ADR 014](014-promote-brokerdispatch-to-default-delivery-profile.md).
 
 ## Context
 

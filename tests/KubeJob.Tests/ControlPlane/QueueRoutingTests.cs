@@ -8,7 +8,7 @@ namespace KubeJob.Tests.ControlPlane;
 public sealed class QueueRoutingTests
 {
     [Fact]
-    public void Unconfigured_logical_queue_uses_pull_profile()
+    public void Unconfigured_logical_queue_uses_broker_dispatch_profile_by_default()
     {
         var options = Options.Create(new QueueDeliveryOptions());
         var router = new ConfigurationQueueRouter(
@@ -18,6 +18,21 @@ public sealed class QueueRoutingTests
         var route = router.Resolve("orders.push");
 
         route.Queue.Should().Be("orders.push");
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+    }
+
+    [Fact]
+    public void Queue_pinned_back_to_pull_via_QueueProfiles_overrides_the_default()
+    {
+        var options = new QueueDeliveryOptions();
+        options.QueueProfiles["orders.push"] = ExecutionDeliveryProfile.Pull;
+        var optionsWrapper = Options.Create(options);
+        var router = new ConfigurationQueueRouter(
+            optionsWrapper,
+            new DefaultExecutionGroupResolver(optionsWrapper));
+
+        var route = router.Resolve("orders.push");
+
         route.Target.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
     }
 

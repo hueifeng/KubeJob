@@ -56,7 +56,7 @@ public sealed class JobRuntimeOptions
 
     public int RetentionBatchSize { get; set; } = 1_000;
 
-    /// Opt-in flag for broker-accelerated cancellation of BrokerDispatch runs.
+    /// Flag for broker-accelerated cancellation of BrokerDispatch runs.
     /// Submission always writes <c>work-available</c> outbox rows; the
     /// <c>OutboxPublisherService</c> converts them to an
     /// <see cref="KubeJob.Core.Runtime.ExecutionEnvelope"/> at publish time for
@@ -70,9 +70,12 @@ public sealed class JobRuntimeOptions
     /// relies on the lease reaper / renewal loop as the correctness fallback.
     /// Requires <c>RabbitMqNotificationExtensions.UseRabbitMqKubeJobExecutionDispatcher</c>
     /// and an <c>ICancelPublisher</c> implementation for the cancel path to
-    /// function. Default is <c>false</c>.
+    /// function; hosts that stay on <c>Pull</c> and skip the RabbitMQ execution
+    /// extensions can set this back to <c>false</c>. Default is <c>true</c>,
+    /// matching <see cref="KubeJob.Server.Runtime.QueueDeliveryOptions.DefaultProfile"/>
+    /// defaulting to <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>.
     /// </summary>
-    public bool BrokerCancelPropagationEnabled { get; set; }
+    public bool BrokerCancelPropagationEnabled { get; set; } = true;
 
     public void Validate()
     {

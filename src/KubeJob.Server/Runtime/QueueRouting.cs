@@ -80,9 +80,9 @@ public sealed class DefaultExecutionGroupResolver : IExecutionGroupResolver
 /// </summary>
 public sealed class QueueDeliveryOptions
 {
-    public ExecutionDeliveryProfile DefaultProfile { get; set; } = ExecutionDeliveryProfile.Pull;
+    public ExecutionDeliveryProfile DefaultProfile { get; set; } = ExecutionDeliveryProfile.BrokerDispatch;
     public string DefaultExecutionLane { get; set; } = "default";
-    public string? DefaultTransportId { get; set; }
+    public string? DefaultTransportId { get; set; } = "rabbitmq";
     public Dictionary<string, ExecutionDeliveryProfile> QueueProfiles { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> QueueGroups { get; } = new(StringComparer.Ordinal);
     public string? DefaultExecutionGroup { get; set; }

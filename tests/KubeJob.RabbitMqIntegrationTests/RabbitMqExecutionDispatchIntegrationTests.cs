@@ -1,0 +1,259 @@
+using FluentAssertions;
+using KubeJob;
+using KubeJob.Core.Attributes;
+using KubeJob.Core.Client;
+using KubeJob.Core.Execution;
+using KubeJob.Core.Interfaces;
+using KubeJob.Core.Jobs;
+using KubeJob.Core.Runtime;
+using KubeJob.Server.Extensions;
+using KubeJob.Transport.RabbitMQ;
+using KubeJob.Worker.Extensions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using RabbitMQ.Client;
+
+namespace KubeJob.RabbitMqIntegrationTests;
+
+[Collection(RabbitMqIntegrationCollection.Name)]
+public sealed class RabbitMqExecutionDispatchIntegrationTests
+{
+    private static readonly JobKey<ExecutionDispatchPayload> JobKey = new("execution-dispatch-test");
+
+    [Fact]
+    public async Task Happy_path_submits_dispatches_and_completes_via_broker_admission()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-happy-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(connectionString, group, out _);
+        await host.StartAsync();
+        try
+        {
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+            var handle = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("succeed", FailAttempts: 0),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 3 });
+
+            var status = await jobs.WaitForCompletionAsync(
+                handle,
+                pollInterval: TimeSpan.FromMilliseconds(100),
+                cancellationToken: new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+
+            status.Phase.Should().Be(JobPhase.Succeeded);
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    [Fact]
+    public async Task Retry_path_reconciles_through_the_broker_retry_queue_then_succeeds()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-retry-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(connectionString, group, out _);
+        await host.StartAsync();
+        try
+        {
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+            var handle = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("fail-then-succeed", FailAttempts: 2),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 5 });
+
+            var status = await jobs.WaitForCompletionAsync(
+                handle,
+                pollInterval: TimeSpan.FromMilliseconds(100),
+                cancellationToken: new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+
+            status.Phase.Should().Be(JobPhase.Succeeded);
+            status.AttemptCount.Should().BeGreaterThan(1);
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    [Fact]
+    public async Task Reject_path_drops_malformed_envelope_to_the_group_dlq_without_wedging_the_consumer()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-reject-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(connectionString, group, out var options);
+        await host.StartAsync();
+        try
+        {
+            using var connection = CreateConnection(connectionString);
+            using var channel = connection.CreateModel();
+            await EventuallyAsync(
+                () => Task.FromResult(channel.ConsumerCount(options.GetSharedConsumerQueueName()) >= 1),
+                attempts: 200);
+
+            var properties = channel.CreateBasicProperties();
+            properties.ContentType = "application/json";
+            properties.MessageId = $"malformed-{Guid.NewGuid():N}";
+            channel.BasicPublish(
+                options.GetGroupExchangeName(),
+                "default",
+                mandatory: false,
+                basicProperties: properties,
+                body: System.Text.Encoding.UTF8.GetBytes("not-json"));
+
+            await EventuallyAsync(
+                () => Task.FromResult(channel.MessageCount(options.GetGroupDlqName()) == 1),
+                attempts: 200);
+
+            // The consumer must still be alive after the reject: prove it by
+            // successfully completing a normal Run through the same channel.
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+            var handle = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("succeed", FailAttempts: 0),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 1 });
+            var status = await jobs.WaitForCompletionAsync(
+                handle,
+                pollInterval: TimeSpan.FromMilliseconds(100),
+                cancellationToken: new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+            status.Phase.Should().Be(JobPhase.Succeeded);
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    private static IHost BuildHost(
+        string connectionString,
+        string group,
+        out RabbitMqExecutionOptions capturedOptions)
+    {
+        var options = new RabbitMqExecutionOptions
+        {
+            ConnectionString = connectionString,
+            ConsumerGroup = group,
+            ConsumerQueuePrefix = "kubejob.test.execution",
+            MaxBrokerRetryAttempts = 2,
+            RetryDelay = TimeSpan.FromMilliseconds(200),
+            BrokerRetryReconciliationDelay = TimeSpan.FromSeconds(2)
+        };
+        capturedOptions = options;
+
+        var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services.AddLogging();
+                services.AddKubeJobHandler<ExecutionDispatchJob, ExecutionDispatchPayload>(JobKey);
+                services.AddKubeJob(
+                    configureServer: server => server.UseInMemory(),
+                    configureWorker: worker =>
+                    {
+                        worker.WorkerId = $"worker-{group}";
+                        worker.Queues = new List<string> { "default" };
+                        worker.MaxConcurrentJobs = 4;
+                        worker.EmptyPollDelay = TimeSpan.FromSeconds(30);
+                    });
+                services.ConfigureKubeJobQueueRouting(routing =>
+                {
+                    routing.DefaultProfile = ExecutionDeliveryProfile.BrokerDispatch;
+                    routing.DefaultTransportId = "rabbitmq";
+                });
+                services.UseRabbitMqKubeJobExecutionDispatcher(o => CopyInto(options, o));
+                services.AddRabbitMqKubeJobExecutionConsumer(o => CopyInto(options, o));
+            })
+            .Build();
+        return host;
+    }
+
+    private static void CopyInto(RabbitMqExecutionOptions source, RabbitMqExecutionOptions target)
+    {
+        target.ConnectionString = source.ConnectionString;
+        target.ConsumerGroup = source.ConsumerGroup;
+        target.ConsumerQueuePrefix = source.ConsumerQueuePrefix;
+        target.MaxBrokerRetryAttempts = source.MaxBrokerRetryAttempts;
+        target.RetryDelay = source.RetryDelay;
+        target.BrokerRetryReconciliationDelay = source.BrokerRetryReconciliationDelay;
+    }
+
+    private static string RequireConnectionString() =>
+        Environment.GetEnvironmentVariable("KUBEJOB_RABBITMQ_TEST_CONNECTION")
+            ?? throw new InvalidOperationException(
+                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
+
+    private static IConnection CreateConnection(string connectionString) =>
+        new ConnectionFactory
+        {
+            Uri = new Uri(connectionString, UriKind.Absolute)
+        }.CreateConnection("KubeJob.Tests.RabbitMqExecutionDispatch");
+
+    private static void DeleteGroupTopology(string connectionString, string group)
+    {
+        var options = new RabbitMqExecutionOptions
+        {
+            ConnectionString = connectionString,
+            ConsumerGroup = group,
+            ConsumerQueuePrefix = "kubejob.test.execution"
+        };
+        using var connection = CreateConnection(connectionString);
+        using var channel = connection.CreateModel();
+        try
+        {
+            channel.QueueDelete(options.GetSharedConsumerQueueName(), ifUnused: false, ifEmpty: false);
+            channel.QueueDelete(options.GetSharedRetryQueueName(), ifUnused: false, ifEmpty: false);
+            channel.QueueDelete(options.GetGroupDlqName(), ifUnused: false, ifEmpty: false);
+            channel.ExchangeDelete(options.GetGroupExchangeName());
+            channel.ExchangeDelete(options.GetRetryExchangeName());
+            channel.ExchangeDelete(options.GetGroupDlxName());
+        }
+        catch (Exception)
+        {
+            // Best-effort cleanup; leaving stray broker topology behind does
+            // not fail the test run.
+        }
+    }
+
+    private static async Task EventuallyAsync(
+        Func<Task<bool>> condition,
+        int attempts = 50)
+    {
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        (await condition()).Should().BeTrue();
+    }
+
+    private sealed record ExecutionDispatchPayload(string Scenario, int FailAttempts);
+
+    [KubeJob("execution-dispatch-test")]
+    private sealed class ExecutionDispatchJob : IKubeJob<ExecutionDispatchPayload>
+    {
+        public ValueTask ExecuteAsync(
+            ExecutionDispatchPayload payload,
+            JobExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            if (payload.Scenario == "fail-then-succeed" && context.AttemptNumber <= payload.FailAttempts)
+            {
+                throw new InvalidOperationException(
+                    $"Simulated transient failure on attempt {context.AttemptNumber}.");
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+}
