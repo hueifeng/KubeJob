@@ -138,6 +138,22 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken))).ToArray();
 
+        var candidateConcurrencyKeys = candidates
+            .Select(r => r.ConcurrencyKey)
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var runningConcurrencyKeys = candidateConcurrencyKeys.Length == 0
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : (await connection.QueryAsync<string>(new CommandDefinition(@"
+                SELECT DISTINCT ConcurrencyKey
+                FROM Kj2_JobRuns
+                WHERE Phase = @Running
+                  AND ConcurrencyKey = ANY(@Keys);",
+                new { Running = (int)JobPhase.Running, Keys = candidateConcurrencyKeys },
+                transaction,
+                cancellationToken: cancellationToken))).ToHashSet(StringComparer.Ordinal);
+
         var reserved = new List<JobRunRecord>(Math.Min(limit, candidates.Length));
         var reservedConcurrencyKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var run in candidates)
@@ -153,7 +169,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 continue;
             }
 
-            if (!await TryReserveConcurrencyKeyAsync(connection, transaction, run, cancellationToken))
+            if (!await TryReserveConcurrencyKeyAsync(connection, transaction, run, runningConcurrencyKeys, cancellationToken))
             {
                 continue;
             }
@@ -411,6 +427,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         JobRunRecord run,
+        HashSet<string> runningConcurrencyKeys,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(run.ConcurrencyKey))
@@ -428,22 +445,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return false;
         }
 
-        return !await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
-            SELECT EXISTS (
-                SELECT 1
-                FROM Kj2_JobRuns
-                WHERE Id <> @RunId
-                  AND Phase = @Running
-                  AND ConcurrencyKey = @ConcurrencyKey
-            );",
-            new
-            {
-                RunId = run.Id,
-                Running = (int)JobPhase.Running,
-                run.ConcurrencyKey
-            },
-            transaction,
-            cancellationToken: cancellationToken));
+        return !runningConcurrencyKeys.Contains(run.ConcurrencyKey);
     }
 
     private sealed class ClaimSessionRow

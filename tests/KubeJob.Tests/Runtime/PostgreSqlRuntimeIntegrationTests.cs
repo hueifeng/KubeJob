@@ -806,6 +806,47 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Batch_claim_excludes_a_pending_run_whose_concurrency_key_is_already_running()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        const string concurrencyKey = "already-running-concurrency-key";
+        var running = (await store.SubmitAsync(
+            NewSubmission("already-running-1", concurrencyKey: concurrencyKey),
+            CancellationToken.None)).Run;
+        var pendingSibling = (await store.SubmitAsync(
+            NewSubmission("already-running-2", concurrencyKey: concurrencyKey),
+            CancellationToken.None)).Run;
+        var unrelated = (await store.SubmitAsync(
+            NewSubmission("already-running-unrelated"),
+            CancellationToken.None)).Run;
+
+        var soloWorker = await RegisterAsync(store, "already-running-solo-worker", "already-running-solo-session", 1);
+        var soloClaim = await store.ClaimAsync(
+            Claim(soloWorker) with { RunIds = new[] { running.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+        soloClaim.Should().ContainSingle();
+
+        var batchWorker = await RegisterAsync(store, "already-running-batch-worker", "already-running-batch-session", 2);
+        var batchClaim = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                batchWorker.WorkerId,
+                batchWorker.SessionId,
+                batchWorker.Epoch,
+                2,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+
+        batchClaim.Should().ContainSingle(job => job.RunId == unrelated.Id);
+        (await store.GetRunAsync(pendingSibling.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Pending);
+    }
+
+    [Fact]
     public async Task Batch_claim_excludes_a_run_that_loses_its_update_race_without_leaving_an_orphaned_attempt()
     {
         if (!Enabled) return;
