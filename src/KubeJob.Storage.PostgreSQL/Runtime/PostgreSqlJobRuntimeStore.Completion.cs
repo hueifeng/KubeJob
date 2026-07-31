@@ -518,76 +518,82 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken))).ToArray();
 
-        foreach (var state in expired)
+        if (expired.Length == 0)
         {
-            const string failureCode = "lease_lost";
-            const string failureMessage = "The worker did not renew the attempt lease before it expired.";
-
-            await connection.ExecuteAsync(new CommandDefinition(@"
-                UPDATE Kj2_JobAttempts
-                SET Phase = @LeaseLost,
-                    CompletedAt = @CompletedAt,
-                    FailureCode = @FailureCode,
-                    FailureMessage = @FailureMessage
-                WHERE Id = @AttemptId
-                  AND Phase = @Running;",
-                new
-                {
-                    state.AttemptId,
-                    LeaseLost = (int)JobAttemptPhase.LeaseLost,
-                    Running = (int)JobAttemptPhase.Running,
-                    CompletedAt = databaseNow,
-                    FailureCode = failureCode,
-                    FailureMessage = failureMessage
-                },
-                transaction,
-                cancellationToken: cancellationToken));
-
-            if (state.CancelRequested)
-            {
-                await MakeTerminalAsync(
-                    connection,
-                    transaction,
-                    state.AttemptRunId,
-                    JobPhase.Canceled,
-                    databaseNow,
-                    "canceled",
-                    failureMessage,
-                    cancellationToken);
-            }
-            else if (state.AttemptCount < state.MaxAttempts)
-            {
-                var availableAt = databaseNow.Add(retryDelay);
-                await RequeueRunAsync(
-                    connection,
-                    transaction,
-                    state.AttemptRunId,
-                    availableAt,
-                    failureCode,
-                    failureMessage,
-                    cancellationToken);
-                await AddOutboxAsync(
-                    connection,
-                    transaction,
-                    state.Queue,
-                    OutboxEventTypes.WorkAvailable,
-                    JsonSerializer.Serialize(new { runId = state.AttemptRunId, queue = state.Queue }, SerializerOptions),
-                    availableAt,
-                    cancellationToken);
-            }
-            else
-            {
-                await MakeTerminalAsync(
-                    connection,
-                    transaction,
-                    state.AttemptRunId,
-                    JobPhase.Dead,
-                    databaseNow,
-                    failureCode,
-                    failureMessage,
-                    cancellationToken);
-            }
+            await transaction.CommitAsync(cancellationToken);
+            return 0;
         }
+
+        const string failureCode = "lease_lost";
+        const string failureMessage = "The worker did not renew the attempt lease before it expired.";
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobAttempts
+            SET Phase = @LeaseLost,
+                CompletedAt = @CompletedAt,
+                FailureCode = @FailureCode,
+                FailureMessage = @FailureMessage
+            WHERE Id = ANY(@AttemptIds)
+              AND Phase = @Running;",
+            new
+            {
+                AttemptIds = expired.Select(x => x.AttemptId).ToArray(),
+                LeaseLost = (int)JobAttemptPhase.LeaseLost,
+                Running = (int)JobAttemptPhase.Running,
+                CompletedAt = databaseNow,
+                FailureCode = failureCode,
+                FailureMessage = failureMessage
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var canceled = expired.Where(x => x.CancelRequested).ToArray();
+        var retryable = expired.Where(x => !x.CancelRequested && x.AttemptCount < x.MaxAttempts).ToArray();
+        var dead = expired.Where(x => !x.CancelRequested && x.AttemptCount >= x.MaxAttempts).ToArray();
+
+        await MakeTerminalBatchAsync(
+            connection,
+            transaction,
+            canceled.Select(x => x.AttemptRunId).ToArray(),
+            JobPhase.Canceled,
+            databaseNow,
+            "canceled",
+            failureMessage,
+            cancellationToken);
+
+        if (retryable.Length > 0)
+        {
+            var availableAt = databaseNow.Add(retryDelay);
+            await RequeueRunBatchAsync(
+                connection,
+                transaction,
+                retryable.Select(x => x.AttemptRunId).ToArray(),
+                availableAt,
+                failureCode,
+                failureMessage,
+                cancellationToken);
+            await AddOutboxBatchAsync(
+                connection,
+                transaction,
+                retryable
+                    .Select(x => (
+                        x.Queue,
+                        JsonSerializer.Serialize(new { runId = x.AttemptRunId, queue = x.Queue }, SerializerOptions)))
+                    .ToArray(),
+                OutboxEventTypes.WorkAvailable,
+                availableAt,
+                cancellationToken);
+        }
+
+        await MakeTerminalBatchAsync(
+            connection,
+            transaction,
+            dead.Select(x => x.AttemptRunId).ToArray(),
+            JobPhase.Dead,
+            databaseNow,
+            failureCode,
+            failureMessage,
+            cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
         return expired.Length;
@@ -636,6 +642,123 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 CompletedAt = completedAt,
                 FailureCode = failureCode,
                 FailureMessage = failureMessage
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async ValueTask MakeTerminalBatchAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        IReadOnlyList<string> runIds,
+        JobPhase phase,
+        DateTimeOffset completedAt,
+        string? failureCode,
+        string? failureMessage,
+        CancellationToken cancellationToken)
+    {
+        if (runIds.Count == 0)
+        {
+            return;
+        }
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = @Phase,
+                CompletedAt = @CompletedAt,
+                CurrentAttemptId = NULL,
+                CurrentWorkerId = NULL,
+                CurrentSessionId = NULL,
+                FailureCode = @FailureCode,
+                FailureMessage = @FailureMessage,
+                Version = Version + 1
+            WHERE Id = ANY(@RunIds);",
+            new
+            {
+                RunIds = runIds.ToArray(),
+                Phase = (int)phase,
+                CompletedAt = completedAt,
+                FailureCode = failureCode,
+                FailureMessage = failureMessage
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async ValueTask RequeueRunBatchAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        IReadOnlyList<string> runIds,
+        DateTimeOffset availableAt,
+        string? failureCode,
+        string? failureMessage,
+        CancellationToken cancellationToken)
+    {
+        if (runIds.Count == 0)
+        {
+            return;
+        }
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = @Pending,
+                AvailableAt = @AvailableAt,
+                CurrentAttemptId = NULL,
+                CurrentWorkerId = NULL,
+                CurrentSessionId = NULL,
+                FailureCode = @FailureCode,
+                FailureMessage = @FailureMessage,
+                Version = Version + 1
+            WHERE Id = ANY(@RunIds);",
+            new
+            {
+                RunIds = runIds.ToArray(),
+                Pending = (int)JobPhase.Pending,
+                AvailableAt = availableAt,
+                FailureCode = failureCode,
+                FailureMessage = failureMessage
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async ValueTask AddOutboxBatchAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        IReadOnlyList<(string Queue, string PayloadJson)> items,
+        string eventType,
+        DateTimeOffset availableAt,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        var target = new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null);
+        target.Validate();
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            INSERT INTO Kj2_Outbox
+                (Id, Queue, DeliveryProfile, ExecutionLane, TransportId, EventType, PayloadJson, State, PublishAttempts,
+                 AvailableAt, CreatedAt)
+            SELECT
+                item.Id, item.Queue, @DeliveryProfile, @ExecutionLane, @TransportId, @EventType,
+                CAST(item.PayloadJson AS jsonb), @State, 0,
+                GREATEST(@AvailableAt, clock_timestamp()), clock_timestamp()
+            FROM unnest(CAST(@Ids AS text[]), CAST(@Queues AS text[]), CAST(@Payloads AS text[]))
+                AS item(Id, Queue, PayloadJson);",
+            new
+            {
+                Ids = items.Select(_ => NewId()).ToArray(),
+                Queues = items.Select(x => x.Queue).ToArray(),
+                Payloads = items.Select(x => x.PayloadJson).ToArray(),
+                DeliveryProfile = (int)target.Profile,
+                target.ExecutionLane,
+                target.TransportId,
+                EventType = eventType,
+                State = (int)OutboxDeliveryState.Pending,
+                AvailableAt = availableAt.ToUniversalTime()
             },
             transaction,
             cancellationToken: cancellationToken));

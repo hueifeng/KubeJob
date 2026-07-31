@@ -308,6 +308,58 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Batch_lease_expiry_reconciles_cancel_retry_and_dead_letter_outcomes_in_one_pass()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var retryRun = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "lease-expiry:retry"),
+            CancellationToken.None)).Run;
+        var deadRun = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "lease-expiry:dead", maxAttempts: 1),
+            CancellationToken.None)).Run;
+        var cancelRun = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "lease-expiry:cancel"),
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "lease-expiry-worker", "lease-expiry-session", 3);
+        var claims = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                worker.WorkerId,
+                worker.SessionId,
+                worker.Epoch,
+                3,
+                new[] { "default" },
+                new[] { "mail.send" }),
+            TimeSpan.FromMilliseconds(50),
+            3,
+            CancellationToken.None);
+
+        claims.Should().HaveCount(3);
+        (await store.RequestCancelAsync(
+            cancelRun.Id,
+            "cancel before lease expiry",
+            null,
+            CancellationToken.None)).Requested.Should().BeTrue();
+
+        await Task.Delay(150);
+        var reconciled = await store.RequeueExpiredLeasesAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        reconciled.Should().Be(3);
+        (await store.GetRunAsync(retryRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Pending);
+        (await store.GetRunAsync(deadRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Dead);
+        (await store.GetRunAsync(cancelRun.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Canceled);
+    }
+
+    [Fact]
     public async Task Schedule_fire_advances_cursor_and_writes_run_and_outbox_atomically()
     {
         if (!Enabled) return;
@@ -516,7 +568,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     private static SubmitJobCommand NewSubmission(
         string? idempotencyKey = null,
         string queue = "default",
-        DateTimeOffset? availableAt = null) => new(
+        DateTimeOffset? availableAt = null,
+        int maxAttempts = 3) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         queue,
@@ -524,7 +577,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         availableAt ?? DateTimeOffset.UtcNow,
         idempotencyKey,
         null,
-        3,
+        maxAttempts,
         60);
 
     private static JobScheduleRecord NewSchedule(DateTimeOffset nextFireAt) => new()
