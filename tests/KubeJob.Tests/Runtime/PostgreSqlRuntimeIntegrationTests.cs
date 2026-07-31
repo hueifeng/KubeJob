@@ -937,6 +937,50 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             new Dictionary<string, string>()),
         CancellationToken.None);
 
+    [Fact]
+    public async Task Maintenance_removes_published_outbox_and_unkeyed_terminal_runs()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var unkeyedRun = (await store.SubmitAsync(
+            NewSubmission(),
+            CancellationToken.None)).Run;
+        var keyedRun = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "maintenance-retain-me"),
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "maintenance-worker", "maintenance-session");
+        var claim = (await store.ClaimAsync(
+            Claim(worker) with { RunIds = new[] { unkeyedRun.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        await store.CompleteAsync(
+            Completion(worker, claim, JobAttemptOutcome.Succeeded),
+            TestRetryPolicy,
+            CancellationToken.None);
+        await store.DispatchOnceAsync(
+            TimeSpan.FromMinutes(1),
+            TimeSpan.Zero,
+            10,
+            (_, _) => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        var outboxDeleted = await store.DeletePublishedOutboxAsync(
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            100,
+            CancellationToken.None);
+        var terminalDeleted = await store.DeleteUnkeyedTerminalRunsAsync(
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            100,
+            CancellationToken.None);
+
+        outboxDeleted.Should().BeGreaterThan(0);
+        terminalDeleted.Should().Be(1);
+        (await store.GetRunAsync(unkeyedRun.Id, CancellationToken.None)).Should().BeNull();
+        (await store.GetRunAsync(keyedRun.Id, CancellationToken.None)).Should().NotBeNull();
+    }
+
     private static ClaimJobsRequest Claim(WorkerSessionRecord session) => new(
         session.WorkerId,
         session.SessionId,
