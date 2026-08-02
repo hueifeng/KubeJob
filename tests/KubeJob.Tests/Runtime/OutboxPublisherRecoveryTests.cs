@@ -43,6 +43,7 @@ public sealed class OutboxPublisherRecoveryTests
             new NullNotifier(),
             new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
+            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(10),
@@ -99,6 +100,7 @@ public sealed class OutboxPublisherRecoveryTests
             new NullNotifier(),
             new ExecutionTransportRegistry(new[] { (IExecutionTransport)transport }),
             new NoopCancelPublisher(),
+            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(10),
@@ -127,7 +129,7 @@ public sealed class OutboxPublisherRecoveryTests
     }
 
     private static readonly DeliveryTarget BrokerTarget =
-        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "recording");
+        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "recording", "default");
 
     private sealed class NullNotifier : IWorkAvailableNotifier
     {

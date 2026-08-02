@@ -1,3 +1,4 @@
+using KubeJob.Core.Queues;
 using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -43,123 +44,174 @@ public sealed class ExecutionTransportRegistry : IExecutionTransportRegistry
     }
 }
 
-public interface IExecutionGroupResolver
+/// <summary>
+/// Delivery policy for one logical queue: the deployment-owned choices that
+/// resolve a queue name into an execution target. One queue has one
+/// definition, so the Dashboard and operator tooling can show a single
+/// per-queue row instead of cross-referencing several configuration maps.
+/// </summary>
+public sealed class QueueDefinition
 {
-    string Resolve(string logicalQueue);
+    /// <summary>How the queue's Runs are discovered: broker delivery or pull.</summary>
+    public ExecutionDeliveryProfile Profile { get; set; } = ExecutionDeliveryProfile.BrokerDispatch;
+
+    /// <summary>Per-queue ordering contract (Parallel, KeyOrdered, StrictFifo).</summary>
+    public ExecutionOrderingMode OrderingMode { get; set; } = ExecutionOrderingMode.Parallel;
+
+    /// <summary>Worker eligibility and isolation boundary for this queue.</summary>
+    public string ExecutionLane { get; set; } = "default";
+
+    /// <summary>Consumer group that serves this queue.</summary>
+    public string ConsumerGroup { get; set; } = "default";
+
+    /// <summary>Transport adapter that physically delivers this queue's Runs.</summary>
+    public string? TransportId { get; set; } = "rabbitmq";
 }
 
-public sealed class DefaultExecutionGroupResolver : IExecutionGroupResolver
+/// <summary>
+/// Deployment-level queue routing policy. It intentionally has no relationship
+/// to EnqueueJobRequest, so a business caller cannot choose a physical target
+/// for an individual Run.
+/// </summary>
+public sealed class QueueDeliveryOptions
+{
+    /// <summary>Defaults applied to any queue without an explicit definition.</summary>
+    public QueueDefinition Defaults { get; } = new();
+
+    /// <summary>
+    /// Explicit per-queue definitions, keyed by canonical logical queue name.
+    /// A queue without an entry uses <see cref="Defaults"/>.
+    /// </summary>
+    public Dictionary<string, QueueDefinition> Queues { get; } = new(StringComparer.Ordinal);
+
+    public void Validate()
+    {
+        ValidateDefinition("default", Defaults);
+
+        foreach (var entry in Queues.ToArray())
+        {
+            var trimmed = entry.Key.Trim();
+            if (trimmed.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "Queue policy contains an empty logical queue identifier.");
+            }
+
+            string normalized;
+            try
+            {
+                normalized = LogicalQueueName.Normalize(trimmed, nameof(Queues));
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidOperationException(
+                    $"Queue policy contains an invalid logical queue key '{entry.Key}'.",
+                    exception);
+            }
+
+            if (!string.Equals(entry.Key, normalized, StringComparison.Ordinal))
+            {
+                Queues.Remove(entry.Key);
+                Queues[normalized] = entry.Value;
+            }
+
+            if (trimmed.Length > 100)
+            {
+                throw new InvalidOperationException(
+                    $"Queue policy contains an invalid logical queue (over 100 characters): '{trimmed}'.");
+            }
+
+            ValidateDefinition(trimmed, entry.Value);
+        }
+    }
+
+    private static void ValidateDefinition(string queue, QueueDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+
+        if (!Enum.IsDefined(definition.Profile))
+        {
+            throw new InvalidOperationException(
+                $"Queue policy for '{queue}' has an unsupported execution profile.");
+        }
+
+        if (definition.Profile == ExecutionDeliveryProfile.BrokerDispatch
+            && string.IsNullOrWhiteSpace(definition.TransportId))
+        {
+            throw new InvalidOperationException(
+                $"Queue policy for '{queue}' uses BrokerDispatch but has no TransportId.");
+        }
+
+        if (!Enum.IsDefined(definition.OrderingMode))
+        {
+            throw new InvalidOperationException(
+                $"Queue policy for '{queue}' has an invalid execution ordering mode.");
+        }
+
+        if (string.IsNullOrWhiteSpace(definition.ExecutionLane) || definition.ExecutionLane.Length > 200)
+        {
+            throw new InvalidOperationException(
+                $"Queue policy for '{queue}' has an invalid execution lane.");
+        }
+
+        if (string.IsNullOrWhiteSpace(definition.ConsumerGroup) || definition.ConsumerGroup.Length > 200)
+        {
+            throw new InvalidOperationException(
+                $"Queue policy for '{queue}' has an invalid consumer group.");
+        }
+    }
+}
+
+public sealed class QueueCatalog
 {
     private readonly IOptions<QueueDeliveryOptions> _options;
 
-    public DefaultExecutionGroupResolver(IOptions<QueueDeliveryOptions> options)
+    public QueueCatalog(IOptions<QueueDeliveryOptions> options)
     {
         _options = options;
     }
 
-    public string Resolve(string logicalQueue)
+    public QueueRoute Resolve(string logicalQueue)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
+        logicalQueue = LogicalQueueName.Normalize(logicalQueue, nameof(logicalQueue));
         var options = _options.Value;
-        if (options.QueueGroups.TryGetValue(logicalQueue, out var configured)
-            && !string.IsNullOrWhiteSpace(configured))
-        {
-            return configured;
-        }
-
-        return string.IsNullOrWhiteSpace(options.DefaultExecutionGroup)
-            ? "default"
-            : options.DefaultExecutionGroup!;
+        options.Validate();
+        var definition = options.Queues.TryGetValue(logicalQueue, out var configured)
+            ? configured
+            : options.Defaults;
+        var target = new DeliveryTarget(
+            definition.Profile,
+            definition.ExecutionLane,
+            definition.Profile == ExecutionDeliveryProfile.BrokerDispatch
+                ? definition.TransportId
+                : null,
+            definition.ConsumerGroup,
+            definition.OrderingMode);
+        target.Validate();
+        return new QueueRoute(logicalQueue, target);
     }
-}
 
-/// <summary>
-/// Deployment-level routing policy. It intentionally has no relationship to
-/// EnqueueJobRequest, so a business caller cannot choose a physical target for
-/// an individual Run.
-/// </summary>
-public sealed class QueueDeliveryOptions
-{
-    public ExecutionDeliveryProfile DefaultProfile { get; set; } = ExecutionDeliveryProfile.BrokerDispatch;
-    public string DefaultExecutionLane { get; set; } = "default";
-    public string? DefaultTransportId { get; set; } = "rabbitmq";
-    public Dictionary<string, ExecutionDeliveryProfile> QueueProfiles { get; } = new(StringComparer.Ordinal);
-    public Dictionary<string, string> QueueGroups { get; } = new(StringComparer.Ordinal);
-    public string? DefaultExecutionGroup { get; set; }
-
-    public void Validate()
+    public IReadOnlyList<string> NormalizeWorkerQueues(IEnumerable<string> queues)
     {
-        if (!Enum.IsDefined(DefaultProfile))
-        {
-            throw new InvalidOperationException($"Unsupported default execution delivery profile '{DefaultProfile}'.");
-        }
-
-        if (string.IsNullOrWhiteSpace(DefaultExecutionLane))
-        {
-            throw new InvalidOperationException("Default execution lane is required.");
-        }
-
-        if (DefaultProfile == ExecutionDeliveryProfile.BrokerDispatch
-            && string.IsNullOrWhiteSpace(DefaultTransportId))
-        {
-            throw new InvalidOperationException("Broker dispatch requires DefaultTransportId.");
-        }
-
-        if (QueueProfiles.Any(entry => string.IsNullOrWhiteSpace(entry.Key) || entry.Key.Length > 100))
-        {
-            throw new InvalidOperationException("Queue delivery policy contains an invalid logical queue.");
-        }
-
-        if (QueueProfiles.Values.Any(profile => !Enum.IsDefined(profile)))
-        {
-            throw new InvalidOperationException("Queue delivery policy contains an unsupported execution profile.");
-        }
-
-        if (QueueGroups.Any(entry => string.IsNullOrWhiteSpace(entry.Key)))
-        {
-            throw new InvalidOperationException("Queue execution group policy contains an empty logical queue identifier.");
-        }
-
-        if (QueueGroups.Any(entry => string.IsNullOrWhiteSpace(entry.Value)))
-        {
-            throw new InvalidOperationException("Queue execution group policy contains an empty group identifier.");
-        }
-
-        if (DefaultExecutionGroup is { Length: > 200 })
-        {
-            throw new InvalidOperationException("DefaultExecutionGroup must not exceed 200 characters.");
-        }
+        ArgumentNullException.ThrowIfNull(queues);
+        return queues
+            .Select(queue => LogicalQueueName.Normalize(queue, nameof(queues)))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(queue => queue, StringComparer.Ordinal)
+            .ToArray();
     }
 }
 
 public sealed class ConfigurationQueueRouter : IQueueRouter
 {
-    private readonly IOptions<QueueDeliveryOptions> _options;
-    private readonly IExecutionGroupResolver _groups;
+    private readonly QueueCatalog _catalog;
 
-    public ConfigurationQueueRouter(
-        IOptions<QueueDeliveryOptions> options,
-        IExecutionGroupResolver groups)
+    public ConfigurationQueueRouter(IOptions<QueueDeliveryOptions> options)
     {
-        _options = options;
-        _groups = groups;
+        _catalog = new QueueCatalog(options);
     }
 
-    public QueueRoute Resolve(string logicalQueue)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
-        var options = _options.Value;
-        options.Validate();
-        var profile = options.QueueProfiles.TryGetValue(logicalQueue, out var configured)
-            ? configured
-            : options.DefaultProfile;
-        var target = new DeliveryTarget(
-            profile,
-            _groups.Resolve(logicalQueue),
-            profile == ExecutionDeliveryProfile.BrokerDispatch ? options.DefaultTransportId : null);
-        target.Validate();
-        return new QueueRoute(logicalQueue, target);
-    }
+    public QueueRoute Resolve(string logicalQueue) => _catalog.Resolve(logicalQueue);
 }
 
 public sealed class UnconfiguredExecutionTransport : IExecutionTransport
@@ -178,9 +230,9 @@ public sealed class UnconfiguredExecutionTransport : IExecutionTransport
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(envelope);
         _logger.LogError(
-            "Execution lane {ExecutionLane} requires transport {TransportId}, but no matching adapter is registered",
-            envelope.ExecutionLane,
-            TransportId);
+            "Broker dispatch requires a registered execution transport, but the envelope for Run {RunId} (queue {Queue}) could not be routed to any adapter",
+            envelope.RunId,
+            envelope.Queue);
         throw new InvalidOperationException("No KubeJob execution transport is registered for broker dispatch.");
     }
 }

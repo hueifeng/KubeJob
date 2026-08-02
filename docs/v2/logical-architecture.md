@@ -326,13 +326,13 @@ or another transport to be added as independent adapters later.
 ## 7. High-throughput execution dispatch mode
 
 This mode is now the default execution delivery profile
-(`QueueDeliveryOptions.DefaultProfile = ExecutionDeliveryProfile.BrokerDispatch`,
+(`QueueDeliveryOptions.Defaults.Profile = ExecutionDeliveryProfile.BrokerDispatch`,
 see [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)).
 Unlike the notification-assisted pull mode,
 the execution broker — not a Worker claim scan — delivers the work envelope to
 a Consumer Group. It remains a per-queue delivery profile
 (`ExecutionDeliveryProfile.BrokerDispatch`) that an operator can pin back to
-`Pull` for any individual queue via `QueueProfiles`; the control plane still
+`Pull` for any individual queue via a per-queue `QueueDefinition`; the control plane still
 owns the durable state machine and PostgreSQL remains the authoritative
 ledger.
 
@@ -428,7 +428,7 @@ sequenceDiagram
 | Worker ACK | 唤醒后即可 ACK | Complete 成功后才能 ACK |
 | 重试主责 | KubeJob Attempt/Lease | KubeJob `MaxAttempts` 权威；broker `x-delivery-limit` 仅作兜底，触限后进 DLQ |
 | 顺序保证 | `ConcurrencyKey` + 数据库锁 | RabbitMQ 用 logical queue 作 routing key，由 `ConcurrencyKey` + 数据库 fencing 保序；Kafka 适配器未来可按 `orderId` 分区 |
-| 当前代码状态 | 已实现（默认 profile，可按队列 `QueueProfiles` 覆盖回退） | 已实现（默认 profile；`BrokerCancelPropagationEnabled` 默认 `true`，只 gate broker 取消传播） |
+| 当前代码状态 | 已实现（默认 profile，可按队列 `QueueDefinition` 覆盖回退） | 已实现（默认 profile；`BrokerCancelPropagationEnabled` 默认 `true`，只 gate broker 取消传播） |
 
 `WorkerRuntimeService.ClaimLoopAsync` 无论 profile 都持续运行，作为 broker 不可用时的存活兜底（见 [ADR 007](../adr/007-mq-notifications-do-not-own-jobs.md)）。`BrokerDispatch` 成为默认后，该轮询在稳态下只是兜底而非主投递路径；纯 `BrokerDispatch` 工作负载的部署应调高 `KubeJobWorkerOptions.EmptyPollDelay`（默认 1s）以降低稳态空轮询频率。
 
@@ -444,7 +444,8 @@ and consumers must delay or retry instead of acknowledging messages.
 ### Direct Dispatch 拓扑与约定
 
 - **Quorum queue 必选。** Direct Dispatch 消费队列以 `x-queue-type=quorum` 声明，broker 持久化 `x-delivery-count`，跨 worker 重启不丢。`x-delivery-limit` 默认关闭；只有部署同时提供 Pending Run 的 DLQ re-drive/reconciliation 时才应显式启用。`RabbitMqDispatchTopology` 在 worker 启动时声明队列与 DLX，`RabbitMqExecutionConsumerService` 只做 passive 声明确认队列存在后消费，避免与 quorum 声明冲突。
-- **命名约定。** 调度 group exchange `kubejob.execution.{group}`、共享调度队列 `kubejob.execution.{group}.queue`、共享 retry queue `kubejob.execution.{group}.retry.queue`、调度 DLX `kubejob.execution.{group}.dlx`、调度 DLQ `kubejob.execution.{group}.dlq.queue`、取消 fanout exchange `kubejob.execution.{group}.cancel`、每个 Worker Session 独立的 exclusive auto-delete 取消队列 `kubejob.execution.{group}.cancel.{worker-session}`。前缀 `kubejob.execution` 来自 `RabbitMqExecutionOptions.ConsumerQueuePrefix`（可配），`{group}` 来自 `ConsumerGroup`。logical queue 只作为 routing key 和 envelope 字段，不再生成随机或 per-logical 的 execution queue。
+- **命名约定。** 调度 group exchange `kubejob.execution.{group}`、按业务 logical queue 的调度队列 `kubejob.execution.{group}.{logical-queue}.queue`、group 共享 retry queue `kubejob.execution.{group}.retry.queue`、调度 DLX `kubejob.execution.{group}.dlx`、调度 DLQ `kubejob.execution.{group}.dlq.queue`、取消 fanout exchange `kubejob.execution.{group}.cancel`、每个 Worker 的取消队列 `kubejob.execution.{group}.cancel.{worker-id}`（名字来自稳定 WorkerId，auto-delete，重启复用同名队列、不产生新队列名；Worker 断开后自动删除，不会累积）。前缀 `kubejob.execution` 来自 `RabbitMqExecutionOptions.ConsumerQueuePrefix`（可配），`{group}` 来自 `ConsumerGroup`。每个业务 logical queue 只对应一条可直接识别的物理 dispatch queue，不附加 hash；retry/DLQ 是 group 级技术队列。物理队列名全部稳定可预期，只有取消队列是临时的。
 - **Header 约定。** Dispatch envelope 携带 `properties.Type = "execution-envelope"`、`MessageId = EventId`；cancel marker 携带 `properties.Type = "cancel"` 与 `X-KubeJob-Event-Type = "cancel"`，consumer 不用解析 body 即可按 header 分发。
-- **投递路径.** dispatcher 与 consumer 都指向 group exchange：`RabbitMqDispatchTopology` 声明 quorum 队列 + TTL retry exchange/queue + DLX + 可选 `x-delivery-limit` + 绑定，`RabbitMqExecutionDispatcher` 发布到 group exchange，`RabbitMqExecutionConsumerService` 从 quorum 队列消费。提交始终写 `work-available` outbox 行；`OutboxPublisherService` 对 `BrokerDispatch` profile 的队列在发布时把 `WorkAvailableSignal` 转成 `ExecutionEnvelope` 再投递。
+- **投递路径.** `RabbitMqTopologyProvisioner`（IHostedService）启动时声明 quorum 队列 + TTL retry exchange/queue + DLX + 可选 `x-delivery-limit` + 绑定，`RabbitMqExecutionDispatcher` 发布到 group exchange，`RabbitMqExecutionConsumerService` 只对消费队列做 passive 声明确认存在后消费（拓扑不匹配时 fail-fast，而不是 406 无限重连）。提交始终写 `work-available` outbox 行；`OutboxPublisherService` 对 `BrokerDispatch` profile 的队列在发布时把 `WorkAvailableSignal` 转成 `ExecutionEnvelope` 再投递。
+- **批量 admission。** 消费者把最多 `AdmissionBatchSize`（默认 16）个信封收集成一批，用一次 `AdmitBatchAsync` claim 事务完成 admission（每批约 2 次数据库往返：一次 claim、一次未 claim 信封的批量诊断），单信封的 ACK/Reject/Retry 语义不变，容量/围栏/排序 gate 仍按 Run 逐一判定。`PrefetchCount` 应不小于 `AdmissionBatchSize` 以保证批次能装满。
 - **Opt-in 开关。** `JobRuntimeOptions.BrokerCancelPropagationEnabled` 默认 `true`（随 `BrokerDispatch` 成为默认 profile 一并调整，见 [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)），只 gate 取消传播：开启时取消 `BrokerDispatch` Run 会解析 consumer group 并写 `cancel` outbox 行，由 `ICancelPublisher` fanout；关闭时取消只置 `CancelRequested`，靠 lease reaper 兜底。未注册 RabbitMQ execution dispatcher 扩展（即无 `ICancelPublisher`）且仍使用 `BrokerDispatch` 的部署应显式将其设回 `false`。投递本身由队列 profile（`BrokerDispatch`）决定，与该 flag 无关。

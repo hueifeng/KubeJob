@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json;
 using FluentAssertions;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
@@ -119,7 +121,349 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             LIMIT 1;";
         var version = Convert.ToInt32(await command.ExecuteScalarAsync());
 
-        version.Should().Be(2);
+        version.Should().Be(DbInitializer.CurrentSchemaVersion);
+    }
+
+    [Fact]
+    public async Task Batch_submit_persists_runs_and_honors_idempotency_in_one_transaction()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var commands = new List<SubmitJobCommand>(202);
+        for (var index = 0; index < 200; index++)
+        {
+            commands.Add(NewSubmission(idempotencyKey: $"batch:{index}", deliveryTarget: BrokerDispatchTarget()));
+        }
+
+        // Duplicate idempotency keys must resolve to the first occurrence with
+        // Existing=true and must not write a second outbox row.
+        commands.Add(NewSubmission(idempotencyKey: "batch:0", deliveryTarget: BrokerDispatchTarget()));
+        commands.Add(NewSubmission(idempotencyKey: "batch:5", deliveryTarget: BrokerDispatchTarget()));
+
+        var results = await store.SubmitBatchAsync(commands, CancellationToken.None);
+
+        results.Should().HaveCount(202);
+        results.Count(x => x.Existing).Should().Be(2);
+        results[200].Existing.Should().BeTrue();
+        results[201].Existing.Should().BeTrue();
+        results[200].Run.Id.Should().Be(results[0].Run.Id);
+        results[201].Run.Id.Should().Be(results[5].Run.Id);
+
+        var newRunIds = results.Take(200).Select(x => x.Run.Id).ToArray();
+        foreach (var runId in newRunIds)
+        {
+            var run = await store.GetRunAsync(runId, CancellationToken.None);
+            run.Should().NotBeNull();
+            run!.Phase.Should().Be(JobPhase.Pending);
+        }
+
+        // Every newly inserted run gets exactly one work-available outbox row;
+        // the two duplicates contribute none.
+        var outbox = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromSeconds(30),
+            500,
+            CancellationToken.None);
+        var workAvailable = outbox
+            .Where(x => string.Equals(x.EventType, "work-available", StringComparison.Ordinal))
+            .ToArray();
+        workAvailable.Should().HaveCount(200);
+        foreach (var runId in newRunIds)
+        {
+            workAvailable.Count(x => x.PayloadJson.Contains(runId)).Should().Be(1);
+        }
+    }
+
+    [Fact]
+    public async Task Batch_submit_persists_continuation_and_compensation()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var continuation = new Continuation
+        {
+            JobKey = "mail.send.followup",
+            PayloadJson = "{\"parent\":\"batch-cont\"}",
+            Trigger = ContinuationTrigger.OnSuccess
+        };
+        var compensation = new Compensation
+        {
+            JobKey = "mail.send.compensate",
+            PayloadJson = "{\"parent\":\"batch-comp\"}"
+        };
+
+        var results = await store.SubmitBatchAsync(new[]
+        {
+            NewSubmission(idempotencyKey: "batch-continuation:1") with
+            {
+                Continuation = continuation,
+                Compensation = compensation
+            }
+        }, CancellationToken.None);
+
+        results.Should().HaveCount(1);
+        results[0].Existing.Should().BeFalse();
+
+        var run = await store.GetRunAsync(results[0].Run.Id, CancellationToken.None);
+        run.Should().NotBeNull();
+        run!.Continuation.Should().BeEquivalentTo(continuation);
+        run.Compensation.Should().BeEquivalentTo(compensation);
+    }
+
+    [Fact]
+    public async Task GetByIdempotencyKeyAsync_returns_active_run_for_matching_key()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var submitted = await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "lookup-by-key"),
+            CancellationToken.None);
+
+        var found = await store.GetByIdempotencyKeyAsync("lookup-by-key", CancellationToken.None);
+        found.Should().NotBeNull();
+        found!.Id.Should().Be(submitted.Run.Id);
+    }
+
+    [Fact]
+    public async Task SubmitAsync_round_trips_continuation_and_compensation()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var continuation = new Continuation
+        {
+            JobKey = "mail.send.followup",
+            PayloadJson = "{\"parent\":\"single\"}",
+            Trigger = ContinuationTrigger.OnSuccess
+        };
+        var compensation = new Compensation
+        {
+            JobKey = "mail.send.compensate",
+            PayloadJson = "{\"parent\":\"single-comp\"}"
+        };
+
+        var submitted = await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "single-continuation") with
+            {
+                Continuation = continuation,
+                Compensation = compensation
+            },
+            CancellationToken.None);
+
+        submitted.Run.Continuation.Should().BeEquivalentTo(continuation);
+        submitted.Run.Compensation.Should().BeEquivalentTo(compensation);
+
+        var readBack = await store.GetRunAsync(submitted.Run.Id, CancellationToken.None);
+        readBack!.Continuation.Should().BeEquivalentTo(continuation);
+        readBack.Compensation.Should().BeEquivalentTo(compensation);
+    }
+
+    [Fact]
+    public async Task Completion_fires_continuation_on_success_with_parent_context()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var parent = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "cont-on-success") with
+            {
+                Continuation = new Continuation
+                {
+                    JobKey = "mail.send.followup",
+                    PayloadJson = "{\"parent\":\"cont-on-success\"}",
+                    Trigger = ContinuationTrigger.OnSuccess
+                },
+                Compensation = new Compensation { JobKey = "must.not.fire" }
+            },
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "cont-success-worker", "cont-success-session");
+        var claim = (await store.ClaimAsync(
+            Claim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        claim.JobKey.Should().Be("mail.send");
+
+        var completion = await store.CompleteAsync(
+            Completion(worker, claim, JobAttemptOutcome.Succeeded),
+            TestRetryPolicy,
+            CancellationToken.None);
+        completion.Accepted.Should().BeTrue();
+        (await store.GetRunAsync(parent.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Succeeded);
+
+        // The continuation run must be claimable under its own job key, with
+        // the parent's execution context and the configured payload. The
+        // follow-up session registers the continuation job key as a capability.
+        var followUpWorker = await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "cont-success-worker",
+                "cont-success-followup-session",
+                "integration-test",
+                "localhost",
+                1,
+                new[] { "default" },
+                new[] { "mail.send.followup" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        var followUp = (await store.ClaimAsync(
+            new ClaimJobsRequest(
+                followUpWorker.WorkerId,
+                followUpWorker.SessionId,
+                followUpWorker.Epoch,
+                1,
+                new[] { "default" },
+                new[] { "mail.send.followup" }),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        followUp.JobKey.Should().Be("mail.send.followup");
+
+        var followUpRun = (await store.GetRunAsync(followUp.RunId, CancellationToken.None))!;
+        JsonSerializer.Deserialize<Dictionary<string, string?>>(followUpRun.PayloadJson)!
+            .Should().Equal(new Dictionary<string, string?> { ["parent"] = "cont-on-success" });
+        followUpRun.DeliveryProfile.Should().Be(parent.DeliveryProfile);
+        followUpRun.MaxAttempts.Should().Be(parent.MaxAttempts);
+
+        // Compensation must not fire on success.
+        var compensationWorker = await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "cont-success-worker",
+                "cont-success-compensation-session",
+                "integration-test",
+                "localhost",
+                1,
+                new[] { "default" },
+                new[] { "must.not.fire" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        var compensationClaim = await store.ClaimAsync(
+            new ClaimJobsRequest(
+                compensationWorker.WorkerId,
+                compensationWorker.SessionId,
+                compensationWorker.Epoch,
+                1,
+                new[] { "default" },
+                new[] { "must.not.fire" }),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+        compensationClaim.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Completion_fires_compensation_on_permanent_failure()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+
+        var parent = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "comp-on-failure") with
+            {
+                Compensation = new Compensation
+                {
+                    JobKey = "mail.send.compensate",
+                    PayloadJson = "{\"parent\":\"comp-on-failure\"}"
+                },
+                Continuation = new Continuation
+                {
+                    JobKey = "mail.send.followup",
+                    Trigger = ContinuationTrigger.OnAnyTerminal
+                }
+            },
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "comp-failure-worker", "comp-failure-session");
+        var claim = (await store.ClaimAsync(
+            Claim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+
+        var completion = await store.CompleteAsync(
+            Completion(worker, claim, JobAttemptOutcome.PermanentFailure),
+            TestRetryPolicy,
+            CancellationToken.None);
+        completion.Accepted.Should().BeTrue();
+        (await store.GetRunAsync(parent.Id, CancellationToken.None))!
+            .Phase.Should().Be(JobPhase.Failed);
+
+        // Both compensation (PermanentFailure) and OnAnyTerminal continuation
+        // fire, each under its own job key. A follow-up-capable session is
+        // registered for the compensation and continuation keys.
+        var followUpWorker = await store.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "comp-failure-worker",
+                "comp-failure-followup-session",
+                "integration-test",
+                "localhost",
+                2,
+                new[] { "default" },
+                new[] { "mail.send.compensate", "mail.send.followup" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        var compensationClaim = (await store.ClaimAsync(
+            new ClaimJobsRequest(
+                followUpWorker.WorkerId,
+                followUpWorker.SessionId,
+                followUpWorker.Epoch,
+                1,
+                new[] { "default" },
+                new[] { "mail.send.compensate" }),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        compensationClaim.JobKey.Should().Be("mail.send.compensate");
+        JsonSerializer.Deserialize<Dictionary<string, string?>>(
+            (await store.GetRunAsync(compensationClaim.RunId, CancellationToken.None))!.PayloadJson)!
+            .Should().Equal(new Dictionary<string, string?> { ["parent"] = "comp-on-failure" });
+
+        var continuationClaim = (await store.ClaimAsync(
+            new ClaimJobsRequest(
+                followUpWorker.WorkerId,
+                followUpWorker.SessionId,
+                followUpWorker.Epoch,
+                1,
+                new[] { "default" },
+                new[] { "mail.send.followup" }),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+        continuationClaim.JobKey.Should().Be("mail.send.followup");
+    }
+
+    [Fact]
+    public async Task Batch_submit_is_faster_than_single_submits()
+    {
+        if (!Enabled) return;
+        if (Environment.GetEnvironmentVariable("KUBEJOB_PERF") is null) return;
+        var store = _store!;
+
+        const int count = 300;
+        var singleCommands = Enumerable.Range(0, count)
+            .Select(i => NewSubmission(idempotencyKey: $"perf-single:{i}"))
+            .ToArray();
+        var batchCommands = Enumerable.Range(0, count)
+            .Select(i => NewSubmission(idempotencyKey: $"perf-batch:{i}"))
+            .ToArray();
+
+        var singleStart = Stopwatch.GetTimestamp();
+        foreach (var command in singleCommands)
+        {
+            await store.SubmitAsync(command, CancellationToken.None);
+        }
+        var singleElapsed = Stopwatch.GetElapsedTime(singleStart);
+
+        var batchStart = Stopwatch.GetTimestamp();
+        var results = await store.SubmitBatchAsync(batchCommands, CancellationToken.None);
+        var batchElapsed = Stopwatch.GetElapsedTime(batchStart);
+
+        results.Should().HaveCount(count);
+        batchElapsed.Should().BeLessThan(singleElapsed,
+            "batch submit should amortize round trips and WAL flushes");
     }
 
     [Fact]
@@ -141,7 +485,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None);
 
         scheduled.Should().BeTrue();
-        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
+        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(1);
 
         var canceled = await store.RequestCancelAsync(
             run.Id,
@@ -478,7 +822,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(deliveryTarget: BrokerDispatchTarget()), CancellationToken.None);
         var first = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMilliseconds(100),
@@ -501,7 +845,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(deliveryTarget: BrokerDispatchTarget()), CancellationToken.None);
         var first = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMilliseconds(100),
@@ -538,8 +882,12 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(idempotencyKey: "outbox-batch:one"), CancellationToken.None);
-        await store.SubmitAsync(NewSubmission(idempotencyKey: "outbox-batch:two"), CancellationToken.None);
+        await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "outbox-batch:one", deliveryTarget: BrokerDispatchTarget()),
+            CancellationToken.None);
+        await store.SubmitAsync(
+            NewSubmission(idempotencyKey: "outbox-batch:two", deliveryTarget: BrokerDispatchTarget()),
+            CancellationToken.None);
         var claimed = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(30),
@@ -806,6 +1154,52 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task KeyOrdered_claim_blocks_a_later_run_until_the_head_is_terminal()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var ordered = new DeliveryTarget(
+            ExecutionDeliveryProfile.Pull,
+            "default",
+            null,
+            "default",
+            ExecutionOrderingMode.KeyOrdered);
+        const string key = "order:postgres:42";
+        var first = (await store.SubmitAsync(
+            NewSubmission("ordered-first", concurrencyKey: key, deliveryTarget: ordered),
+            CancellationToken.None)).Run;
+        var second = (await store.SubmitAsync(
+            NewSubmission("ordered-second", concurrencyKey: key, deliveryTarget: ordered),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "ordered-worker", "ordered-session", 2);
+
+        var firstClaim = await store.ClaimAsync(
+            Claim(worker) with { RunIds = new[] { first.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+        var blocked = await store.ClaimAsync(
+            Claim(worker) with { RunIds = new[] { second.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+
+        firstClaim.Should().ContainSingle();
+        blocked.Should().BeEmpty();
+        (await store.CompleteAsync(
+            Completion(worker, firstClaim.Single(), JobAttemptOutcome.Succeeded),
+            TestRetryPolicy,
+            CancellationToken.None)).Accepted.Should().BeTrue();
+
+        var secondClaim = await store.ClaimAsync(
+            Claim(worker) with { RunIds = new[] { second.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+        secondClaim.Should().ContainSingle(job => job.RunId == second.Id);
+    }
+
+    [Fact]
     public async Task Batch_claim_excludes_a_pending_run_whose_concurrency_key_is_already_running()
     {
         if (!Enabled) return;
@@ -886,13 +1280,17 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .CurrentWorkerId.Should().Be(soloWorker.WorkerId);
     }
 
+    private static DeliveryTarget BrokerDispatchTarget() =>
+        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "rabbitmq", "default");
+
     private static SubmitJobCommand NewSubmission(
         string? idempotencyKey = null,
         string queue = "default",
         DateTimeOffset? availableAt = null,
         int maxAttempts = 3,
         int priority = 0,
-        string? concurrencyKey = null) => new(
+        string? concurrencyKey = null,
+        DeliveryTarget? deliveryTarget = null) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         queue,
@@ -901,7 +1299,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         idempotencyKey,
         concurrencyKey,
         maxAttempts,
-        60);
+        60,
+        DeliveryTarget: deliveryTarget);
 
     private static JobScheduleRecord NewSchedule(DateTimeOffset nextFireAt) => new()
     {
@@ -911,6 +1310,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         CronExpression = "*/5 * * * *",
         TimeZoneId = "UTC",
         Queue = "default",
+        TransportId = "rabbitmq",
         MisfirePolicy = MisfirePolicy.FireOnce,
         ConcurrencyPolicy = ScheduleConcurrencyPolicy.Allow,
         MaxAttempts = 3,
@@ -943,7 +1343,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         if (!Enabled) return;
         var store = _store!;
         var unkeyedRun = (await store.SubmitAsync(
-            NewSubmission(),
+            NewSubmission(deliveryTarget: BrokerDispatchTarget()),
             CancellationToken.None)).Run;
         var keyedRun = (await store.SubmitAsync(
             NewSubmission(idempotencyKey: "maintenance-retain-me"),

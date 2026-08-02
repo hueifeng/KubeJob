@@ -1,0 +1,107 @@
+@model DashboardQueuesViewModel
+@{
+    ViewData["Title"] = "Queues";
+}
+<div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
+    <div>
+        <h2 class="mb-1 fw-bold">Queue inventory</h2>
+        <div class="small text-muted">
+            A logical Queue is the business-visible identity. Each queue resolves to a delivery profile
+            (Pull or BrokerDispatch), a Worker eligibility lane, a consumer group, and an ordering mode.
+            Physical queue names on the right are owned by the transport adapter and are stable across restarts.
+            Showing @Model.Entries.Count queues; @Model.ActiveWorkerCount active worker sessions as of @Model.ObservedAt.ToLocalTime():HH:mm:ss.
+        </div>
+    </div>
+</div>
+
+@if (Model.Entries.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-state-icon"><i class="fa-solid fa-route" aria-hidden="true"></i></div>
+        <div class="empty-state-title">No queues yet</div>
+        <div class="empty-state-detail">
+            Queues appear here once they are configured in QueueDeliveryOptions or claimed by a worker session.
+        </div>
+    </div>
+}
+else
+{
+    <div class="table-card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                <tr>
+                    <th scope="col">Logical queue</th>
+                    <th scope="col">Profile</th>
+                    <th scope="col">Lane</th>
+                    <th scope="col">Group</th>
+                    <th scope="col">Ordering</th>
+                    <th scope="col">Transport</th>
+                    <th scope="col">Workers</th>
+                    <th scope="col">Physical queues</th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var queue in Model.Entries)
+                {
+                    <tr>
+                        <td><code class="queue-name">@queue.LogicalQueue</code></td>
+                        <td>
+                            <span class="badge text-bg-@(queue.Profile == KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch ? "primary" : "secondary")">
+                                @queue.Profile
+                            </span>
+                        </td>
+                        <td><code>@queue.ExecutionLane</code></td>
+                        <td><code>@queue.ConsumerGroup</code></td>
+                        <td>@queue.OrderingMode</td>
+                        <td>@(string.IsNullOrWhiteSpace(queue.TransportId) ? "—" : queue.TransportId)</td>
+                        <td>@queue.ActiveWorkerCount</td>
+                        <td>
+                            @if (queue.PhysicalQueueNames.Count == 0)
+                            {
+                                <span class="text-muted small">no registered transport</span>
+                            }
+                            else
+                            {
+                                <ul class="physical-queue-list">
+                                    @foreach (var physical in queue.PhysicalQueueNames)
+                                    {
+                                        <li><code class="physical-queue-name">@physical</code></li>
+                                    }
+                                </ul>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<style>
+    .queue-name { font-weight: 600; }
+    .physical-queue-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    .physical-queue-name {
+        font-size: 11px;
+        color: var(--muted);
+        word-break: break-all;
+    }
+    .empty-state {
+        border: 1px dashed var(--border-strong);
+        border-radius: 6px;
+        padding: 32px;
+        text-align: center;
+        background: var(--surface);
+    }
+    .empty-state-icon { font-size: 22px; color: var(--muted); margin-bottom: 8px; }
+    .empty-state-title { font-weight: 650; margin-bottom: 4px; }
+    .empty-state-detail { color: var(--muted); font-size: 12px; }
+</style>

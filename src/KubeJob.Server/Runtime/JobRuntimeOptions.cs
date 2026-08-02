@@ -27,13 +27,22 @@ public sealed class JobRuntimeOptions
 
     public int LeaseReaperBatchSize { get; set; } = 256;
 
-    public int OutboxBatchSize { get; set; } = 128;
+    public int OutboxBatchSize { get; set; } = 256;
 
     public int OutboxPublishConcurrency { get; set; } = 4;
 
     public int CompletionBatchSize { get; set; } = 32;
 
-    public TimeSpan CompletionFlushInterval { get; set; } = TimeSpan.FromMilliseconds(5);
+    /// <summary>
+    /// Number of independent completion shards. When > 1, completion requests
+    /// are routed to a shard by <c>RunId.GetHashCode() % ShardCount</c>. Each
+    /// shard has its own bounded channel, micro-batch, and database batch
+    /// submission, eliminating the single-batcher hot spot under high worker
+    /// concurrency. Default 4 (Item 6: CompletionBatcher sharding).
+    /// </summary>
+    public int CompletionBatcherShardCount { get; set; } = 4;
+
+    public TimeSpan CompletionFlushInterval { get; set; } = TimeSpan.FromMilliseconds(2);
 
     public int ScheduleBatchSize { get; set; } = 128;
 
@@ -48,13 +57,23 @@ public sealed class JobRuntimeOptions
 
     /// <summary>
     /// Retention for terminal runs without idempotency or schedule identity.
-    /// Keyed terminal history is intentionally retained until tombstones exist.
+    /// Keyed terminal history is retained by design: the idempotency key must
+    /// never be reused while its historical Run still exists.
     /// </summary>
     public TimeSpan UnkeyedTerminalRetention { get; set; } = TimeSpan.FromDays(7);
 
     public TimeSpan RetentionPollInterval { get; set; } = TimeSpan.FromMinutes(1);
 
     public int RetentionBatchSize { get; set; } = 1_000;
+
+    /// <summary>
+    /// Period at which the control-plane refreshes its cached KeyOrdered
+    /// ordering backlog snapshot. The cache backs the observable gauges, so a
+    /// metrics scrape returns the cached value and never hits the database.
+    /// Too small a value increases query load; too large delays backlog
+    /// detection. Default 5s.
+    /// </summary>
+    public TimeSpan OrderingBacklogRefreshInterval { get; set; } = TimeSpan.FromSeconds(5);
 
     /// Flag for broker-accelerated cancellation of BrokerDispatch runs.
     /// Submission always writes <c>work-available</c> outbox rows; the
@@ -146,6 +165,11 @@ public sealed class JobRuntimeOptions
             throw new InvalidOperationException("CompletionBatchSize must be between 1 and 1024.");
         }
 
+        if (CompletionBatcherShardCount is < 1 or > 64)
+        {
+            throw new InvalidOperationException("CompletionBatcherShardCount must be between 1 and 64.");
+        }
+
         if (CompletionFlushInterval <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("CompletionFlushInterval must be positive.");
@@ -184,6 +208,11 @@ public sealed class JobRuntimeOptions
         if (RetentionBatchSize is < 1 or > 10_000)
         {
             throw new InvalidOperationException("RetentionBatchSize must be between 1 and 10000.");
+        }
+
+        if (OrderingBacklogRefreshInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("OrderingBacklogRefreshInterval must be positive.");
         }
     }
 }

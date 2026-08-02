@@ -68,6 +68,14 @@ public sealed class JobRuntimeController : ControllerBase
         return Ok(await _controlPlane.AdmitAsync(request, cancellationToken));
     }
 
+    [HttpPost("admissions/batch")]
+    public async Task<ActionResult<AdmitExecutionBatchResponse>> AdmitBatch(
+        [FromBody] AdmitExecutionBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        return Ok(await _controlPlane.AdmitBatchAsync(request, cancellationToken));
+    }
+
     [HttpPost("leases/renew")]
     public async Task<ActionResult<RenewLeasesResponse>> Renew(
         [FromBody] RenewLeasesRequest request,

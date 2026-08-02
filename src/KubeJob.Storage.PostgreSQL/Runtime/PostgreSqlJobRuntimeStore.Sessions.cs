@@ -44,6 +44,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     State = @Ready,
                     MaxConcurrency = @MaxConcurrency,
                     AvailableSlots = LEAST(AvailableSlots, @MaxConcurrency),
+                    ExecutionLane = @ExecutionLane,
+                    ConsumerGroup = @ConsumerGroup,
                     Queues = CAST(@Queues AS jsonb),
                     Capabilities = CAST(@Capabilities AS jsonb),
                     Labels = CAST(@Labels AS jsonb),
@@ -60,6 +62,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     request.HostName,
                     Ready = (int)WorkerSessionState.Ready,
                     request.MaxConcurrency,
+                    request.ExecutionLane,
+                    request.ConsumerGroup,
                     Queues = JsonSerializer.Serialize(request.Queues, SerializerOptions),
                     Capabilities = JsonSerializer.Serialize(request.Capabilities, SerializerOptions),
                     Labels = JsonSerializer.Serialize(request.Labels, SerializerOptions),
@@ -114,11 +118,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await connection.ExecuteAsync(new CommandDefinition(@"
             INSERT INTO Kj2_WorkerSessions
                 (WorkerId, SessionId, Epoch, BuildId, HostName, State,
-                 MaxConcurrency, AvailableSlots, Queues, Capabilities, Labels,
+                 MaxConcurrency, AvailableSlots, ExecutionLane, ConsumerGroup, Queues, Capabilities, Labels,
                  StartedAt, LastHeartbeatAt)
             VALUES
                 (@WorkerId, @SessionId, @Epoch, @BuildId, @HostName, @Ready,
-                 @MaxConcurrency, @MaxConcurrency, CAST(@Queues AS jsonb),
+                 @MaxConcurrency, @MaxConcurrency, @ExecutionLane, @ConsumerGroup, CAST(@Queues AS jsonb),
                  CAST(@Capabilities AS jsonb), CAST(@Labels AS jsonb),
                  @Now, @Now);",
             new
@@ -130,6 +134,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 request.HostName,
                 Ready = (int)WorkerSessionState.Ready,
                 request.MaxConcurrency,
+                request.ExecutionLane,
+                request.ConsumerGroup,
                 Queues = JsonSerializer.Serialize(request.Queues, SerializerOptions),
                 Capabilities = JsonSerializer.Serialize(request.Capabilities, SerializerOptions),
                 Labels = JsonSerializer.Serialize(request.Labels, SerializerOptions),
@@ -253,6 +259,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
         State = WorkerSessionState.Ready,
         MaxConcurrency = request.MaxConcurrency,
         AvailableSlots = request.MaxConcurrency,
+        ExecutionLane = request.ExecutionLane,
+        ConsumerGroup = request.ConsumerGroup,
         Queues = request.Queues.ToArray(),
         Capabilities = request.Capabilities.ToArray(),
         Labels = new Dictionary<string, string>(request.Labels, StringComparer.Ordinal),

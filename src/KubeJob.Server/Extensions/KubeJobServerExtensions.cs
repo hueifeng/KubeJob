@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -41,20 +42,31 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<KubeJobControlPlaneMetrics>();
-        services.TryAddSingleton<JobControlPlane>();
-        services.TryAddSingleton<IJobMessageIngress, JobMessageIngress>();
+        services.TryAddSingleton<OutboxPublisherSignal>();
+        services.TryAddSingleton<JobControlPlane>(sp => new JobControlPlane(
+            sp.GetRequiredService<IJobSubmissionStore>(),
+            sp.GetRequiredService<IJobQueryStore>(),
+            sp.GetRequiredService<IQueueRouter>(),
+            sp.GetRequiredService<IOptions<JobRuntimeOptions>>(),
+            sp.GetRequiredService<OutboxPublisherSignal>(),
+            sp.GetService<KubeJobControlPlaneMetrics>()));
+        services.TryAddSingleton<JobMessageIngress>();
+        services.TryAddSingleton<IJobMessageIngress>(sp => sp.GetRequiredService<JobMessageIngress>());
+        services.TryAddSingleton<IJobMessageIngressBatch>(sp => sp.GetRequiredService<JobMessageIngress>());
         services.TryAddSingleton<CompletionBatcher>();
         services.TryAddSingleton<WorkerControlPlane>();
         services.TryAddSingleton<ScheduleControlPlane>();
         services.TryAddSingleton<IWorkAvailableNotifier, NoopWorkAvailableNotifier>();
         services.TryAddSingleton<ICancelPublisher, NoopCancelPublisher>();
         services.AddOptions<QueueDeliveryOptions>();
+        services.TryAddSingleton<QueueCatalog>();
         services.TryAddSingleton<IQueueRouter, ConfigurationQueueRouter>();
-        services.TryAddSingleton<IExecutionGroupResolver, DefaultExecutionGroupResolver>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, UnconfiguredExecutionTransport>());
         services.TryAddSingleton<IExecutionTransportRegistry, ExecutionTransportRegistry>();
+        services.TryAddSingleton<QueueInventoryService>();
         services.TryAddSingleton<IJobClient, DefaultJobClient>();
         services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
+
         services.AddOptions<JobRuntimeOptions>();
         services.AddHealthChecks()
             .AddCheck<KubeJobRuntimeHealthCheck>(
@@ -73,6 +85,7 @@ public static class KubeJobServerExtensions
         services.AddHostedService<LeaseReaperService>();
         services.AddHostedService<OutboxPublisherService>();
         services.AddHostedService<RuntimeRetentionService>();
+        services.AddHostedService<OrderingMetricsRefreshService>();
         var clientPolicy = options.GetNormalizedClientAuthorizationPolicy();
         var workerPolicy = options.GetNormalizedWorkerAuthorizationPolicy();
         services.AddHostedService(sp => new KubeJobAuthorizationPolicyWarningService(
@@ -244,10 +257,10 @@ public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
 
 /// <summary>
 /// Emits a one-time startup warning when a KubeJob surface has no
-/// authorization policy configured. Authorization remains opt-in for
-/// backward compatibility, but an unconfigured production deployment would
-/// otherwise expose job submission, worker control, or the dashboard
-/// anonymously with no signal to the operator.
+/// authorization policy configured. Authorization remains opt-in, but an
+/// unconfigured production deployment would otherwise expose job submission,
+/// worker control, or the dashboard anonymously with no signal to the
+/// operator.
 /// </summary>
 internal sealed class KubeJobAuthorizationPolicyWarningService : IHostedService
 {

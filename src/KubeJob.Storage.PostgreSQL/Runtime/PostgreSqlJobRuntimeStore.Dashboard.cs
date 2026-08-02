@@ -223,6 +223,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                    TimeoutSeconds,
                    IdempotencyKey,
                    ConcurrencyKey,
+                   OrderingMode,
+                   OrderingSequence,
                    ScheduleId,
                    ScheduledFor,
                    CurrentWorkerId,
@@ -281,6 +283,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                    State,
                    MaxConcurrency,
                    AvailableSlots,
+                   ConsumerGroup,
                    Queues::text AS QueuesJson,
                    Capabilities::text AS CapabilitiesJson,
                    Labels::text AS LabelsJson,
@@ -302,6 +305,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             State = row.State,
             MaxConcurrency = row.MaxConcurrency,
             AvailableSlots = row.AvailableSlots,
+            ConsumerGroup = row.ConsumerGroup,
             Queues = JsonSerializer.Deserialize<string[]>(row.QueuesJson, SerializerOptions)
                      ?? Array.Empty<string>(),
             Capabilities = JsonSerializer.Deserialize<string[]>(row.CapabilitiesJson, SerializerOptions)
@@ -326,6 +330,100 @@ public sealed partial class PostgreSqlJobRuntimeStore
             LIMIT @Limit;",
             new { Limit = Math.Clamp(limit, 1, 1000) },
             cancellationToken: cancellationToken))).ToArray();
+    }
+
+    public async ValueTask<IReadOnlyList<OrderingBacklogSample>> GetOrderingBacklogAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
+        await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
+        var rows = await connection.QueryAsync<OrderingBacklogRow>(new CommandDefinition("""
+            WITH ko_ordered AS (
+                SELECT Queue,
+                       ConcurrencyKey,
+                       AvailableAt,
+                       AttemptCount,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY Queue, ConcurrencyKey
+                           ORDER BY OrderingSequence) AS rn
+                FROM Kj2_JobRuns
+                WHERE OrderingMode = @KeyOrdered
+                  AND Phase IN (@Pending, @Running)
+                  AND ConcurrencyKey IS NOT NULL
+            ),
+            sf_ordered AS (
+                SELECT Queue,
+                       AttemptCount,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY Queue
+                           ORDER BY OrderingSequence) AS rn,
+                       AvailableAt
+                FROM Kj2_JobRuns
+                WHERE OrderingMode = @StrictFifo
+                  AND Phase IN (@Pending, @Running)
+            ),
+            ko_agg AS (
+                SELECT Queue,
+                       COUNT(*) FILTER (WHERE rn > 1)::int AS BlockedRuns,
+                       GREATEST(0, MAX(EXTRACT(EPOCH FROM (clock_timestamp() - AvailableAt)))
+                           FILTER (WHERE rn > 1))::float8 AS OldestBlockedAgeSeconds,
+                       COUNT(DISTINCT ConcurrencyKey)::int AS ActiveKeys,
+                       COUNT(*) FILTER (WHERE rn > 1 AND (SELECT MIN(AttemptCount) FROM ko_ordered ko2
+                           WHERE ko2.Queue = ko_ordered.Queue
+                             AND ko2.ConcurrencyKey = ko_ordered.ConcurrencyKey
+                             AND ko2.rn = 1) > 1)::int AS RetryBlockedRuns
+                FROM ko_ordered
+                GROUP BY Queue
+            ),
+            sf_agg AS (
+                SELECT Queue,
+                       COUNT(*) FILTER (WHERE rn > 1)::int AS BlockedRuns,
+                       GREATEST(0, MAX(EXTRACT(EPOCH FROM (clock_timestamp() - AvailableAt)))
+                           FILTER (WHERE rn > 1))::float8 AS OldestBlockedAgeSeconds,
+                       0::int AS ActiveKeys,
+                       COUNT(*) FILTER (WHERE rn > 1 AND (SELECT MIN(AttemptCount) FROM sf_ordered sf2
+                           WHERE sf2.Queue = sf_ordered.Queue AND sf2.rn = 1) > 1)::int AS RetryBlockedRuns
+                FROM sf_ordered
+                GROUP BY Queue
+            )
+            SELECT COALESCE(ko.Queue, sf.Queue) AS Queue,
+                   COALESCE(ko.BlockedRuns, 0) AS KoBlockedRuns,
+                   COALESCE(ko.OldestBlockedAgeSeconds, 0) AS KoOldestAge,
+                   COALESCE(ko.ActiveKeys, 0) AS ActiveKeys,
+                   COALESCE(sf.BlockedRuns, 0) AS SfBlockedRuns,
+                   COALESCE(ko.RetryBlockedRuns, 0) + COALESCE(sf.RetryBlockedRuns, 0) AS RetryBlockedRuns
+            FROM ko_agg ko
+            FULL OUTER JOIN sf_agg sf ON ko.Queue = sf.Queue;
+            """,
+            new
+            {
+                KeyOrdered = (int)ExecutionOrderingMode.KeyOrdered,
+                StrictFifo = (int)ExecutionOrderingMode.StrictFifo,
+                Pending = (int)JobPhase.Pending,
+                Running = (int)JobPhase.Running
+            },
+            cancellationToken: cancellationToken));
+
+        return rows
+            .Select(row => new OrderingBacklogSample(
+                row.Queue,
+                row.KoBlockedRuns,
+                row.KoOldestAge,
+                row.ActiveKeys,
+                row.SfBlockedRuns,
+                row.RetryBlockedRuns,
+                Array.Empty<LaneBacklogSample>()))
+            .ToArray();
+    }
+
+    private sealed class OrderingBacklogRow
+    {
+        public string Queue { get; set; } = string.Empty;
+        public int KoBlockedRuns { get; set; }
+        public double KoOldestAge { get; set; }
+        public int ActiveKeys { get; set; }
+        public int SfBlockedRuns { get; set; }
+        public int RetryBlockedRuns { get; set; }
     }
 
     private sealed class RunCountsRow
@@ -383,6 +481,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public WorkerSessionState State { get; set; }
         public int MaxConcurrency { get; set; }
         public int AvailableSlots { get; set; }
+        public string ConsumerGroup { get; set; } = "default";
         public string QueuesJson { get; set; } = "[]";
         public string CapabilitiesJson { get; set; } = "[]";
         public string LabelsJson { get; set; } = "{}";

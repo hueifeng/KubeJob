@@ -52,6 +52,7 @@ public sealed class RabbitMqNotificationTests
             options.ServerEndpoint = "https://jobs.internal/";
             options.WorkerId = "worker-1";
             options.MaxConcurrentJobs = 1;
+            options.Queues = new List<string> { "test.queue" };
         });
         services.AddRabbitMqKubeJobExecutionConsumer(options =>
             options.ConnectionString = "amqp://guest:guest@localhost:5672/");
@@ -105,6 +106,7 @@ public sealed class RabbitMqNotificationTests
             options.ServerEndpoint = "https://jobs.internal/";
             options.WorkerId = "worker-1";
             options.MaxConcurrentJobs = 1;
+            options.Queues = new List<string> { "test.queue" };
         });
         services.AddRabbitMqKubeJobWorkerNotifications(options =>
             options.ConnectionString = "amqp://guest:guest@localhost:5672/");
@@ -193,27 +195,23 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Shared_execution_topology_collapses_logical_queues_to_one_physical_queue()
+    public void Business_execution_topology_uses_one_queue_per_logical_queue_and_shared_retry()
     {
         var options = new RabbitMqExecutionOptions
         {
-            ConsumerGroup = "unified",
-            UseSharedExecutionQueue = true
+            ConsumerGroup = "unified"
         };
 
-        options.GetConsumerQueueName("default")
-            .Should().Be(options.GetConsumerQueueName("samples"))
-            .And.EndWith(".queue");
-        options.GetRetryQueueName("default")
-            .Should().Be(options.GetRetryQueueName("samples"))
+        options.GetConsumerQueueName("mail.send")
+            .Should().Be("kubejob.execution.unified.mail.send.queue");
+        options.GetConsumerQueueName("report.generate")
+            .Should().Be("kubejob.execution.unified.report.generate.queue");
+        options.GetConsumerQueueName("mail.send")
+            .Should().NotBe(options.GetConsumerQueueName("report.generate"));
+        options.GetSharedRetryQueueName()
+            .Should().Be(options.GetSharedRetryQueueName())
             .And.EndWith(".retry.queue");
         options.GetGroupDlqName().Should().EndWith(".dlq.queue");
-
-        options.UseSharedExecutionQueue = false;
-        options.GetConsumerQueueName("default")
-            .Should().NotBe(options.GetConsumerQueueName("samples"));
-        options.GetRetryQueueName("default")
-            .Should().NotBe(options.GetRetryQueueName("samples"));
     }
 
     [Fact]
@@ -225,12 +223,34 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Physical_queue_names_remain_distinct_for_normalization_collisions()
+    public void Execution_dispatch_concurrency_is_bounded()
     {
-        RabbitMqExecutionOptions.SanitizeSegment("orders.push")
-            .Should().NotBe(RabbitMqExecutionOptions.SanitizeSegment("orders-push"));
-        RabbitMqExecutionOptions.SanitizeSegment("Orders")
-            .Should().NotBe(RabbitMqExecutionOptions.SanitizeSegment("orders"));
+        var options = new RabbitMqExecutionOptions
+        {
+            ConsumerDispatchConcurrency = 257
+        };
+
+        options.Invoking(x => x.Validate())
+            .Should().Throw<InvalidOperationException>()
+            .WithMessage("*ConsumerDispatchConcurrency*");
+    }
+
+    [Fact]
+    public void Physical_queue_names_preserve_the_business_logical_queue_name()
+    {
+        var execution = new RabbitMqExecutionOptions
+        {
+            ConsumerGroup = "default"
+        };
+        var notification = new RabbitMqNotificationOptions
+        {
+            ConsumerGroup = "default"
+        };
+
+        execution.GetConsumerQueueName("orders.push")
+            .Should().Be("kubejob.execution.default.orders.push.queue");
+        notification.GetConsumerQueueName("orders.push")
+            .Should().Be("kubejob.work-available.default.orders.push.queue");
     }
 
     [Fact]

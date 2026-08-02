@@ -1,3 +1,4 @@
+using KubeJob.Core.Queues;
 using System.Text;
 
 namespace KubeJob.Transport.RabbitMQ;
@@ -13,12 +14,15 @@ public sealed class RabbitMqExecutionOptions
     public string ConsumerQueuePrefix { get; set; } = "kubejob.execution";
 
     /// <summary>
-    /// Binds all logical queues in a consumer group to one physical execution
-    /// queue and one retry queue. The logical queue remains in the envelope and
-    /// routing key, so business-level queue identity is preserved without
-    /// multiplying broker queues.
+    /// Number of physical execution lane queues per consumer group. A run's
+    /// PartitionKey (the control-plane ConcurrencyKey) is hashed to a lane so
+    /// same-key runs co-locate on one lane queue, reducing wasted broker Retry
+    /// round-trips when the durable KeyOrdered claim gate blocks a later
+    /// same-key run. The broker is never the ordering authority; the
+    /// control-plane gate is unchanged. Default 1 is byte-for-byte identical
+    /// to the single-queue topology (zero migration for existing deployments).
     /// </summary>
-    public bool UseSharedExecutionQueue { get; set; } = true;
+    public int ExecutionLaneCount { get; set; } = 1;
 
     /// <summary>
     /// Declares a per-worker cancel queue. Disabled by default because durable
@@ -26,7 +30,27 @@ public sealed class RabbitMqExecutionOptions
     /// </summary>
     public bool EnableCancelQueue { get; set; }
 
-    public ushort PrefetchCount { get; set; } = 16;
+    public ushort PrefetchCount { get; set; } = 32;
+
+    /// <summary>
+    /// Maximum number of envelopes admitted in one control-plane claim
+    /// transaction. The consumer collects up to this many deliveries before
+    /// batch admission, so per-envelope admission round trips amortize to
+    /// roughly two transactions per batch (one claim, one diagnostic read for
+    /// unclaimed envelopes). Set <see cref="PrefetchCount"/> at least as large
+    /// as this value so the collector can fill a full batch. A batch is only a
+    /// delivery-rate optimization; every envelope is still admitted and
+    /// executed individually with identical fencing and ordering semantics.
+    /// </summary>
+    public int AdmissionBatchSize { get; set; } = 16;
+
+    /// <summary>
+    /// Maximum number of RabbitMQ delivery callbacks dispatched concurrently
+    /// on one connection. Zero uses the registered worker capacity. This is a
+    /// transport throughput limit, not an ordering guarantee; KeyOrdered runs
+    /// are still admitted by the durable control-plane gate.
+    /// </summary>
+    public ushort ConsumerDispatchConcurrency { get; set; }
 
     public TimeSpan ReconnectDelay { get; set; } = TimeSpan.FromSeconds(2);
 
@@ -40,7 +64,7 @@ public sealed class RabbitMqExecutionOptions
 
     public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
-    public int PublisherConcurrency { get; set; } = 4;
+    public int PublisherConcurrency { get; set; } = 8;
 
     /// <summary>
     /// The default is 0 (disabled): transient capacity and database failures
@@ -49,6 +73,14 @@ public sealed class RabbitMqExecutionOptions
     /// DLQ re-drive policy for Pending Runs.
     /// </summary>
     public int DefaultDeliveryLimit { get; set; }
+
+    /// <summary>
+    /// When true, each execution lane queue is declared with Single Active
+    /// Consumer (x-single-active-consumer). At most one consumer processes
+    /// the lane at a time; failover triggers automatic consumer promotion on
+    /// the standby node. Required for <see cref="Core.Runtime.ExecutionOrderingMode.StrictFifo"/>.
+    /// </summary>
+    public bool UseSingleActiveConsumer { get; set; }
 
     public void Validate()
     {
@@ -88,9 +120,19 @@ public sealed class RabbitMqExecutionOptions
                 "RabbitMQ execution ConsumerQueuePrefix cannot exceed 180 UTF-8 bytes.");
         }
 
-        var maximumQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{new string('q', 48)}-ffffff.queue";
-        var maximumRetryQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.{new string('q', 48)}-ffffff.queue";
-        var sharedQueueName = GetSharedConsumerQueueName();
+        if (ExecutionLaneCount is < 1 or > 64)
+        {
+            throw new InvalidOperationException(
+                "RabbitMQ execution ExecutionLaneCount must be between 1 and 64.");
+        }
+
+        // The lane suffix is empty for N=1 so this check is byte-identical to
+        // the pre-lane maximum-name check; for N up to 64 it grows by at most
+        // ".lane-63" (8 bytes), which still must fit under the 255-byte cap.
+        var maxLaneSuffix = ExecutionLaneCount <= 1
+            ? string.Empty
+            : $".lane-{ExecutionLaneCount - 1}";
+        var maximumQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{new string('q', 48)}-ffffff{maxLaneSuffix}.queue";
         var sharedRetryQueueName = GetSharedRetryQueueName();
         var maximumCancelQueueName = $"{ConsumerQueuePrefix}.{ConsumerGroup}.cancel.{new string('q', 48)}-ffffff";
         var generatedNames = new[]
@@ -98,11 +140,9 @@ public sealed class RabbitMqExecutionOptions
             GetGroupExchangeName(),
             GetGroupDlxName(),
             GetGroupDlqName(),
-            sharedQueueName,
             sharedRetryQueueName,
             GetCancelExchangeName(ConsumerGroup),
             maximumQueueName,
-            maximumRetryQueueName,
             maximumCancelQueueName
         };
         if (generatedNames.Any(name => Encoding.UTF8.GetByteCount(name) >= 255))
@@ -115,6 +155,18 @@ public sealed class RabbitMqExecutionOptions
         {
             throw new InvalidOperationException(
                 "RabbitMQ execution PrefetchCount must be positive.");
+        }
+
+        if (AdmissionBatchSize is < 1 or > 256)
+        {
+            throw new InvalidOperationException(
+                "RabbitMQ execution AdmissionBatchSize must be between 1 and 256.");
+        }
+
+        if (ConsumerDispatchConcurrency > 256)
+        {
+            throw new InvalidOperationException(
+                "RabbitMQ execution ConsumerDispatchConcurrency cannot exceed 256.");
         }
 
         if (ReconnectDelay <= TimeSpan.Zero || RetryDelay <= TimeSpan.Zero)
@@ -148,34 +200,67 @@ public sealed class RabbitMqExecutionOptions
         }
     }
 
-    internal string GetConsumerQueueName(string logicalQueue)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
-        if (UseSharedExecutionQueue)
-        {
-            return GetSharedConsumerQueueName();
-        }
+    internal string GetConsumerQueueName(string logicalQueue) => GetConsumerQueueName(logicalQueue, 0);
 
-        var segment = SanitizeSegment(logicalQueue);
-        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}.queue";
+    /// <summary>
+    /// Physical execution queue for a logical queue and lane. Each business
+    /// logical queue owns its own durable dispatch queue; lane 0 has no suffix.
+    /// Additional lanes are an explicit per-queue scaling choice.
+    /// </summary>
+    internal string GetConsumerQueueName(string logicalQueue, int lane)
+    {
+        logicalQueue = LogicalQueueName.Normalize(logicalQueue, nameof(logicalQueue));
+        return GetLogicalQueueName(logicalQueue, LaneSuffix(lane));
     }
 
-    internal string GetGroupExchangeName() =>
-        $"{ConsumerQueuePrefix}.{ConsumerGroup}";
+    internal string GetGroupExchangeName() => GetGroupExchangeName(ConsumerGroup);
+
+    internal string GetGroupExchangeName(string consumerGroup)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroup);
+        var normalizedGroup = consumerGroup.Trim();
+        if (normalizedGroup.Length > 200)
+        {
+            throw new ArgumentException("Consumer groups cannot exceed 200 characters.", nameof(consumerGroup));
+        }
+        return $"{ConsumerQueuePrefix}.{normalizedGroup}";
+    }
 
     internal string GetRetryExchangeName() =>
         $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry";
 
-    internal string GetRetryQueueName(string logicalQueue) =>
-        UseSharedExecutionQueue
-            ? GetSharedRetryQueueName()
-            : $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.{SanitizeSegment(logicalQueue)}.queue";
-
-    internal string GetSharedConsumerQueueName() =>
-        $"{ConsumerQueuePrefix}.{ConsumerGroup}.queue";
-
     internal string GetSharedRetryQueueName() =>
         $"{ConsumerQueuePrefix}.{ConsumerGroup}.retry.queue";
+
+    /// <summary>
+    /// Lane-suffixed routing / binding key for a logical queue. When
+    /// <see cref="ExecutionLaneCount"/> is 1 the routing key is the bare
+    /// logical queue name (byte-identical to the pre-lane topology); for N&gt;1
+    /// it is <c>{logicalQueue}.lane-{lane}</c>. Publishing, queue binding, and
+    /// retry republish all use this key so a retried message re-lands on the
+    /// same lane queue after the broker TTL dead-letter.
+    /// </summary>
+    internal string GetLaneRoutingKey(string logicalQueue, int lane)
+    {
+        logicalQueue = LogicalQueueName.Normalize(logicalQueue, nameof(logicalQueue));
+        return ExecutionLaneCount <= 1 ? logicalQueue : $"{logicalQueue}.lane-{lane}";
+    }
+
+    private string LaneSuffix(int lane) =>
+        ExecutionLaneCount <= 1 ? string.Empty : $".lane-{lane}";
+
+    private string GetLogicalQueueName(string logicalQueue, string laneSuffix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
+        var name = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{logicalQueue}{laneSuffix}.queue";
+        if (Encoding.UTF8.GetByteCount(name) >= 255)
+        {
+            throw new InvalidOperationException(
+                $"RabbitMQ execution queue names must be shorter than 255 UTF-8 bytes; got '{name}'.");
+        }
+
+        return name;
+    }
 
     internal string GetGroupDlxName() =>
         $"{ConsumerQueuePrefix}.{ConsumerGroup}.dlx";
@@ -187,15 +272,17 @@ public sealed class RabbitMqExecutionOptions
         $"{ConsumerQueuePrefix}.{group}.cancel";
 
     internal string GetCancelQueueName(string group, string workerIdentity) =>
-        $"{ConsumerQueuePrefix}.{group}.cancel.{SanitizeSegment(workerIdentity)}";
+        $"{ConsumerQueuePrefix}.{group}.cancel.{SanitizeWorkerIdentity(workerIdentity)}";
 
     /// <summary>
-    /// Sanitizes a logical KubeJob queue name into a RabbitMQ-safe segment:
+    /// Sanitizes an opaque worker identity into a RabbitMQ-safe segment:
     /// lower-cased alnum + dash, collapsed repeats, trimmed dashes, capped at
     /// 48 chars, and always suffixed with a stable 6-character hash so distinct
-    /// logical queue names cannot collapse to one physical queue.
+    /// worker identities cannot collapse to one physical cancel queue. Business
+    /// logical queues intentionally keep their literal names in durable queue
+    /// topology; see <see cref="GetLogicalQueueName"/>.
     /// </summary>
-    internal static string SanitizeSegment(string value)
+    internal static string SanitizeWorkerIdentity(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
         var lower = value.ToLowerInvariant();

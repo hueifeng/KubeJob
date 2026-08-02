@@ -2,7 +2,9 @@ using FluentAssertions;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
+using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Runtime;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Tests.Runtime;
 
@@ -34,6 +36,16 @@ public sealed class ScheduleRuntimeTests
         var action = () => options.Validate();
 
         action.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Schedule_queue_defaults_to_the_job_key_and_allows_an_explicit_pool()
+    {
+        var defaults = new CronScheduleOptions();
+        var shared = new CronScheduleOptions { Queue = "mail" };
+
+        defaults.ResolveQueue("report.generate").Should().Be("report.generate");
+        shared.ResolveQueue("mail.send").Should().Be("mail");
     }
 
     [Fact]
@@ -148,6 +160,75 @@ public sealed class ScheduleRuntimeTests
         schedule!.NextFireAt.Should().Be(next);
         schedule.LastFireAt.Should().Be(due);
         outbox.Should().ContainSingle(message => message.PayloadJson.Contains("run-1"));
+    }
+
+    [Fact]
+    public async Task Cron_persists_broker_target_and_key_ordering_to_run_and_work_outbox()
+    {
+        var options = new QueueDeliveryOptions
+        {
+            Defaults = { TransportId = "rabbitmq" }
+        };
+        options.Queues[" reports.generate "] = new QueueDefinition
+        {
+            ConsumerGroup = "reports-workers",
+            OrderingMode = ExecutionOrderingMode.KeyOrdered
+        };
+        var optionsWrapper = Options.Create(options);
+        var store = new InMemoryJobRuntimeStore();
+        var schedules = new ScheduleControlPlane(
+            store,
+            new QueueCatalog(optionsWrapper));
+
+        await schedules.CreateCronAsync(
+            "daily-report-routing",
+            new UpsertCronScheduleRequest(
+                "report.generate",
+                "{}",
+                "* * * * *",
+                Queue: " reports.generate "));
+        var persistedSchedule = await store.GetAsync(
+            "daily-report-routing",
+            CancellationToken.None);
+        var claim = (await store.ClaimDueAsync(
+            persistedSchedule!.NextFireAt.AddSeconds(1),
+            TimeSpan.FromSeconds(30),
+            1,
+            CancellationToken.None)).Single();
+        var run = await store.CommitFireAsync(
+            new CommitScheduleFireCommand(
+                claim.Schedule.Id,
+                claim.ClaimToken,
+                claim.ExpectedVersion,
+                claim.Schedule.NextFireAt,
+                claim.Schedule.NextFireAt.AddMinutes(5),
+                true,
+                "cron-run-1",
+                "schedule:daily-report-routing:1"),
+            CancellationToken.None);
+        var outbox = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        persistedSchedule.Queue.Should().Be("reports.generate");
+        persistedSchedule.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        persistedSchedule.ConsumerGroup.Should().Be("reports-workers");
+        persistedSchedule.TransportId.Should().Be("rabbitmq");
+        persistedSchedule.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
+        run.Should().NotBeNull();
+        run!.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        run.ConsumerGroup.Should().Be("reports-workers");
+        run.TransportId.Should().Be("rabbitmq");
+        run.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
+        var work = outbox.Should().ContainSingle(message => message.PayloadJson.Contains("cron-run-1")).Subject;
+        work.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        work.ConsumerGroup.Should().Be("reports-workers");
+        work.TransportId.Should().Be("rabbitmq");
+        var orderingMode = typeof(OutboxMessageRecord).GetProperty("OrderingMode");
+        orderingMode.Should().NotBeNull();
+        ((ExecutionOrderingMode)orderingMode!.GetValue(work)!).Should().Be(ExecutionOrderingMode.KeyOrdered);
     }
 
     [Fact]

@@ -30,7 +30,6 @@ public sealed class HttpJobClient : IJobClient
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
         if (job.IsEmpty)
         {
             throw new ArgumentException("The job key must be initialized.", nameof(job));
@@ -39,13 +38,16 @@ public sealed class HttpJobClient : IJobClient
         var request = new EnqueueJobRequest(
             job.Value,
             JsonSerializer.Serialize(payload, SerializerOptions),
-            options.Queue,
+            options.ResolveQueue(job.Value),
             options.Priority,
             options.NotBefore?.ToUniversalTime(),
             options.IdempotencyKey,
             options.ConcurrencyKey,
             options.MaxAttempts,
-            checked((int)Math.Ceiling(options.Timeout.TotalSeconds)));
+            checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
+            RetryPolicy: options.RetryPolicy,
+            Continuation: options.Continuation,
+            Compensation: options.Compensation);
 
         using var response = await _httpClient.PostAsJsonAsync(
             "api/kubejob/jobs",
@@ -68,6 +70,34 @@ public sealed class HttpJobClient : IJobClient
                    SerializerOptions,
                    cancellationToken)
                ?? throw new InvalidOperationException("KubeJob enqueue returned an empty response.");
+    }
+
+    public async ValueTask<IReadOnlyList<JobHandle>> EnqueueBatchAsync<TPayload>(
+        JobKey<TPayload> job,
+        IReadOnlyList<(TPayload Payload, JobEnqueueOptions? Options)> batch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        if (batch.Count == 0) return Array.Empty<JobHandle>();
+
+        // HTTP client does not have a batch endpoint; issue individual concurrent
+        // enqueues. In-process callers should use EnqueueBatchAsync on
+        // DefaultJobClient for true DB-level batching.
+        var handles = new JobHandle[batch.Count];
+        var tasks = new Task[batch.Count];
+        for (var i = 0; i < batch.Count; i++)
+        {
+            var index = i;
+            var (payload, options) = batch[i];
+            tasks[i] = EnqueueAsync(job, payload, options ?? new JobEnqueueOptions(), cancellationToken)
+                .AsTask()
+                .ContinueWith(t =>
+                {
+                    handles[index] = t.Result;
+                }, TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously);
+        }
+        await Task.WhenAll(tasks);
+        return handles;
     }
 
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(

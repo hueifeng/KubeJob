@@ -76,6 +76,36 @@
                 <div class="col-md-4"><dt>Current worker</dt><dd>@(run.CurrentWorkerId ?? "Not assigned")</dd></div>
                 <div class="col-md-6"><dt>Idempotency key</dt><dd class="mono">@(run.IdempotencyKey ?? "Not set")</dd></div>
                 <div class="col-md-6"><dt>Concurrency key</dt><dd class="mono">@(run.ConcurrencyKey ?? "Not set")</dd></div>
+                <div class="col-md-6">
+                    <dt>Ordering</dt>
+                    <dd>
+                        @if (run.OrderingMode == ExecutionOrderingMode.KeyOrdered)
+                        {
+                            <span>KeyOrdered · sequence @run.OrderingSequence</span>
+                            @if (run.Phase == JobPhase.Pending && !string.IsNullOrEmpty(run.ConcurrencyKey))
+                            {
+                                <div class="small text-muted">Waits for earlier same-key runs on this queue to finish before it can be claimed.</div>
+                            }
+                        }
+                        else if (run.OrderingMode == ExecutionOrderingMode.StrictFifo)
+                        {
+                            <span>StrictFifo · sequence @run.OrderingSequence</span>
+                            <span class="small text-muted ms-1">(lane-global ordering with single active consumer)</span>
+                            @if (run.Phase == JobPhase.Pending)
+                            {
+                                <div class="small text-muted">The entire lane is serialized; this run waits for all earlier runs to finish.</div>
+                            }
+                        }
+                        else
+                        {
+                            <span class="text-muted">Parallel (no ordering constraint)</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(run.BlockedReason))
+                        {
+                            <span class="badge bg-warning-subtle text-warning-emphasis ms-2" title="@run.BlockedReason">BLOCKED</span>
+                        }
+                    </dd>
+                </div>
                 <div class="col-md-6"><dt>Created by schedule</dt><dd>@(run.ScheduleId ?? "No")</dd></div>
                 <div class="col-md-6"><dt>Scheduled occurrence</dt><dd>@(run.ScheduledFor?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "Not scheduled")</dd></div>
             </div>

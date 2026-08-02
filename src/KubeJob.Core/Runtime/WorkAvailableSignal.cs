@@ -6,13 +6,21 @@ namespace KubeJob.Core.Runtime;
 /// A non-authoritative hint that a KubeJob queue may have claimable work.
 /// Workers must still claim from the control plane before executing anything.
 /// </summary>
-public sealed record WorkAvailableSignal(
-    int SchemaVersion,
-    string EventId,
-    string Queue,
-    string ExecutionLane,
-    string RunId)
+/// <remarks>
+/// <see cref="PartitionKey"/> threads the run's ConcurrencyKey through to the
+/// transport adapter so same-key runs can co-locate on a physical lane queue;
+/// a null value resolves to lane 0.
+/// </remarks>
+public sealed record WorkAvailableSignal
 {
+    public int SchemaVersion { get; init; }
+    public required string EventId { get; init; }
+    public required string Queue { get; init; }
+    public required string ExecutionLane { get; init; }
+    public required string ConsumerGroup { get; init; }
+    public required string RunId { get; init; }
+    public string? PartitionKey { get; init; }
+
     public const int CurrentSchemaVersion = 1;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -38,12 +46,16 @@ public sealed record WorkAvailableSignal(
                 $"Outbox message '{message.Id}' contains an invalid work-available payload.");
         }
 
-        return new WorkAvailableSignal(
-            CurrentSchemaVersion,
-            message.Id,
-            message.Queue,
-            message.ExecutionLane,
-            payload.RunId);
+        return new WorkAvailableSignal
+        {
+            SchemaVersion = CurrentSchemaVersion,
+            EventId = message.Id,
+            Queue = message.Queue,
+            ExecutionLane = message.ExecutionLane,
+            RunId = payload.RunId,
+            ConsumerGroup = message.ConsumerGroup,
+            PartitionKey = message.PartitionKey
+        };
     }
 
     private sealed record WorkAvailableSignalPayload(string RunId, string Queue);

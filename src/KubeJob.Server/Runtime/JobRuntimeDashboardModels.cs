@@ -81,12 +81,20 @@ public sealed class DashboardRunDetails
     public int TimeoutSeconds { get; init; }
     public string? IdempotencyKey { get; init; }
     public string? ConcurrencyKey { get; init; }
+    public ExecutionOrderingMode OrderingMode { get; init; } = ExecutionOrderingMode.Parallel;
+    public long OrderingSequence { get; init; }
     public string? ScheduleId { get; init; }
     public DateTimeOffset? ScheduledFor { get; init; }
     public string? CurrentWorkerId { get; init; }
     public bool CancelRequested { get; init; }
     public string? FailureCode { get; init; }
     public string? FailureMessage { get; init; }
+    /// <summary>
+    /// When the run is blocked by an ordering constraint, this holds a
+    /// human-readable reason. Empty when the run is not blocked.
+    /// Examples: "KeyOrdered(predecessor inflight on key=A)", "StrictFifo(lane blocked)".
+    /// </summary>
+    public string? BlockedReason { get; init; }
 }
 
 /// <summary>
@@ -194,5 +202,14 @@ public interface IJobRuntimeDashboardStore
 
     ValueTask<IReadOnlyList<JobScheduleRecord>> GetSchedulesAsync(
         int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Per-queue KeyOrdered ordering-backlog snapshot for the control-plane
+    /// observable gauges. Implementations must be cheap and index-backed (no
+    /// full table scan); the result is cached and refreshed periodically, never
+    /// on metrics scrape.
+    /// </summary>
+    ValueTask<IReadOnlyList<OrderingBacklogSample>> GetOrderingBacklogAsync(
         CancellationToken cancellationToken);
 }

@@ -66,6 +66,7 @@ public sealed class UnifiedRuntimeEndToEndTests
         {
             options.ServerEndpoint = "http://unused.local/";
             options.WorkerId = "unified-e2e-worker";
+            options.Queues = new List<string> { "default" };
             options.BuildId = "e2e";
             options.MaxConcurrentJobs = 2;
             options.ClaimBatchSize = 2;

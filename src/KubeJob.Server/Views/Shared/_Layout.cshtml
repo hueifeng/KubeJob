@@ -371,6 +371,10 @@
            aria-label="Workers" aria-current="@(action == "Workers" ? "page" : null)" title="Workers">
             <i class="fa-solid fa-server" aria-hidden="true"></i><span class="label">Workers</span>
         </a>
+        <a asp-controller="Dashboard" asp-action="Queues" class="nav-link @(action == "Queues" ? "active" : "")"
+           aria-label="Queues" aria-current="@(action == "Queues" ? "page" : null)" title="Queues">
+            <i class="fa-solid fa-route" aria-hidden="true"></i><span class="label">Queues</span>
+        </a>
         <a asp-controller="Dashboard" asp-action="JobTypes" class="nav-link @(action == "JobTypes" ? "active" : "")"
            aria-label="Job keys" aria-current="@(action == "JobTypes" ? "page" : null)" title="Job keys">
             <i class="fa-solid fa-code-branch" aria-hidden="true"></i><span class="label">Job keys</span>

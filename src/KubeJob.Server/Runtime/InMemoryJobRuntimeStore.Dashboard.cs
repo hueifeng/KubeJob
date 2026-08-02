@@ -203,6 +203,83 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
+    public ValueTask<IReadOnlyList<OrderingBacklogSample>> GetOrderingBacklogAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            // All non-terminal runs with an ordering mode set.
+            var orderedRuns = _runs.Values
+                .Where(run => (run.OrderingMode == ExecutionOrderingMode.KeyOrdered
+                               || run.OrderingMode == ExecutionOrderingMode.StrictFifo)
+                              && !IsTerminal(run.Phase))
+                .ToArray();
+
+            var queues = orderedRuns
+                .GroupBy(run => run.Queue, StringComparer.Ordinal);
+
+            var samples = queues.Select(queueGroup =>
+            {
+                // KeyOrdered: group by ConcurrencyKey
+                var koRuns = queueGroup
+                    .Where(run => run.OrderingMode == ExecutionOrderingMode.KeyOrdered
+                                  && !string.IsNullOrWhiteSpace(run.ConcurrencyKey));
+                var byKey = koRuns
+                    .GroupBy(run => run.ConcurrencyKey!, StringComparer.Ordinal)
+                    .Select(keyGroup =>
+                    {
+                        var ordered = keyGroup.OrderBy(run => run.OrderingSequence).ToArray();
+                        var blocked = Math.Max(0, ordered.Length - 1);
+                        var oldestBlockedAge = blocked == 0
+                            ? 0d
+                            : ordered.Skip(1)
+                                .Select(run => Math.Max(0, (now - run.AvailableAt).TotalSeconds))
+                                .Max();
+                        var retryBlocked = ordered.Skip(1)
+                            .Count(run => ordered[0].AttemptCount > 1);
+                        return (Blocked: blocked, OldestBlockedAge: oldestBlockedAge,
+                                RetryBlocked: retryBlocked);
+                    })
+                    .ToArray();
+
+                // StrictFifo: any inflight predecessor blocks all successors
+                var sfRuns = queueGroup
+                    .Where(run => run.OrderingMode == ExecutionOrderingMode.StrictFifo)
+                    .OrderBy(run => run.OrderingSequence)
+                    .ToArray();
+                var sfBlocked = Math.Max(0, sfRuns.Length - 1);
+                var sfOldestAge = sfBlocked == 0 ? 0d
+                    : sfRuns.Skip(1)
+                        .Select(run => Math.Max(0, (now - run.AvailableAt).TotalSeconds))
+                        .Max();
+                var sfRetryBlocked = sfRuns.Skip(1)
+                    .Count(_ => sfRuns[0].AttemptCount > 1);
+
+                // Per-lane breakdown (simplified: lane == 0 for in-memory default)
+                var laneBreakdown = new[] { new LaneBacklogSample(
+                    queueGroup.Key, LaneId: 0,
+                    byKey.Sum(x => x.Blocked) + sfBlocked,
+                    Math.Max(byKey.Length > 0 ? byKey.Max(x => x.OldestBlockedAge) : 0d, sfOldestAge),
+                    byKey.Length,
+                    sfRuns.Length > 0 ? sfRuns[0].OrderingSequence : 0) };
+
+                return new OrderingBacklogSample(
+                    queueGroup.Key,
+                    byKey.Sum(x => x.Blocked),
+                    byKey.Length == 0 ? 0d : byKey.Max(x => x.OldestBlockedAge),
+                    byKey.Length,
+                    sfBlocked,
+                    byKey.Sum(x => x.RetryBlocked) + sfRetryBlocked,
+                    laneBreakdown);
+            })
+            .ToArray();
+
+            return ValueTask.FromResult<IReadOnlyList<OrderingBacklogSample>>(samples);
+        }
+    }
+
     private static DashboardRunSummary ToDashboardSummary(JobRunRecord run) => new()
     {
         Id = run.Id,
@@ -223,32 +300,60 @@ public sealed partial class InMemoryJobRuntimeStore
         FailureMessage = run.FailureMessage
     };
 
-    private static DashboardRunDetails ToDashboardDetails(
-        JobRunRecord run,
-        bool includePayload) => new()
+    private string? ComputeBlockedReason(JobRunRecord run)
     {
-        Id = run.Id,
-        JobKey = run.JobKey,
-        PayloadJson = includePayload ? run.PayloadJson : null,
-        Queue = run.Queue,
-        Priority = run.Priority,
-        Phase = run.Phase,
-        AvailableAt = run.AvailableAt,
-        CreatedAt = run.CreatedAt,
-        StartedAt = run.StartedAt,
-        CompletedAt = run.CompletedAt,
-        AttemptCount = run.AttemptCount,
-        MaxAttempts = run.MaxAttempts,
-        TimeoutSeconds = run.TimeoutSeconds,
-        IdempotencyKey = run.IdempotencyKey,
-        ConcurrencyKey = run.ConcurrencyKey,
-        ScheduleId = run.ScheduleId,
-        ScheduledFor = run.ScheduledFor,
-        CurrentWorkerId = run.CurrentWorkerId,
-        CancelRequested = run.CancelRequested,
-        FailureCode = run.FailureCode,
-        FailureMessage = run.FailureMessage
-    };
+        if (run.Phase != JobPhase.Pending) return null;
+
+        if (run.OrderingMode == ExecutionOrderingMode.KeyOrdered
+            && !string.IsNullOrWhiteSpace(run.ConcurrencyKey)
+            && HasOrderingPredecessor(run))
+        {
+            return $"KeyOrdered(predecessor inflight on key={run.ConcurrencyKey})";
+        }
+        if (run.OrderingMode == ExecutionOrderingMode.StrictFifo
+            && HasStrictFifoPredecessor(run))
+        {
+            return $"StrictFifo(lane blocked by earlier run)";
+        }
+        return null;
+    }
+
+    private DashboardRunDetails ToDashboardDetails(
+        JobRunRecord run,
+        bool includePayload)
+    {
+        var blockedReason = (run.Phase == JobPhase.Pending && !IsTerminal(run.Phase))
+            ? ComputeBlockedReason(run)
+            : null;
+
+        return new DashboardRunDetails
+        {
+            Id = run.Id,
+            JobKey = run.JobKey,
+            PayloadJson = includePayload ? run.PayloadJson : null,
+            Queue = run.Queue,
+            Priority = run.Priority,
+            Phase = run.Phase,
+            AvailableAt = run.AvailableAt,
+            CreatedAt = run.CreatedAt,
+            StartedAt = run.StartedAt,
+            CompletedAt = run.CompletedAt,
+            AttemptCount = run.AttemptCount,
+            MaxAttempts = run.MaxAttempts,
+            TimeoutSeconds = run.TimeoutSeconds,
+            IdempotencyKey = run.IdempotencyKey,
+            ConcurrencyKey = run.ConcurrencyKey,
+            OrderingMode = run.OrderingMode,
+            OrderingSequence = run.OrderingSequence,
+            ScheduleId = run.ScheduleId,
+            ScheduledFor = run.ScheduledFor,
+            CurrentWorkerId = run.CurrentWorkerId,
+            CancelRequested = run.CancelRequested,
+            FailureCode = run.FailureCode,
+            FailureMessage = run.FailureMessage,
+            BlockedReason = blockedReason
+        };
+    }
 
     private static DashboardAttemptSummary ToDashboardAttemptSummary(
         JobAttemptRecord attempt) => new()

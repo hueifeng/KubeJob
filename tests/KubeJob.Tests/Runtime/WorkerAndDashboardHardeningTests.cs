@@ -2,6 +2,8 @@ using FluentAssertions;
 using KubeJob.Core.Client;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Runtime;
+using KubeJob.Server.ControlPlane;
+using KubeJob.Server.Extensions;
 using KubeJob.Server.Runtime;
 using KubeJob.Worker.Options;
 using KubeJob.Worker.Runtime;
@@ -43,6 +45,7 @@ public sealed class WorkerAndDashboardHardeningTests
     {
         var options = new KubeJobWorkerOptions
         {
+            Queues = new List<string> { "test.queue" },
             Labels = new Dictionary<string, string>
             {
                 ["env"] = "production",
@@ -58,7 +61,7 @@ public sealed class WorkerAndDashboardHardeningTests
     }
 
     [Fact]
-    public async Task Rejected_heartbeat_restarts_the_worker_session_without_stopping_the_host()
+    public async Task Rejected_heartbeat_fails_the_hosted_service_for_supervisor_restart()
     {
         await using var services = new ServiceCollection().BuildServiceProvider();
         var registry = new JobHandlerRegistry(new[] { new NoopInvoker() });
@@ -84,15 +87,85 @@ public sealed class WorkerAndDashboardHardeningTests
             NullLogger<WorkerRuntimeService>.Instance);
 
         await worker.StartAsync(CancellationToken.None);
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (runtime.RegisterCalls < 2 && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(10);
-        }
 
-        runtime.RegisterCalls.Should().BeGreaterThanOrEqualTo(2);
+        // The control plane rejects the session identity: the worker must NOT
+        // restart internally with a new SessionId (that would spin against the
+        // same rejection); it fails the hosted service so the supervisor
+        // restarts the process.
+        var completed = await Task.WhenAny(
+            worker.ExecuteTask!,
+            Task.Delay(TimeSpan.FromSeconds(5)));
+        completed.Should().BeSameAs(worker.ExecuteTask);
         runtime.HeartbeatCalls.Should().BeGreaterThanOrEqualTo(1);
-        worker.ExecuteTask!.IsCompleted.Should().BeFalse();
+        runtime.RegisterCalls.Should().Be(1);
+        worker.ExecuteTask!.IsFaulted.Should().BeTrue();
+        worker.ExecuteTask!.Exception!.InnerException!
+            .Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("fenced");
+
+        // StopAsync returns promptly even after the hosted service failed.
+        await worker.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Fenced_session_with_uncooperative_handler_still_fails_the_hosted_service()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        services.UseInProcessKubeJobWorkerTransport();
+        await using var provider = services.BuildServiceProvider();
+
+        var jobs = provider.GetRequiredService<JobControlPlane>();
+        var inner = provider.GetRequiredService<IWorkerRuntimeClient>();
+        var run = await jobs.SubmitAsync(
+            new EnqueueJobRequest(
+                "test.echo",
+                "{}",
+                "default",
+                0,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                1,
+                300),
+            CancellationToken.None);
+
+        var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = Options.Create(new KubeJobWorkerOptions
+        {
+            WorkerId = "worker-uncooperative",
+            Queues = new List<string> { "default" },
+            MaxConcurrentJobs = 1,
+            ClaimBatchSize = 1,
+            EmptyPollDelay = TimeSpan.FromHours(1),
+            HeartbeatInterval = TimeSpan.FromMilliseconds(10),
+            LeaseRenewalInterval = TimeSpan.FromMilliseconds(10),
+            DrainTimeout = TimeSpan.FromMilliseconds(100)
+        });
+        using var worker = new WorkerRuntimeService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new JobHandlerRegistry(new[] { new UncooperativeInvoker("test.echo", parked) }),
+            new RejectingHeartbeatDelegatingClient(inner),
+            new WorkerClaimTrigger(),
+            options,
+            NullLogger<WorkerRuntimeService>.Instance);
+
+        await worker.StartAsync(CancellationToken.None);
+
+        // A handler that ignores cancellation keeps the session from settling;
+        // the fence deadline must still fail the hosted service.
+        var completed = await Task.WhenAny(
+            worker.ExecuteTask!,
+            Task.Delay(TimeSpan.FromSeconds(5)));
+        completed.Should().BeSameAs(worker.ExecuteTask);
+        worker.ExecuteTask!.IsFaulted.Should().BeTrue();
+        worker.ExecuteTask!.Exception!.InnerException!
+            .Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("fenced");
+
+        // Release the parked handler so the abandoned session work settles.
+        parked.SetResult();
         await worker.StopAsync(CancellationToken.None);
     }
 
@@ -311,6 +384,14 @@ public sealed class WorkerAndDashboardHardeningTests
             CancellationToken cancellationToken) => ValueTask.FromResult(
             new AdmitExecutionResponse(ExecutionAdmissionStatus.Retry));
 
+        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
+            AdmitExecutionBatchRequest request,
+            CancellationToken cancellationToken) => ValueTask.FromResult(
+            new AdmitExecutionBatchResponse(
+                request.RunIds.Select(runId => new AdmitExecutionResult(
+                    runId,
+                    ExecutionAdmissionStatus.Retry)).ToArray()));
+
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
             RenewLeasesRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(
@@ -324,5 +405,89 @@ public sealed class WorkerAndDashboardHardeningTests
         public ValueTask<bool> RequeueExecutionAsync(
             RequeueExecutionRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(false);
+    }
+
+    /// <summary>
+    /// Delegates every call to a real in-process client but rejects heartbeats,
+    /// so a genuinely claimed attempt can run while the session gets fenced.
+    /// </summary>
+    private sealed class RejectingHeartbeatDelegatingClient : IWorkerRuntimeClient
+    {
+        private readonly IWorkerRuntimeClient _inner;
+
+        public RejectingHeartbeatDelegatingClient(IWorkerRuntimeClient inner)
+        {
+            _inner = inner;
+        }
+
+        public ValueTask<RegisterWorkerSessionResponse> RegisterAsync(
+            RegisterWorkerSessionRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.RegisterAsync(request, cancellationToken);
+
+        public ValueTask<bool> HeartbeatAsync(
+            WorkerHeartbeatRequest request,
+            CancellationToken cancellationToken) => ValueTask.FromResult(false);
+
+        public ValueTask<bool> CloseAsync(
+            WorkerHeartbeatRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.CloseAsync(request, cancellationToken);
+
+        public ValueTask<ClaimJobsResponse> ClaimAsync(
+            ClaimJobsRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.ClaimAsync(request, cancellationToken);
+
+        public ValueTask<AdmitExecutionResponse> AdmitAsync(
+            AdmitExecutionRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.AdmitAsync(request, cancellationToken);
+
+        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
+            AdmitExecutionBatchRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.AdmitBatchAsync(request, cancellationToken);
+
+        public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
+            RenewLeasesRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.RenewLeasesAsync(request, cancellationToken);
+
+        public ValueTask<CompleteAttemptResponse> CompleteAsync(
+            CompleteAttemptRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.CompleteAsync(request, cancellationToken);
+
+        public ValueTask<bool> RequeueExecutionAsync(
+            RequeueExecutionRequest request,
+            CancellationToken cancellationToken) =>
+            _inner.RequeueExecutionAsync(request, cancellationToken);
+    }
+
+    private sealed class UncooperativeInvoker : IJobHandlerInvoker
+    {
+        private readonly TaskCompletionSource _release;
+
+        public UncooperativeInvoker(string jobKey, TaskCompletionSource release)
+        {
+            JobKey = jobKey;
+            _release = release;
+        }
+
+        public string JobKey { get; }
+
+        public Type PayloadType => typeof(object);
+
+        // Deliberately ignores the cancellation token: this is the
+        // uncooperative-handler scenario the fence deadline must survive.
+        public async ValueTask InvokeAsync(
+            IServiceProvider serviceProvider,
+            string payloadJson,
+            JobExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            await _release.Task;
+        }
     }
 }

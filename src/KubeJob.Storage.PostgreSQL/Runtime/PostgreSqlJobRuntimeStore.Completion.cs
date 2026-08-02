@@ -3,6 +3,8 @@ using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
+using KubeJob.Server.Runtime;
+using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;
 
@@ -59,7 +61,18 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.CancelRequested,
                 run.AttemptCount,
                 run.MaxAttempts,
-                run.Queue
+                run.Queue,
+                run.ExecutionLane,
+                run.DeliveryProfile,
+                run.ConsumerGroup,
+                run.TransportId,
+                run.OrderingMode,
+                run.ConcurrencyKey,
+                run.RetryPolicyJson,
+                run.Priority,
+                run.TimeoutSeconds,
+                run.ContinuationJson,
+                run.CompensationJson
             FROM Kj2_JobAttempts attempt
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
             WHERE attempt.Id = @AttemptId
@@ -130,6 +143,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
                         null,
                         null,
                         cancellationToken);
+                    await FireTerminalActionsAsync(
+                        connection,
+                        transaction,
+                        state,
+                        request.Outcome,
+                        now,
+                        cancellationToken);
                     break;
 
                 case JobAttemptOutcome.PermanentFailure:
@@ -143,6 +163,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
                         request.FailureCode,
                         request.FailureMessage,
                         cancellationToken);
+                    await FireTerminalActionsAsync(
+                        connection,
+                        transaction,
+                        state,
+                        request.Outcome,
+                        now,
+                        cancellationToken);
                     break;
 
                 case JobAttemptOutcome.RetryableFailure:
@@ -151,7 +178,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     {
                         phase = JobPhase.Pending;
                         requeued = true;
-                        var availableAt = now.Add(retryPolicy.ComputeDelay(state.AttemptCount));
+                        var effectivePolicy = ResolveRetryPolicy(state, retryPolicy);
+                        var availableAt = now.Add(effectivePolicy.ComputeDelay(state.AttemptCount));
                         await RequeueRunAsync(
                             connection,
                             transaction,
@@ -167,7 +195,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                             OutboxEventTypes.WorkAvailable,
                             JsonSerializer.Serialize(new { runId = request.RunId, queue = state.Queue }, SerializerOptions),
                             availableAt,
-                            cancellationToken);
+                            cancellationToken,
+                            new DeliveryTarget(
+                                state.DeliveryProfile,
+                                state.ExecutionLane,
+                                state.TransportId,
+                                state.ConsumerGroup,
+                                state.OrderingMode),
+                            partitionKey: state.ConcurrencyKey);
                     }
                     else
                     {
@@ -181,6 +216,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
                             request.FailureCode,
                             request.FailureMessage,
                             cancellationToken);
+                        await FireTerminalActionsAsync(
+                            connection,
+                            transaction,
+                            state,
+                            request.Outcome,
+                            now,
+                            cancellationToken);
                     }
                     break;
 
@@ -191,6 +233,127 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await transaction.CommitAsync(cancellationToken);
         return new CompleteAttemptResponse(true, phase, requeued);
+    }
+
+    /// <summary>
+    /// Enqueues continuation/compensation jobs inside the completion transaction
+    /// when the run's configured actions match the attempt outcome. Mirrors the
+    /// in-memory store's fire-and-forget contract: a failure here must not fail
+    /// the parent completion, so unparseable action JSON is skipped.
+    /// </summary>
+    private async ValueTask FireTerminalActionsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CompletionStateRow state,
+        JobAttemptOutcome outcome,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (state.ContinuationJson is null && state.CompensationJson is null)
+        {
+            return;
+        }
+
+        Continuation? continuation = null;
+        if (state.ContinuationJson is not null)
+        {
+            try
+            {
+                continuation = JsonSerializer.Deserialize<Continuation>(
+                    state.ContinuationJson, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                // Corrupt action JSON must not fail the parent completion.
+            }
+        }
+
+        Compensation? compensation = null;
+        if (state.CompensationJson is not null)
+        {
+            try
+            {
+                compensation = JsonSerializer.Deserialize<Compensation>(
+                    state.CompensationJson, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                // Corrupt action JSON must not fail the parent completion.
+            }
+        }
+
+        var parent = new FollowUpInheritance(
+            state.Queue,
+            state.DeliveryProfile,
+            state.ExecutionLane,
+            state.ConsumerGroup,
+            state.TransportId,
+            state.Priority,
+            state.MaxAttempts,
+            state.TimeoutSeconds,
+            state.OrderingMode,
+            state.ConcurrencyKey);
+
+        var specs = new List<FollowUpRunSpec>(2);
+        if (continuation is { } continuationAction
+            && TerminalActionPlanner.PlanContinuation(continuationAction, outcome, parent) is { } continuationSpec)
+        {
+            specs.Add(continuationSpec);
+        }
+
+        if (compensation is { } compensationAction
+            && TerminalActionPlanner.PlanCompensation(compensationAction, outcome, parent) is { } compensationSpec)
+        {
+            specs.Add(compensationSpec);
+        }
+
+        foreach (var spec in specs)
+        {
+            var runId = NewId();
+            await connection.ExecuteAsync(new CommandDefinition(@"
+                INSERT INTO Kj2_JobRuns
+                    (Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, Priority, Phase, AvailableAt,
+                     CreatedAt, AttemptCount, MaxAttempts, TimeoutSeconds, OrderingMode, ConcurrencyKey, CancelRequested, Version)
+                VALUES
+                    (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @Priority,
+                     @Pending, @AvailableAt, clock_timestamp(), 0, @MaxAttempts, @TimeoutSeconds, @OrderingMode, @ConcurrencyKey, FALSE, 0);",
+                new
+                {
+                    Id = runId,
+                    spec.JobKey,
+                    spec.PayloadJson,
+                    spec.Queue,
+                    spec.ExecutionLane,
+                    DeliveryProfile = (int)spec.DeliveryProfile,
+                    spec.ConsumerGroup,
+                    spec.TransportId,
+                    spec.Priority,
+                    Pending = (int)JobPhase.Pending,
+                    AvailableAt = now,
+                    spec.MaxAttempts,
+                    spec.TimeoutSeconds,
+                    OrderingMode = (int)spec.OrderingMode,
+                    spec.ConcurrencyKey
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+
+            await AddOutboxAsync(
+                connection,
+                transaction,
+                spec.Queue,
+                OutboxEventTypes.WorkAvailable,
+                JsonSerializer.Serialize(new { runId, queue = spec.Queue }, SerializerOptions),
+                now,
+                cancellationToken,
+                new DeliveryTarget(
+                    spec.DeliveryProfile,
+                    spec.ExecutionLane,
+                    spec.TransportId,
+                    spec.ConsumerGroup,
+                    spec.OrderingMode),
+                partitionKey: spec.ConcurrencyKey);
+        }
     }
 
     public async ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
@@ -284,7 +447,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.CancelRequested,
                 run.AttemptCount,
                 run.MaxAttempts,
-                run.Queue
+                run.Queue,
+                run.ExecutionLane,
+                run.DeliveryProfile,
+                run.ConsumerGroup,
+                run.TransportId,
+                run.OrderingMode,
+                run.ConcurrencyKey,
+                run.RetryPolicyJson
             FROM Kj2_JobAttempts attempt
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
             WHERE attempt.Id = ANY(@AttemptIds)
@@ -374,7 +544,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     case JobAttemptOutcome.TimedOut:
                         if (state.AttemptCount < state.MaxAttempts)
                         {
-                            var availableAt = now.Add(retryPolicy.ComputeDelay(state.AttemptCount));
+                            var effectivePolicy = ResolveRetryPolicy(state, retryPolicy);
+                            var availableAt = now.Add(effectivePolicy.ComputeDelay(state.AttemptCount));
                             retryable.Add((request.RunId, request.AttemptId, request.FailureCode, request.FailureMessage, availableAt));
                             results[index] = new CompleteAttemptResponse(true, JobPhase.Pending, true);
                         }
@@ -391,23 +562,40 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 }
             }
 
-            await SetTerminalRunBatchAsync(connection, transaction, succeeded, JobPhase.Succeeded, now, cancellationToken);
-            await SetTerminalRunBatchAsync(connection, transaction, canceled, JobPhase.Canceled, now, cancellationToken);
-            await SetTerminalRunBatchAsync(connection, transaction, failed, JobPhase.Failed, now, cancellationToken);
-            await SetTerminalRunBatchAsync(connection, transaction, dead, JobPhase.Dead, now, cancellationToken);
+            // Merge 4 per-phase UPDATEs into one to save 3 round-trips per flush.
+            var terminal = new List<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage, JobPhase Phase)>();
+            terminal.AddRange(succeeded.Select(x => (x.RunId, x.AttemptId, x.FailureCode, x.FailureMessage, JobPhase.Succeeded)));
+            terminal.AddRange(canceled.Select(x => (x.RunId, x.AttemptId, x.FailureCode, x.FailureMessage, JobPhase.Canceled)));
+            terminal.AddRange(failed.Select(x => (x.RunId, x.AttemptId, x.FailureCode, x.FailureMessage, JobPhase.Failed)));
+            terminal.AddRange(dead.Select(x => (x.RunId, x.AttemptId, x.FailureCode, x.FailureMessage, JobPhase.Dead)));
+            if (terminal.Count > 0)
+            {
+                await SetTerminalRunBatchWithPhasesAsync(connection, transaction, terminal, now, cancellationToken);
+            }
 
             if (retryable.Count > 0)
             {
                 await RequeueRunBatchWithReasonsAsync(connection, transaction, retryable, cancellationToken);
-                var stateByRunId = valid.ToDictionary(x => x.request.RunId, x => x.state.Queue, StringComparer.Ordinal);
+                var stateByRunId = valid.ToDictionary(x => x.request.RunId, x => x.state, StringComparer.Ordinal);
                 await AddOutboxBatchAsync(
                     connection,
                     transaction,
                     retryable
-                        .Select(x => (
-                            Queue: stateByRunId[x.RunId],
-                            Payload: JsonSerializer.Serialize(new { runId = x.RunId, queue = stateByRunId[x.RunId] }, SerializerOptions),
-                            x.AvailableAt))
+                        .Select(x =>
+                        {
+                            var state = stateByRunId[x.RunId];
+                            return (
+                                Queue: state.Queue,
+                                Payload: JsonSerializer.Serialize(new { runId = x.RunId, queue = state.Queue }, SerializerOptions),
+                                x.AvailableAt,
+                                Target: new DeliveryTarget(
+                                state.DeliveryProfile,
+                                state.ExecutionLane,
+                                state.TransportId,
+                                state.ConsumerGroup,
+                                state.OrderingMode),
+                                PartitionKey: state.ConcurrencyKey);
+                        })
                         .ToArray(),
                     OutboxEventTypes.WorkAvailable,
                     cancellationToken);
@@ -457,6 +645,55 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 FailureCodes = items.Select(x => x.FailureCode).ToArray(),
                 FailureMessages = items.Select(x => x.FailureMessage).ToArray(),
                 Phase = (int)phase,
+                CompletedAt = completedAt,
+                Running = (int)JobPhase.Running
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    /// <summary>
+    /// Sets multiple runs to their respective terminal phases in a single SQL
+    /// round-trip. Each row carries its own <paramref name="items"/>.Phase so
+    /// that Succeeded / Canceled / Failed / Dead rows can be committed together
+    /// instead of requiring four separate UPDATE statements.
+    /// </summary>
+    private static async ValueTask SetTerminalRunBatchWithPhasesAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        IReadOnlyList<(string RunId, string AttemptId, string? FailureCode, string? FailureMessage, JobPhase Phase)> items,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0) return;
+
+        await connection.ExecuteAsync(new CommandDefinition(@"
+            UPDATE Kj2_JobRuns
+            SET Phase = item.Phase::smallint,
+                CompletedAt = @CompletedAt,
+                CurrentAttemptId = NULL,
+                CurrentWorkerId = NULL,
+                CurrentSessionId = NULL,
+                FailureCode = item.FailureCode,
+                FailureMessage = item.FailureMessage,
+                Version = Version + 1
+            FROM unnest(
+                CAST(@RunIds AS text[]),
+                CAST(@AttemptIds AS text[]),
+                CAST(@FailureCodes AS text[]),
+                CAST(@FailureMessages AS text[]),
+                CAST(@Phases AS smallint[]))
+                AS item(RunId, AttemptId, FailureCode, FailureMessage, Phase)
+            WHERE Kj2_JobRuns.Id = item.RunId
+              AND Kj2_JobRuns.Phase = @Running
+              AND Kj2_JobRuns.CurrentAttemptId = item.AttemptId;",
+            new
+            {
+                RunIds = items.Select(x => x.RunId).ToArray(),
+                AttemptIds = items.Select(x => x.AttemptId).ToArray(),
+                FailureCodes = items.Select(x => x.FailureCode).ToArray(),
+                FailureMessages = items.Select(x => x.FailureMessage).ToArray(),
+                Phases = items.Select(x => (short)x.Phase).ToArray(),
                 CompletedAt = completedAt,
                 Running = (int)JobPhase.Running
             },
@@ -545,7 +782,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.CancelRequested,
                 run.AttemptCount,
                 run.MaxAttempts,
-                run.Queue
+                run.Queue,
+                run.ExecutionLane,
+                run.DeliveryProfile,
+                run.ConsumerGroup,
+                run.TransportId,
+                run.OrderingMode,
+                run.ConcurrencyKey,
+                run.RetryPolicyJson
             FROM Kj2_JobAttempts attempt
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
             WHERE attempt.Phase = @AttemptRunning
@@ -611,7 +855,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
         if (retryable.Length > 0)
         {
             var retryItems = retryable
-                .Select(x => (x.AttemptRunId, AvailableAt: databaseNow.Add(retryPolicy.ComputeDelay(x.AttemptCount))))
+                .Select(x =>
+                {
+                    var effectivePolicy = ResolveRetryPolicy(x, retryPolicy);
+                    return (x.AttemptRunId, AvailableAt: databaseNow.Add(effectivePolicy.ComputeDelay(x.AttemptCount)));
+                })
                 .ToArray();
             await RequeueRunBatchAsync(
                 connection,
@@ -628,7 +876,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     .Select(x => (
                         x.Queue,
                         Payload: JsonSerializer.Serialize(new { runId = x.AttemptRunId, queue = x.Queue }, SerializerOptions),
-                        AvailableAt: availableAtByRunId[x.AttemptRunId]))
+                        AvailableAt: availableAtByRunId[x.AttemptRunId],
+                        Target: new DeliveryTarget(
+                            x.DeliveryProfile,
+                            x.ExecutionLane,
+                            x.TransportId,
+                            x.ConsumerGroup,
+                            x.OrderingMode),
+                        PartitionKey: x.ConcurrencyKey))
                     .ToArray(),
                 OutboxEventTypes.WorkAvailable,
                 cancellationToken);
@@ -775,7 +1030,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
     private static async ValueTask AddOutboxBatchAsync(
         IDbConnection connection,
         IDbTransaction transaction,
-        IReadOnlyList<(string Queue, string PayloadJson, DateTimeOffset AvailableAt)> items,
+        IReadOnlyList<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)> items,
         string eventType,
         CancellationToken cancellationToken)
     {
@@ -784,32 +1039,43 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return;
         }
 
-        var target = new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null);
-        target.Validate();
+        foreach (var item in items)
+        {
+            item.Target.Validate();
+        }
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             INSERT INTO Kj2_Outbox
-                (Id, Queue, DeliveryProfile, ExecutionLane, TransportId, EventType, PayloadJson, State, PublishAttempts,
+                (Id, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode, PartitionKey, EventType, PayloadJson, State, PublishAttempts,
                  AvailableAt, CreatedAt)
             SELECT
-                item.Id, item.Queue, @DeliveryProfile, @ExecutionLane, @TransportId, @EventType,
+                item.Id, item.Queue, item.ExecutionLane, item.DeliveryProfile, item.ConsumerGroup, item.TransportId, item.OrderingMode, item.PartitionKey, @EventType,
                 CAST(item.PayloadJson AS jsonb), @State, 0,
                 GREATEST(item.AvailableAt, clock_timestamp()), clock_timestamp()
             FROM unnest(
                 CAST(@Ids AS text[]),
                 CAST(@Queues AS text[]),
+                CAST(@ExecutionLanes AS text[]),
+                CAST(@DeliveryProfiles AS int[]),
+                CAST(@ConsumerGroups AS text[]),
+                CAST(@TransportIds AS text[]),
+                CAST(@OrderingModes AS int[]),
+                CAST(@PartitionKeys AS text[]),
                 CAST(@Payloads AS text[]),
                 CAST(@AvailableAts AS timestamptz[]))
-                AS item(Id, Queue, PayloadJson, AvailableAt);",
+                AS item(Id, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode, PartitionKey, PayloadJson, AvailableAt);",
             new
             {
                 Ids = items.Select(_ => NewId()).ToArray(),
                 Queues = items.Select(x => x.Queue).ToArray(),
+                ExecutionLanes = items.Select(x => x.Target.ExecutionLane).ToArray(),
+                DeliveryProfiles = items.Select(x => (int)x.Target.Profile).ToArray(),
+                ConsumerGroups = items.Select(x => x.Target.ConsumerGroup).ToArray(),
+                TransportIds = items.Select(x => x.Target.TransportId).ToArray(),
+                OrderingModes = items.Select(x => (int)x.Target.OrderingMode).ToArray(),
+                PartitionKeys = items.Select(x => x.PartitionKey).ToArray(),
                 Payloads = items.Select(x => x.PayloadJson).ToArray(),
                 AvailableAts = items.Select(x => x.AvailableAt.ToUniversalTime()).ToArray(),
-                DeliveryProfile = (int)target.Profile,
-                target.ExecutionLane,
-                target.TransportId,
                 EventType = eventType,
                 State = (int)OutboxDeliveryState.Pending
             },
@@ -866,5 +1132,45 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public int AttemptCount { get; set; }
         public int MaxAttempts { get; set; }
         public string Queue { get; set; } = "default";
+        public string ExecutionLane { get; set; } = "default";
+        public ExecutionDeliveryProfile DeliveryProfile { get; set; } = ExecutionDeliveryProfile.Pull;
+        public string ConsumerGroup { get; set; } = "default";
+        public string? TransportId { get; set; }
+        public ExecutionOrderingMode OrderingMode { get; set; } = ExecutionOrderingMode.Parallel;
+        public string? ConcurrencyKey { get; set; }
+        public string? RetryPolicyJson { get; set; }
+        public int Priority { get; set; }
+        public int TimeoutSeconds { get; set; }
+        public string? ContinuationJson { get; set; }
+        public string? CompensationJson { get; set; }
+    }
+
+    /// <summary>
+    /// Resolves the effective <see cref="RetryPolicy"/> for a run.
+    /// Prefers the per-run policy stored in <paramref name="state"/> over
+    /// the global <paramref name="globalPolicy"/>.
+    /// </summary>
+    private static RetryPolicy ResolveRetryPolicy(
+        CompletionStateRow state,
+        RetryPolicy globalPolicy)
+    {
+        if (!string.IsNullOrWhiteSpace(state.RetryPolicyJson))
+        {
+            try
+            {
+                var perRun = JsonSerializer.Deserialize<RetryPolicy>(
+                    state.RetryPolicyJson, SerializerOptions);
+                if (perRun is not null)
+                {
+                    return perRun;
+                }
+            }
+            catch
+            {
+                // If deserialization fails, fall back to global policy.
+            }
+        }
+
+        return globalPolicy;
     }
 }

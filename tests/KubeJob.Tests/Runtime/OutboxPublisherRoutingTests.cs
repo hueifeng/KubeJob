@@ -26,7 +26,8 @@ public sealed class OutboxPublisherRoutingTests
                 DeliveryTarget: new DeliveryTarget(
                     ExecutionDeliveryProfile.BrokerDispatch,
                     "default",
-                    "recording")),
+                    "recording",
+                    "default")),
             CancellationToken.None);
         var transport = new RecordingTransport();
         using var cancellation = new CancellationTokenSource();
@@ -35,6 +36,7 @@ public sealed class OutboxPublisherRoutingTests
             new RecordingNotifier(),
             new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
+            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(10),

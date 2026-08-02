@@ -57,6 +57,7 @@ public sealed class OutboxPublisherService : BackgroundService
     private readonly IWorkAvailableNotifier _notifier;
     private readonly IExecutionTransportRegistry _transports;
     private readonly ICancelPublisher _cancelPublisher;
+    private readonly OutboxPublisherSignal _wake;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<OutboxPublisherService> _logger;
     private readonly KubeJobControlPlaneMetrics? _metrics;
@@ -66,6 +67,7 @@ public sealed class OutboxPublisherService : BackgroundService
         IWorkAvailableNotifier notifier,
         IExecutionTransportRegistry transports,
         ICancelPublisher cancelPublisher,
+        OutboxPublisherSignal wake,
         IOptions<JobRuntimeOptions> options,
         ILogger<OutboxPublisherService> logger,
         KubeJobControlPlaneMetrics? metrics = null)
@@ -74,6 +76,7 @@ public sealed class OutboxPublisherService : BackgroundService
         _notifier = notifier;
         _transports = transports;
         _cancelPublisher = cancelPublisher;
+        _wake = wake;
         _options = options.Value;
         _logger = logger;
         _metrics = metrics;
@@ -120,12 +123,34 @@ public sealed class OutboxPublisherService : BackgroundService
             {
                 try
                 {
-                    await Task.Delay(_options.OutboxPollInterval, stoppingToken);
+                    await WaitForWakeOrTimeoutAsync(_options.OutboxPollInterval, stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Idles until either an in-process writer signals a new outbox row
+    /// (<see cref="OutboxPublisherSignal"/>) or the safety-net poll interval
+    /// elapses — whichever comes first. Drains the signal channel so the
+    /// next iteration's empty-scan result still respects the poll cadence.
+    /// </summary>
+    private async Task WaitForWakeOrTimeoutAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var delay = Task.Delay(timeout, cancellationToken);
+        var wake = _wake.Reader.WaitToReadAsync(cancellationToken).AsTask();
+        var first = await Task.WhenAny(wake, delay).ConfigureAwait(false);
+
+        if (first == wake && wake.IsCompletedSuccessfully && wake.Result)
+        {
+            // Drain the coalesced signal so a single wake produces one scan,
+            // even if Signal() was called many times during the wait.
+            while (_wake.Reader.TryRead(out _))
+            {
             }
         }
     }

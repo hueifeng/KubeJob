@@ -183,7 +183,7 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
             using var connection = CreateConnection(connectionString);
             using var channel = connection.CreateModel();
             await EventuallyAsync(
-                () => Task.FromResult(channel.ConsumerCount(options.GetSharedConsumerQueueName()) >= 1),
+                () => Task.FromResult(channel.ConsumerCount(options.GetConsumerQueueName("default")) >= 1),
                 attempts: 200);
 
             var jobs = host.Services.GetRequiredService<IJobClient>();
@@ -217,7 +217,7 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
 
             // The consumer must still be alive after the reject: prove it by
             // observing it is still registered on the shared queue.
-            channel.ConsumerCount(options.GetSharedConsumerQueueName()).Should().BeGreaterThan(0);
+            channel.ConsumerCount(options.GetConsumerQueueName("default")).Should().BeGreaterThan(0);
         }
         finally
         {
@@ -239,7 +239,7 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
             using var connection = CreateConnection(connectionString);
             using var channel = connection.CreateModel();
             await EventuallyAsync(
-                () => Task.FromResult(channel.ConsumerCount(options.GetSharedConsumerQueueName()) >= 1),
+                () => Task.FromResult(channel.ConsumerCount(options.GetConsumerQueueName("default")) >= 1),
                 attempts: 200);
 
             var properties = channel.CreateBasicProperties();
@@ -308,14 +308,18 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
                     configureWorker: worker =>
                     {
                         worker.WorkerId = $"worker-{group}";
+                        worker.ConsumerGroup = group;
                         worker.Queues = new List<string> { "default" };
                         worker.MaxConcurrentJobs = maxConcurrentJobs;
                         worker.EmptyPollDelay = TimeSpan.FromSeconds(30);
                     });
                 services.ConfigureKubeJobQueueRouting(routing =>
                 {
-                    routing.DefaultProfile = ExecutionDeliveryProfile.BrokerDispatch;
-                    routing.DefaultTransportId = "rabbitmq";
+                    routing.Queues["default"] = new QueueDefinition
+                    {
+                        Profile = ExecutionDeliveryProfile.BrokerDispatch,
+                        ConsumerGroup = options.ConsumerGroup
+                    };
                 });
                 services.UseRabbitMqKubeJobExecutionDispatcher(o => CopyInto(options, o));
                 services.AddRabbitMqKubeJobExecutionConsumer(o => CopyInto(options, o));
@@ -355,6 +359,9 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
 
         public ValueTask<AdmitExecutionResponse> AdmitAsync(AdmitExecutionRequest request, CancellationToken cancellationToken) =>
             _inner.AdmitAsync(request, cancellationToken);
+
+        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(AdmitExecutionBatchRequest request, CancellationToken cancellationToken) =>
+            _inner.AdmitBatchAsync(request, cancellationToken);
 
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(RenewLeasesRequest request, CancellationToken cancellationToken) =>
             _inner.RenewLeasesAsync(request, cancellationToken);
@@ -400,7 +407,7 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
         using var channel = connection.CreateModel();
         try
         {
-            channel.QueueDelete(options.GetSharedConsumerQueueName(), ifUnused: false, ifEmpty: false);
+            channel.QueueDelete(options.GetConsumerQueueName("default"), ifUnused: false, ifEmpty: false);
             channel.QueueDelete(options.GetSharedRetryQueueName(), ifUnused: false, ifEmpty: false);
             channel.QueueDelete(options.GetGroupDlqName(), ifUnused: false, ifEmpty: false);
             channel.ExchangeDelete(options.GetGroupExchangeName());

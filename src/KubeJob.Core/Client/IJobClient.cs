@@ -18,6 +18,15 @@ public interface IJobClient
         JobEnqueueOptions options,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Submits multiple jobs of the same type in a single database transaction,
+    /// amortizing commit overhead. All jobs share the same <paramref name="options"/>.
+    /// </summary>
+    ValueTask<IReadOnlyList<JobHandle>> EnqueueBatchAsync<TPayload>(
+        JobKey<TPayload> job,
+        IReadOnlyList<(TPayload Payload, JobEnqueueOptions? Options)> batch,
+        CancellationToken cancellationToken = default);
+
     ValueTask<JobStatusSnapshot?> GetStatusAsync(
         string jobId,
         CancellationToken cancellationToken = default);

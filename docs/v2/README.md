@@ -14,6 +14,7 @@
 - [V2 Hardening Review](./hardening-review.md)
 - [RabbitMQ Notification Acceleration](./rabbitmq-notifications.md)
 - [Message Transport Adapters](./message-transport.md)
+- [消息顺序与吞吐：成熟中间件的共同设计](./message-ordering-research.zh-CN.md)
 - [Completion Criteria](./completion-criteria.md)
 - [Post-Runtime Roadmap](./roadmap.md)
 - [Architecture Decision Records](../adr/)

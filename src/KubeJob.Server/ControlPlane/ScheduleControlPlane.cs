@@ -16,10 +16,12 @@ public sealed record CronSchedulePreview(
 public sealed class ScheduleControlPlane
 {
     private readonly IJobScheduleStore _store;
+    private readonly QueueCatalog _queueCatalog;
 
-    public ScheduleControlPlane(IJobScheduleStore store)
+    public ScheduleControlPlane(IJobScheduleStore store, QueueCatalog queueCatalog)
     {
         _store = store;
+        _queueCatalog = queueCatalog;
     }
 
     public async ValueTask<JobScheduleSnapshot> UpsertCronAsync(
@@ -30,8 +32,9 @@ public sealed class ScheduleControlPlane
         ValidateUpsert(scheduleId, request);
 
         var now = DateTimeOffset.UtcNow;
+        var target = _queueCatalog.Resolve(request.Queue);
         var schedule = await _store.UpsertAsync(
-            CreateRecord(scheduleId, request, now),
+            CreateRecord(scheduleId, request, target, now),
             cancellationToken);
 
         return ToSnapshot(schedule);
@@ -45,8 +48,9 @@ public sealed class ScheduleControlPlane
         ValidateUpsert(scheduleId, request);
 
         var now = DateTimeOffset.UtcNow;
+        var target = _queueCatalog.Resolve(request.Queue);
         var schedule = await _store.CreateIfAbsentAsync(
-            CreateRecord(scheduleId, request, now),
+            CreateRecord(scheduleId, request, target, now),
             cancellationToken);
         return schedule is null ? null : ToSnapshot(schedule);
     }
@@ -172,6 +176,7 @@ public sealed class ScheduleControlPlane
     private static JobScheduleRecord CreateRecord(
         string scheduleId,
         UpsertCronScheduleRequest request,
+        QueueRoute route,
         DateTimeOffset now) => new()
     {
         Id = scheduleId,
@@ -179,7 +184,12 @@ public sealed class ScheduleControlPlane
         PayloadJson = request.PayloadJson,
         CronExpression = request.CronExpression,
         TimeZoneId = request.TimeZoneId,
-        Queue = request.Queue,
+        Queue = route.Queue,
+        DeliveryProfile = route.Target.Profile,
+        ExecutionLane = route.Target.ExecutionLane,
+        ConsumerGroup = route.Target.ConsumerGroup,
+        TransportId = route.Target.TransportId,
+        OrderingMode = route.Target.OrderingMode,
         Priority = request.Priority,
         MisfirePolicy = request.MisfirePolicy,
         ConcurrencyPolicy = request.ConcurrencyPolicy,

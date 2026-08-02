@@ -18,9 +18,11 @@
     <Compile Remove="Runtime\JobRuntimeHostedServices.cs" />
     <Compile Remove="Runtime\JobRuntimeOptions.cs" />
     <Compile Remove="Runtime\JobSubmissionIdentity.cs" />
+    <Compile Remove="Runtime\OutboxPublisherSignal.cs" />
     <Compile Remove="Runtime\QueueRouting.cs" />
     <Compile Remove="Runtime\ScheduleReconciliationPlanner.cs" />
     <Compile Remove="Runtime\ScheduleReconcilerService.cs" />
+    <Compile Remove="Runtime\TerminalActionPlanner.cs" />
   </ItemGroup>
 
   <ItemGroup>

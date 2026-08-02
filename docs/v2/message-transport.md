@@ -54,12 +54,12 @@ services.UseKubeJobWorkAvailableNotifier<MyTransportPublisher>();
 For high-throughput execution, the platform has a separate
 `IExecutionDispatcher` seam. Its `ExecutionEnvelope` carries the accepted
 logical `RunId`, Queue, and EventId, but not a lease or execution authority.
-`QueueDeliveryOptions.DefaultProfile` defaults to
+`QueueDeliveryOptions.Defaults.Profile` defaults to
 `ExecutionDeliveryProfile.BrokerDispatch` (see [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)),
 so a host that wires the RabbitMQ execution extensions below gets targeted
 broker admission for every queue unless it pins a specific queue back to
-`Pull` via `QueueProfiles`. A host that does not want a broker dependency must
-either register the extensions or explicitly set `DefaultProfile = Pull`;
+`Pull` via a per-queue `QueueDefinition`. A host that does not want a broker dependency must
+either register the extensions or explicitly set `Defaults.Profile = Pull`;
 otherwise `UnconfiguredExecutionTransport` throws at dispatch time. The
 included RabbitMQ publisher can be registered with:
 
@@ -74,29 +74,96 @@ services.UseRabbitMqKubeJobExecutionDispatcher(options =>
 This publisher is only the durable, confirmed hand-off. It publishes each
 `ExecutionEnvelope` to the per-group direct exchange
 `{ConsumerQueuePrefix}.{ConsumerGroup}` (default `kubejob.execution.{group}`)
-with the logical queue as routing key; `RabbitMqDispatchTopology` declares that
-exchange and binds the logical routes to the shared physical execution queue
-`kubejob.execution.{group}.queue` on worker startup. The
+with the logical queue as routing key; `RabbitMqDispatchTopology` declares one
+physical execution queue per logical queue by default, for example
+`kubejob.execution.{group}.mail.send.queue`. The
 RabbitMQ Worker Consumer performs targeted Admission for the envelope's RunId,
 reuses the normal WorkerRuntimeService Handler/Lease/Complete path, and
 acknowledges only after durable completion or an explicit terminal/rejection
 decision. Temporary capacity, fencing, or database failures are requeued.
 
+### Queue policy
+
+Each logical queue carries one `QueueDefinition` (`QueueDeliveryOptions.Queues`):
+profile, ordering mode, lane, consumer group, and transport. Queues without an
+entry use `QueueDeliveryOptions.Defaults`. Business callers still submit only a
+logical queue name — none of these choices are visible to `IJobClient`.
+
+```csharp
+services.ConfigureKubeJobQueueRouting(routing =>
+{
+    // Global default: everything not listed below.
+    routing.Defaults.Profile = ExecutionDeliveryProfile.BrokerDispatch;
+
+    // One definition per queue. A queue with no entry uses Defaults.
+    routing.Queues["orders"] = new QueueDefinition
+    {
+        Profile = ExecutionDeliveryProfile.BrokerDispatch,
+        OrderingMode = ExecutionOrderingMode.KeyOrdered,
+        ConsumerGroup = "orders-push",
+        ExecutionLane = "default",
+        TransportId = "rabbitmq"
+    };
+    routing.Queues["audit"] = new QueueDefinition
+    {
+        Profile = ExecutionDeliveryProfile.Pull   // keep this queue on polling
+    };
+});
+```
+
+A worker serves a queue by declaring it in `KubeJobWorkerOptions.Queues`; its
+`ConsumerGroup` (and `ExecutionLane`) must match the queue's definition — the
+topology provisioner fails startup on any mismatch instead of silently
+never receiving work.
+
 ### Direct Dispatch topology and headers
 
-The RabbitMQ adapter for Direct Dispatch Mode declares the following topology
-on worker startup via `RabbitMqDispatchTopology`:
+The RabbitMQ adapter declares the following topology once at startup via
+`RabbitMqTopologyProvisioner` (an `IHostedService` that retries a bounded
+number of times and then fails startup with a clear error). The worker
+consumer does **not** actively declare anything: it passively verifies that
+its dispatch queues and the group/retry/cancel exchanges exist and fails fast
+if a host joins with options that do not match the provisioned topology,
+instead of looping forever on `406 PRECONDITION_FAILED`.
 
 | Resource | Name | Type | Notes |
 | --- | --- | --- | --- |
-| Group exchange | `kubejob.execution.{group}` | direct, durable | The shared execution queue binds once per logical routing key. Names derive from `RabbitMqExecutionOptions.ConsumerQueuePrefix` (default `kubejob.execution`) + `ConsumerGroup`. |
+| Group exchange | `kubejob.execution.{group}` | direct, durable | Each logical execution queue binds its own routing key. Names derive from `RabbitMqExecutionOptions.ConsumerQueuePrefix` (default `kubejob.execution`) + `ConsumerGroup`. |
 | Group DLX | `kubejob.execution.{group}.dlx` | fanout, durable | Catches poison envelopes whose `x-delivery-count` has saturated. |
 | Group DLQ | `kubejob.execution.{group}.dlq.queue` | quorum, durable | Bound to the group DLX; inspect here for permanently failed envelopes. |
-| Shared dispatch queue | `kubejob.execution.{group}.queue` | quorum, durable | All logical queue routes in the group bind to this one stable queue; `x-dead-letter-exchange` is set to the group DLX. `x-delivery-limit` is disabled by default and must only be enabled with a Pending-Run DLQ re-drive policy. |
+| Dispatch queue | `kubejob.execution.{group}.{logical-queue}.queue` | quorum, durable | One stable queue per business logical queue (and per lane when configured); the logical name is literal, with no hash suffix. `x-dead-letter-exchange` is set to the group DLX. `x-delivery-limit` is disabled by default and must only be enabled with a Pending-Run DLQ re-drive policy. |
 | Retry exchange | `kubejob.execution.{group}.retry` | direct, durable | Temporary admission/capacity failures are republished here instead of incrementing the dispatch queue delivery count. |
-| Shared retry queue | `kubejob.execution.{group}.retry.queue` | quorum, durable | All logical queue routes bind to this one stable queue. Uses `x-message-ttl = RetryDelay` and dead-letters back to the group exchange with the original logical queue routing key. |
+| Retry queue | `kubejob.execution.{group}.retry.queue` | quorum, durable | One group-scoped technical retry queue. It binds every business routing key, uses `x-message-ttl = RetryDelay`, and dead-letters back to the group exchange with the original routing key. Normal business backlog never accumulates here. |
 | Cancel exchange | `kubejob.execution.{group}.cancel` | fanout, durable | Cancel markers fan out to every worker queue in the group. |
-| Per-worker cancel queue | `kubejob.execution.{group}.cancel.{worker-session}` | exclusive, auto-delete | One ephemeral queue per worker session, bound to the cancel exchange; the durable cancel Outbox row and lease fallback provide correctness across restarts. |
+| Per-worker cancel queue | `kubejob.execution.{group}.cancel.{worker-id}` | auto-delete | One ephemeral queue per **stable WorkerId** (not per SessionId), so a restart reuses the same queue name instead of churning new ephemeral queues in the management UI. The queue is removed automatically when the worker disconnects, so retired workers do not accumulate queues. The durable cancel Outbox row and lease fallback provide correctness across restarts and overlapping drains. |
+
+### Queue lifecycle and operations
+
+- **Who creates queues.** `RabbitMqTopologyProvisioner` declares the group
+  topology (exchanges, retry queue, DLX/DLQ, one dispatch queue per
+  logical queue and lane) for the queues registered by the worker at startup.
+  The publisher (dispatcher) and the consumer never declare topology; the
+  consumer passively verifies that its queues exist and fails fast on a
+  mismatch. Restarting a host with unchanged options is a no-op on the broker:
+  the same physical queue names are reused, nothing accumulates.
+- **Stable names, ephemeral cancel queues.** Durable dispatch/retry/DLQ names
+  are stable across restarts and must never be suffixed with process IDs or
+  session IDs. The only ephemeral queue is the per-worker cancel queue, whose
+  name is derived from the stable WorkerId and which auto-deletes when the
+  worker disconnects.
+- **Admission batching.** The worker consumer collects up to
+  `RabbitMqExecutionOptions.AdmissionBatchSize` (default 16) deliveries and
+  admits them in one control-plane claim transaction, so per-envelope
+  admission round trips amortize to roughly two database transactions per
+  batch (one claim, one diagnostic read for unclaimed envelopes). Per-envelope
+  ACK/reject/retry semantics are unchanged. Set `PrefetchCount` at least as
+  large as `AdmissionBatchSize` so batches fill; capacity, fencing, and
+  ordering gates are per-Run and identical to the unbatched path.
+- **Operations surface.** The Dashboard Queue inventory page
+  (`/queues`) lists every configured or worker-registered logical queue with
+  its resolved profile, lane, group, ordering mode, transport, and the
+  physical RabbitMQ queue names it maps to. The logical-to-physical naming
+  contract lives entirely in `RabbitMqExecutionOptions`.
 
 ### Queue-name migration
 
@@ -107,22 +174,27 @@ queues, verify `messages_ready=0`, `messages_unacknowledged=0`, and
 `consumers=0`, then remove the old bindings and queues before switching traffic
 to the new names. A name change alone does not move existing RabbitMQ messages.
 
+Changing to the per-logical-queue topology is a clean deployment topology
+change: provision the business queues before switching publisher traffic. The
+worker consumes `{prefix}.{group}.{logical-queue}.queue`; the group-scoped retry
+queue remains `{prefix}.{group}.retry.queue`.
+
 The stable names are intentionally reused across service restarts; do not append
 process IDs, Pod UIDs, or random GUIDs to durable execution or ingress queues.
-The physical execution, retry, and DLQ names are stable and end in `.queue`.
-The logical queue remains only in the envelope and routing key. The control
-plane never sees RabbitMQ-side names; `RabbitMqExecutionOptions` owns the
-logical-to-physical routing contract.
+The physical execution names preserve the literal business logical queue name
+and end in `.queue`; retry and DLQ remain group-scoped technical queues. The
+control plane never sees RabbitMQ-side names; `RabbitMqExecutionOptions` owns
+the logical-to-physical routing contract.
 
 Per-message header conventions:
 
 - Dispatch envelopes set `properties.Type = "execution-envelope"` and `MessageId = EventId`. Consumers dispatch on type, not on body parsing.
 - Cancel markers set `properties.Type = "cancel"` and `X-KubeJob-Event-Type = "cancel"`. Each worker-session cancel consumer calls the in-flight attempt cancellation hook and ACKs the marker.
-- Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the shared TTL retry queue and the original delivery is ACKed only after retry publication is confirmed; direct `Nack(requeue=true)` is reserved for retry-publication failure or shutdown fallback.
+- Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the group TTL retry queue and the original delivery is ACKed only after retry publication is confirmed; direct `Nack(requeue=true)` is reserved for retry-publication failure or shutdown fallback.
 
 Retry ownership: KubeJob's `MaxAttempts` (enforced by the completion store)
-remains the authoritative terminal-state driver. The shared TTL retry queue
-owns only transient broker/worker admission delay; it does not create a new
+remains the authoritative terminal-state driver. The group TTL retry queue owns
+only transient broker/worker admission delay; it does not create a new
 Attempt or increment `MaxAttempts`. `x-delivery-limit` is disabled by default;
 if explicitly enabled, the deployment must provide a DLQ re-drive policy for
 Pending Runs rather than treating the broker DLQ as the business state machine.

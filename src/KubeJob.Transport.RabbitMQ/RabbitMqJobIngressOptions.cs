@@ -26,7 +26,31 @@ public sealed class RabbitMqJobIngressOptions
     /// </summary>
     public bool AllowNoDeadLetterExchange { get; set; }
 
-    public ushort PrefetchCount { get; set; } = 32;
+    /// <summary>
+    /// Maximum unacknowledged ingress deliveries. Keep this at least as large
+    /// as <see cref="SubmissionBatchSize"/> when micro-batching is enabled.
+    /// </summary>
+    public ushort PrefetchCount { get; set; } = 100;
+
+    /// <summary>
+    /// Concurrent RabbitMQ delivery callbacks. Zero derives a value from the
+    /// prefetch/batch configuration so the micro-batcher can actually receive
+    /// a full batch instead of being serialized by the client default of one.
+    /// </summary>
+    public ushort ConsumerDispatchConcurrency { get; set; }
+
+    /// <summary>
+    /// Maximum number of broker messages committed in one durable submission
+    /// transaction. A smaller batch is flushed when <see cref="SubmissionBatchWait"/>
+    /// elapses, so low traffic never waits for this count.
+    /// </summary>
+    public int SubmissionBatchSize { get; set; } = 100;
+
+    /// <summary>
+    /// Maximum time the first message in a submission micro-batch waits before
+    /// it is durably submitted. Set this low for latency-sensitive queues.
+    /// </summary>
+    public TimeSpan SubmissionBatchWait { get; set; } = TimeSpan.FromMilliseconds(10);
 
     public TimeSpan ReconnectDelay { get; set; } = TimeSpan.FromSeconds(2);
 
@@ -88,6 +112,28 @@ public sealed class RabbitMqJobIngressOptions
         if (PrefetchCount == 0)
         {
             throw new InvalidOperationException("PrefetchCount must be positive.");
+        }
+
+        if (SubmissionBatchSize is < 1 or > 10_000)
+        {
+            throw new InvalidOperationException("SubmissionBatchSize must be between 1 and 10000.");
+        }
+
+        if (SubmissionBatchWait <= TimeSpan.Zero || SubmissionBatchWait > TimeSpan.FromSeconds(1))
+        {
+            throw new InvalidOperationException("SubmissionBatchWait must be positive and no greater than one second.");
+        }
+
+        if (PrefetchCount < SubmissionBatchSize)
+        {
+            throw new InvalidOperationException(
+                "PrefetchCount must be at least SubmissionBatchSize so a full micro-batch can be received.");
+        }
+
+        if (ConsumerDispatchConcurrency > PrefetchCount)
+        {
+            throw new InvalidOperationException(
+                "ConsumerDispatchConcurrency cannot exceed PrefetchCount.");
         }
     }
 }

@@ -15,7 +15,7 @@ namespace KubeJob.Tests.Worker.Options
 
             // Assert
             options.ServerEndpoint.Should().Be("http://localhost:5000");
-            options.MaxConcurrentJobs.Should().Be(10);
+            options.MaxConcurrentJobs.Should().Be(64);
             options.WorkerId.Should().Be(Environment.MachineName);
             options.Labels.Should().NotBeNull();
             options.Labels.Should().BeEmpty();

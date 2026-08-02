@@ -13,7 +13,7 @@ public sealed class PostgreSqlStorageOptions
 
     public int BackgroundPoolSize { get; set; } = 8;
 
-    public int MaximumConcurrentOperations { get; set; } = 32;
+    public int MaximumConcurrentOperations { get; set; } = 96;
 
     /// <summary>
     /// Optional cap used only to warn (not fail) if the sum of both pools

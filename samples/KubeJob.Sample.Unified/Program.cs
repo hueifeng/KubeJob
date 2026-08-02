@@ -43,10 +43,13 @@ builder.Services.AddKubeJob(
     {
         options.WorkerId = workerId;
         options.MaxConcurrentJobs = maxConcurrentJobs;
-        options.Queues = new List<string> { "default", "samples" };
+        options.Queues = new List<string> { "sample.data", "sample.dashboard-demo" };
         options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
         options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
         options.Labels["app"] = "unified-sample";
+        // The worker session must register under the same consumer group the
+        // RabbitMQ transport is provisioned for.
+        options.ConsumerGroup = "unified-sample";
     });
 builder.Services.AddKubeJobDashboard(options =>
 {
@@ -62,8 +65,16 @@ if (!string.IsNullOrWhiteSpace(rabbitMqConnectionString))
     {
         // The sample keeps routing deployment-owned: business callers still
         // submit only a logical queue and cannot select RabbitMQ per Run.
-        options.QueueProfiles["default"] = ExecutionDeliveryProfile.BrokerDispatch;
-        options.QueueProfiles["samples"] = ExecutionDeliveryProfile.BrokerDispatch;
+        // Each queue the worker serves gets one definition; the consumer
+        // group must match the transport group configured below.
+        options.Queues["sample.data"] = new KubeJob.Server.Runtime.QueueDefinition
+        {
+            ConsumerGroup = "unified-sample"
+        };
+        options.Queues["sample.dashboard-demo"] = new KubeJob.Server.Runtime.QueueDefinition
+        {
+            ConsumerGroup = "unified-sample"
+        };
     });
 
     void ConfigureRabbitMq(RabbitMqExecutionOptions options)

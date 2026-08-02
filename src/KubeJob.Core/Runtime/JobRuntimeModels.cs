@@ -68,6 +68,7 @@ public sealed class JobRunRecord
     public string Queue { get; init; } = "default";
     public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.Pull;
     public string ExecutionLane { get; init; } = "default";
+    public string ConsumerGroup { get; init; } = "default";
     public string? TransportId { get; init; }
     public int Priority { get; init; }
     public JobPhase Phase { get; set; } = JobPhase.Pending;
@@ -78,8 +79,36 @@ public sealed class JobRunRecord
     public int AttemptCount { get; set; }
     public int MaxAttempts { get; init; } = 1;
     public int TimeoutSeconds { get; init; } = 300;
+
+    /// <summary>
+    /// Per-run retry policy override. When non-null, this policy takes precedence
+    /// over the global <see cref="JobRuntimeOptions.RetryPolicy"/> for all
+    /// retry-delay calculations of this specific logical run.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
+
+    /// <summary>
+    /// Optional continuation that fires when this run reaches a terminal state.
+    /// </summary>
+    public Continuation? Continuation { get; init; }
+
+    /// <summary>
+    /// Optional compensation action for failed runs.
+    /// </summary>
+    public Compensation? Compensation { get; init; }
+
+    /// <summary>
+    /// Extensible metadata bag for run lineage, diagnostics tags,
+    /// or custom key-value pairs. Not serialized to the broker.
+    /// </summary>
+    public IReadOnlyDictionary<string, string?> Metadata { get; init; } =
+        new Dictionary<string, string?>();
+
     public string? IdempotencyKey { get; init; }
     public string? ConcurrencyKey { get; init; }
+    public ExecutionOrderingMode OrderingMode { get; init; } = ExecutionOrderingMode.Parallel;
+    /// <summary>Database-assigned submission order used only by KeyOrdered runs.</summary>
+    public long OrderingSequence { get; init; }
     public string? ScheduleId { get; init; }
     public DateTimeOffset? ScheduledFor { get; init; }
     public string? CurrentAttemptId { get; set; }
@@ -122,6 +151,8 @@ public sealed class WorkerSessionRecord
     public WorkerSessionState State { get; set; } = WorkerSessionState.Ready;
     public int MaxConcurrency { get; init; }
     public int AvailableSlots { get; set; }
+    public string ExecutionLane { get; init; } = "default";
+    public string ConsumerGroup { get; init; } = "default";
     public IReadOnlyList<string> Queues { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> Capabilities { get; init; } = Array.Empty<string>();
     public IReadOnlyDictionary<string, string> Labels { get; init; } = new Dictionary<string, string>();
@@ -135,7 +166,14 @@ public sealed class OutboxMessageRecord
     public required string Queue { get; init; }
     public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.Pull;
     public string ExecutionLane { get; init; } = "default";
+    public string ConsumerGroup { get; init; } = "default";
     public string? TransportId { get; init; }
+    public ExecutionOrderingMode OrderingMode { get; init; } = ExecutionOrderingMode.Parallel;
+    /// <summary>
+    /// The run's ConcurrencyKey, carried so transport adapters can co-locate
+    /// same-key runs on the same physical lane queue.
+    /// </summary>
+    public string? PartitionKey { get; init; }
     public required string EventType { get; init; }
     public required string PayloadJson { get; init; }
     public OutboxDeliveryState State { get; set; } = OutboxDeliveryState.Pending;

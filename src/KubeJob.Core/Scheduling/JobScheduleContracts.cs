@@ -1,5 +1,7 @@
 using KubeJob.Core.Jobs;
 
+using KubeJob.Core.Queues;
+
 namespace KubeJob.Core.Scheduling;
 
 public enum MisfirePolicy
@@ -20,7 +22,7 @@ public enum ScheduleConcurrencyPolicy
 public sealed class CronScheduleOptions
 {
     public string TimeZoneId { get; init; } = "UTC";
-    public string Queue { get; init; } = "default";
+    public string? Queue { get; init; }
     public int Priority { get; init; }
     public MisfirePolicy MisfirePolicy { get; init; } = MisfirePolicy.FireOnce;
     public ScheduleConcurrencyPolicy ConcurrencyPolicy { get; init; } = ScheduleConcurrencyPolicy.Allow;
@@ -31,7 +33,10 @@ public sealed class CronScheduleOptions
     public void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(TimeZoneId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(Queue);
+        if (Queue is not null && string.IsNullOrWhiteSpace(Queue))
+        {
+            throw new ArgumentException("Queue cannot be empty when explicitly specified.", nameof(Queue));
+        }
 
         if (MaxAttempts < 1)
         {
@@ -52,6 +57,13 @@ public sealed class CronScheduleOptions
         {
             throw new ArgumentOutOfRangeException(nameof(ConcurrencyPolicy));
         }
+    }
+
+    public string ResolveQueue(string jobKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobKey);
+        Validate();
+        return LogicalQueueName.Normalize(Queue?.Trim() ?? jobKey, nameof(Queue));
     }
 }
 

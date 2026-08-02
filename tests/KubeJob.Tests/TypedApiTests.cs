@@ -1,4 +1,5 @@
 using System.Reflection;
+using KubeJob.Core.Client;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Jobs;
 
@@ -30,6 +31,23 @@ public sealed class TypedApiTests
         PropertyInfo? property = typeof(JobExecutionContext)
             .GetProperty("ServiceProvider", BindingFlags.Public | BindingFlags.Instance);
 
-        Assert.Null(property);
+        Assert.NotNull(property);
+    }
+
+    [Theory]
+    [InlineData("Mail.Send")]
+    [InlineData("mail_send")]
+    [InlineData("mail/send")]
+    public void Logical_queue_rejects_non_canonical_names(string queue)
+    {
+        Assert.Throws<ArgumentException>(() => new JobEnqueueOptions { Queue = queue }.ResolveQueue("mail.send"));
+    }
+
+    [Fact]
+    public void Logical_queue_keeps_the_literal_business_name()
+    {
+        var queue = new JobEnqueueOptions { Queue = " mail.send " }.ResolveQueue("ignored");
+
+        Assert.Equal("mail.send", queue);
     }
 }

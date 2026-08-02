@@ -1,3 +1,5 @@
+using KubeJob.Core.Queues;
+
 namespace KubeJob.Worker.Options;
 
 /// <summary>
@@ -15,8 +17,12 @@ public sealed class KubeJobWorkerOptions
 
     /// <summary>
     /// Maximum number of handlers executing concurrently in this process.
+    /// The default (64) is chosen so a single worker can keep the storage
+    /// backend's commit throughput saturated without the operator having to
+    /// tune it. Raise this when the storage backend can sustain more parallel
+    /// transactions (e.g. an SSD-backed Postgres with a fast WAL).
     /// </summary>
-    public int MaxConcurrentJobs { get; set; } = 10;
+    public int MaxConcurrentJobs { get; set; } = 64;
 
     /// <summary>
     /// Stable worker identity. Each process start receives a unique session
@@ -24,18 +30,34 @@ public sealed class KubeJobWorkerOptions
     /// </summary>
     public string WorkerId { get; set; } = Environment.MachineName;
 
+    /// <summary>
+    /// Consumer group owned by this worker process. A worker belongs to exactly
+    /// one group.
+    /// </summary>
+    public string ConsumerGroup { get; set; } = "default";
+    public string ExecutionLane { get; set; } = "default";
+
     public Dictionary<string, string> Labels { get; set; } = new();
 
-    /// <summary>
-    /// Queues this worker is allowed to claim from.
+    /// Queues this worker is allowed to claim from. A worker must declare its
+    /// business queues explicitly; there is no implicit catch-all queue.
     /// </summary>
-    public List<string> Queues { get; set; } = new() { "default" };
+    public List<string> Queues { get; set; } = new();
 
     public string BuildId { get; set; } = "unknown";
-    public int ClaimBatchSize { get; set; } = 16;
+    public int ClaimBatchSize { get; set; } = 32;
     public TimeSpan EmptyPollDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan LeaseRenewalInterval { get; set; } = TimeSpan.FromSeconds(10);
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Grace period for in-flight attempts during shutdown and the fence
+    /// deadline. On shutdown the worker waits up to this long for attempts to
+    /// complete; a handler that ignores cancellation beyond the deadline does
+    /// not block process exit (the lease reaper reclaims its attempt). When
+    /// the session is fenced, the worker fails its hosted service after at
+    /// most this period even if a handler is still running.
+    /// </summary>
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
@@ -43,6 +65,12 @@ public sealed class KubeJobWorkerOptions
     /// exception; durable state is bounded to protect storage and Dashboard responses.
     /// </summary>
     public int MaximumFailureMessageLength { get; set; } = 32 * 1024;
+
+    /// <summary>
+    /// Ordered list of execution middleware types. Middleware is invoked in
+    /// registration order, wrapping the handler invocation.
+    /// </summary>
+    public IList<Type> ExecutionMiddleware { get; init; } = [];
 
     public void Validate()
     {
@@ -60,6 +88,18 @@ public sealed class KubeJobWorkerOptions
         if (WorkerId.Length is < 1 or > 200)
         {
             throw new InvalidOperationException("WorkerId must contain between 1 and 200 characters.");
+        }
+
+        ConsumerGroup = ConsumerGroup?.Trim() ?? string.Empty;
+        if (ConsumerGroup.Length is < 1 or > 200)
+        {
+            throw new InvalidOperationException("ConsumerGroup must contain between 1 and 200 characters.");
+        }
+
+        ExecutionLane = ExecutionLane?.Trim() ?? string.Empty;
+        if (ExecutionLane.Length is < 1 or > 200)
+        {
+            throw new InvalidOperationException("ExecutionLane must contain between 1 and 200 characters.");
         }
 
         BuildId = string.IsNullOrWhiteSpace(BuildId) ? "unknown" : BuildId.Trim();
@@ -84,8 +124,7 @@ public sealed class KubeJobWorkerOptions
         }
 
         Queues = Queues
-            .Select(queue => queue?.Trim() ?? string.Empty)
-            .Where(queue => queue.Length > 0)
+            .Select(queue => LogicalQueueName.Normalize(queue ?? string.Empty))
             .Distinct(StringComparer.Ordinal)
             .ToList();
         if (Queues.Count == 0)

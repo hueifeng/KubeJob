@@ -1,4 +1,5 @@
 using System.Text;
+using KubeJob.Server.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -7,33 +8,85 @@ using RabbitMQ.Client;
 namespace KubeJob.Transport.RabbitMQ;
 
 /// <summary>
+/// Raised when the broker topology does not match what this deployment
+/// declares (a queue or exchange is missing, or an existing queue carries
+/// different arguments). The consumer treats this as a configuration error:
+/// it fails fast instead of retrying forever against an incompatible broker.
+/// </summary>
+public sealed class RabbitMqTopologyMismatchException : InvalidOperationException
+{
+    public RabbitMqTopologyMismatchException(string message)
+        : base(message)
+    {
+    }
+
+    public RabbitMqTopologyMismatchException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
 /// Declares the Direct Dispatch topology for the configured consumer group
-/// on startup. Logical queues share one physical quorum execution queue and
-/// one shared TTL retry queue by default; the logical queue remains the
-/// routing key and envelope field. Poison messages route to the shared group
-/// DLQ. Cancellation is
+/// on startup. Each logical queue receives its own physical quorum execution
+/// queue and TTL retry queue by default; the logical queue remains the routing
+/// key and envelope field. Poison messages route to the shared group DLQ.
+/// Cancellation is
 /// handled through a separate per-group fanout exchange; each worker declares
-/// its own exclusive auto-delete cancel queue so every live worker receives a copy.
+/// its own stable auto-delete cancel queue so every live worker receives a copy.
 ///
 /// Topology is idempotent: re-declaring with matching arguments is a no-op
 /// on the broker, so the host service can re-run safely on every boot.
 /// </summary>
-public sealed class RabbitMqDispatchTopology : IHostedService
+public sealed class RabbitMqTopologyProvisioner : IHostedService
 {
     private readonly RabbitMqExecutionOptions _options;
     private readonly KubeJob.Worker.Options.KubeJobWorkerOptions _worker;
-    private readonly ILogger<RabbitMqDispatchTopology> _logger;
+    private readonly QueueCatalog _queueCatalog;
+    private readonly ILogger<RabbitMqTopologyProvisioner> _logger;
 
-    public RabbitMqDispatchTopology(
+    public RabbitMqTopologyProvisioner(
         IOptions<RabbitMqExecutionOptions> options,
         IOptions<KubeJob.Worker.Options.KubeJobWorkerOptions> worker,
-        ILogger<RabbitMqDispatchTopology> logger)
+        QueueCatalog queueCatalog,
+        ILogger<RabbitMqTopologyProvisioner> logger)
     {
         _options = options.Value;
         _worker = worker.Value;
+        _queueCatalog = queueCatalog;
         _logger = logger;
         _options.Validate();
         _worker.Validate();
+        ValidateWorkerQueues();
+    }
+
+    internal static void ValidateStrictFifoPolicy(
+        KubeJob.Core.Runtime.ExecutionOrderingMode orderingMode,
+        RabbitMqExecutionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (orderingMode != KubeJob.Core.Runtime.ExecutionOrderingMode.StrictFifo)
+        {
+            return;
+        }
+
+        if (!options.UseSingleActiveConsumer)
+        {
+            throw new InvalidOperationException(
+                "StrictFifo RabbitMQ queues require x-single-active-consumer to be enabled.");
+        }
+
+        if (options.PrefetchCount != 1)
+        {
+            throw new InvalidOperationException(
+                "StrictFifo RabbitMQ queues require PrefetchCount to be 1.");
+        }
+
+        if (options.ExecutionLaneCount != 1)
+        {
+            throw new InvalidOperationException(
+                "StrictFifo RabbitMQ queues require ExecutionLaneCount to be 1 for global FIFO.");
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -98,17 +151,113 @@ public sealed class RabbitMqDispatchTopology : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
+    /// <summary>
+    /// Verifies that the queues and exchanges this consumer depends on already
+    /// exist on the broker. The consumer must not actively declare the topology
+    /// (declaration is the provisioner's job, and a cross-host argument
+    /// mismatch fails the provisioner's active declare with a clear 406 error).
+    /// Existence-only verification turns a missing topology into a clear
+    /// startup failure instead of a silent consume or an infinite reconnect
+    /// loop.
+    /// </summary>
+    internal void ValidateConsumerTopology(IModel channel, IReadOnlyList<string> consumerQueues)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(consumerQueues);
+        VerifyExchange(channel, _options.GetGroupExchangeName(), "execution exchange");
+        VerifyExchange(channel, _options.GetRetryExchangeName(), "retry exchange");
+        if (_options.EnableCancelQueue)
+        {
+            VerifyExchange(channel, _options.GetCancelExchangeName(_options.ConsumerGroup), "cancel exchange");
+        }
+
+        foreach (var consumerQueue in consumerQueues.Distinct(StringComparer.Ordinal))
+        {
+            VerifyQueue(channel, consumerQueue);
+        }
+    }
+
+    private static void VerifyExchange(IModel channel, string exchange, string label)
+    {
+        try
+        {
+            channel.ExchangeDeclarePassive(exchange);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new RabbitMqTopologyMismatchException(
+                $"RabbitMQ KubeJob {label} '{exchange}' is missing on the broker. " +
+                $"Start a host that declares the Direct Dispatch topology (or run the topology provisioner) before consuming: {exception.Message}",
+                exception);
+        }
+    }
+
+    private static void VerifyQueue(IModel channel, string queue)
+    {
+        try
+        {
+            channel.QueueDeclarePassive(queue);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new RabbitMqTopologyMismatchException(
+                $"RabbitMQ KubeJob execution queue '{queue}' is missing on the broker. " +
+                $"Start a host that declares the Direct Dispatch topology (or run the topology provisioner) before consuming: {exception.Message}",
+                exception);
+        }
+    }
+
     internal void DeclareTopology(IModel channel)
     {
+        ValidateWorkerQueues();
         DeclareGroupTopology(channel);
         DeclareRetryTopology(channel);
         if (_options.EnableCancelQueue)
         {
             DeclareCancelTopology(channel);
         }
+        // Declare one physical dispatch queue per (logical queue, lane).
+        // N=1 produces exactly today's queue set.
+        for (var lane = 0; lane < _options.ExecutionLaneCount; lane++)
+        {
+            foreach (var logicalQueue in _worker.Queues)
+            {
+                DeclareDispatchQueue(channel, logicalQueue, lane);
+            }
+        }
+    }
+
+    private void ValidateWorkerQueues()
+    {
+        // The worker session registers with its own ConsumerGroup/ExecutionLane
+        // (KubeJobWorkerOptions); the transport consumes under
+        // RabbitMqExecutionOptions.ConsumerGroup. If the two disagree, every
+        // broker admission silently fails the session/group match and the Run
+        // spins in the retry queue — fail fast instead.
+        if (!string.Equals(_worker.ConsumerGroup, _options.ConsumerGroup, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Worker session group '{_worker.ConsumerGroup}' does not match the RabbitMQ consumer group '{_options.ConsumerGroup}'. " +
+                "Set KubeJobWorkerOptions.ConsumerGroup to the same group the transport is provisioned for.");
+        }
+
         foreach (var logicalQueue in _worker.Queues)
         {
-            DeclareDispatchQueue(channel, logicalQueue);
+            var route = _queueCatalog.Resolve(logicalQueue);
+            ValidateStrictFifoPolicy(route.Target.OrderingMode, _options);
+            if (!string.Equals(route.Target.ConsumerGroup, _options.ConsumerGroup, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Worker group '{_options.ConsumerGroup}' cannot consume queue '{route.Queue}' " +
+                    $"because QueueCatalog assigns it to group '{route.Target.ConsumerGroup}'.");
+            }
+
+            if (!string.Equals(route.Target.ExecutionLane, _worker.ExecutionLane, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Worker lane '{_worker.ExecutionLane}' cannot consume queue '{route.Queue}' " +
+                    $"because QueueCatalog assigns it to lane '{route.Target.ExecutionLane}'.");
+            }
         }
     }
 
@@ -154,26 +303,35 @@ public sealed class RabbitMqDispatchTopology : IHostedService
             autoDelete: false,
             arguments: null);
 
+        // No x-dead-letter-routing-key is set: RabbitMQ preserves the original
+        // (lane-suffixed) routing key on dead-letter, so a retried message
+        // re-lands on the same lane dispatch queue after the TTL expires.
         var retryArguments = new Dictionary<string, object>
         {
             ["x-queue-type"] = "quorum",
             ["x-message-ttl"] = checked((int)_options.RetryDelay.TotalMilliseconds),
             ["x-dead-letter-exchange"] = _options.GetGroupExchangeName()
         };
-        foreach (var logicalQueue in _worker.Queues)
+        // One group-shared retry queue binds every business queue/lane routing
+        // key. Normal backlog remains isolated in the business dispatch queue;
+        // this queue holds only short-lived broker admission retries.
+        var retryQueue = _options.GetSharedRetryQueueName();
+        channel.QueueDeclare(
+            queue: retryQueue,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: retryArguments);
+        for (var lane = 0; lane < _options.ExecutionLaneCount; lane++)
         {
-            var retryQueue = _options.GetRetryQueueName(logicalQueue);
-            channel.QueueDeclare(
-                queue: retryQueue,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                arguments: retryArguments);
-            channel.QueueBind(
-                queue: retryQueue,
-                exchange: _options.GetRetryExchangeName(),
-                routingKey: logicalQueue,
-                arguments: null);
+            foreach (var logicalQueue in _worker.Queues)
+            {
+                channel.QueueBind(
+                    queue: retryQueue,
+                    exchange: _options.GetRetryExchangeName(),
+                    routingKey: _options.GetLaneRoutingKey(logicalQueue, lane),
+                    arguments: null);
+            }
         }
     }
 
@@ -188,9 +346,9 @@ public sealed class RabbitMqDispatchTopology : IHostedService
             arguments: null);
     }
 
-    private void DeclareDispatchQueue(IModel channel, string logicalQueue)
+    private void DeclareDispatchQueue(IModel channel, string logicalQueue, int lane)
     {
-        var queueName = _options.GetConsumerQueueName(logicalQueue);
+        var queueName = _options.GetConsumerQueueName(logicalQueue, lane);
         var arguments = new Dictionary<string, object>
         {
             ["x-queue-type"] = "quorum",
@@ -199,6 +357,10 @@ public sealed class RabbitMqDispatchTopology : IHostedService
         if (_options.DefaultDeliveryLimit > 0)
         {
             arguments["x-delivery-limit"] = _options.DefaultDeliveryLimit;
+        }
+        if (_options.UseSingleActiveConsumer)
+        {
+            arguments["x-single-active-consumer"] = true;
         }
         channel.QueueDeclare(
             queue: queueName,
@@ -209,13 +371,14 @@ public sealed class RabbitMqDispatchTopology : IHostedService
         channel.QueueBind(
             queue: queueName,
             exchange: _options.GetGroupExchangeName(),
-            routingKey: logicalQueue,
+            routingKey: _options.GetLaneRoutingKey(logicalQueue, lane),
             arguments: null);
 
-        if (Encoding.UTF8.GetByteCount(logicalQueue) >= 255)
+        var routingKey = _options.GetLaneRoutingKey(logicalQueue, lane);
+        if (Encoding.UTF8.GetByteCount(routingKey) >= 255)
         {
             throw new InvalidOperationException(
-                $"RabbitMQ execution routing keys must be shorter than 255 UTF-8 bytes; got '{logicalQueue}'.");
+                $"RabbitMQ execution routing keys must be shorter than 255 UTF-8 bytes; got '{routingKey}'.");
         }
     }
 }

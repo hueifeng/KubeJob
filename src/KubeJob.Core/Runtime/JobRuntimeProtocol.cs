@@ -10,7 +10,9 @@ public sealed record RegisterWorkerSessionRequest(
     int MaxConcurrency,
     IReadOnlyList<string> Queues,
     IReadOnlyList<string> Capabilities,
-    IReadOnlyDictionary<string, string> Labels);
+    IReadOnlyDictionary<string, string> Labels,
+    string ConsumerGroup = "default",
+    string ExecutionLane = "default");
 
 public sealed record RegisterWorkerSessionResponse(
     string WorkerId,
@@ -37,8 +39,16 @@ public sealed record ClaimJobsRequest(
     int AvailableSlots,
     IReadOnlyList<string> Queues,
     IReadOnlyList<string> Capabilities,
-    IReadOnlyList<string>? RunIds = null);
+    IReadOnlyList<string>? RunIds = null,
+    string ConsumerGroup = "default",
+    string ExecutionLane = "default");
 
+/// <summary>
+/// A claimed Run returned to a worker. The control plane populates
+/// <see cref="OrderingMode"/> and <see cref="AvailableAt"/> so the admission
+/// path can record the KeyOrdered wait duration without a second database
+/// read.
+/// </summary>
 public sealed record ClaimedJob(
     string RunId,
     string AttemptId,
@@ -48,7 +58,9 @@ public sealed record ClaimedJob(
     string JobKey,
     string PayloadJson,
     string Queue,
-    int TimeoutSeconds);
+    int TimeoutSeconds,
+    ExecutionOrderingMode OrderingMode = ExecutionOrderingMode.Parallel,
+    DateTimeOffset AvailableAt = default);
 
 public sealed record ClaimJobsResponse(IReadOnlyList<ClaimedJob> Jobs);
 
@@ -102,6 +114,9 @@ public sealed record EnqueueJobRequest(
     string? IdempotencyKey = null,
     string? ConcurrencyKey = null,
     int MaxAttempts = 1,
-    int TimeoutSeconds = 300);
+    int TimeoutSeconds = 300,
+    RetryPolicy? RetryPolicy = null,
+    Continuation? Continuation = null,
+    Compensation? Compensation = null);
 
 public sealed record CancelJobRequest(string? Reason = null);

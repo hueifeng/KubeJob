@@ -1,3 +1,4 @@
+using KubeJob.Core.Execution;
 using KubeJob.Core.Interfaces;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
@@ -6,6 +7,7 @@ using KubeJob.Worker.Runtime;
 using KubeJob.Worker.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Worker.Extensions;
 
@@ -30,6 +32,31 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<HttpWorkerRuntimeClient>());
         services.TryAddSingleton<WorkerRuntimeService>();
         services.AddHostedService(sp => sp.GetRequiredService<WorkerRuntimeService>());
+
+        // Register the execution pipeline builder and build the pipeline
+        // from the configured middleware types.
+        services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<KubeJobWorkerOptions>>().Value;
+            var builder = new JobExecutionPipelineBuilder();
+
+            foreach (var middlewareType in options.ExecutionMiddleware)
+            {
+                if (!typeof(IJobExecutionMiddleware).IsAssignableFrom(middlewareType))
+                {
+                    throw new InvalidOperationException(
+                        $"Execution middleware type '{middlewareType.FullName}' " +
+                        $"must implement {typeof(IJobExecutionMiddleware).FullName}.");
+                }
+
+                // Register the middleware type in DI if not already registered.
+                services.TryAddTransient(middlewareType);
+                builder.Use(middlewareType);
+            }
+
+            return builder;
+        });
+
         return services;
     }
 
@@ -45,6 +72,18 @@ public static class ServiceCollectionExtensions
             sp => sp.GetRequiredService<WorkerClaimTrigger>());
         services.TryAddSingleton<IWorkerClaimTriggerSource>(
             sp => sp.GetRequiredService<WorkerClaimTrigger>());
+        return services;
+    }
+
+    /// <summary>
+    /// Registers a specific middleware type for execution pipeline usage.
+    /// The type must implement <see cref="IJobExecutionMiddleware"/>.
+    /// </summary>
+    public static IServiceCollection AddKubeJobMiddleware<TMiddleware>(
+        this IServiceCollection services)
+        where TMiddleware : class, IJobExecutionMiddleware
+    {
+        services.TryAddTransient<TMiddleware>();
         return services;
     }
 

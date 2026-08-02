@@ -9,7 +9,12 @@ public sealed class JobScheduleRecord
     public required string PayloadJson { get; init; }
     public required string CronExpression { get; init; }
     public string TimeZoneId { get; init; } = "UTC";
-    public string Queue { get; init; } = "default";
+    public required string Queue { get; init; }
+    public string ExecutionLane { get; init; } = "default";
+    public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.BrokerDispatch;
+    public string ConsumerGroup { get; init; } = "default";
+    public string? TransportId { get; init; }
+    public ExecutionOrderingMode OrderingMode { get; init; } = ExecutionOrderingMode.Parallel;
     public int Priority { get; init; }
     public MisfirePolicy MisfirePolicy { get; init; }
     public ScheduleConcurrencyPolicy ConcurrencyPolicy { get; init; }

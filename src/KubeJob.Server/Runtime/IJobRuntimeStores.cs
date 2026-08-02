@@ -15,7 +15,10 @@ public sealed record SubmitJobCommand(
     int TimeoutSeconds,
     string? ScheduleId = null,
     DateTimeOffset? ScheduledFor = null,
-    DeliveryTarget? DeliveryTarget = null);
+    DeliveryTarget? DeliveryTarget = null,
+    RetryPolicy? RetryPolicy = null,
+    Continuation? Continuation = null,
+    Compensation? Compensation = null);
 
 public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
 
@@ -34,6 +37,16 @@ public interface IJobSubmissionStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Submits multiple jobs in a single database transaction, amortizing round
+    /// trips and WAL flushes. Per-command results preserve idempotency: a command
+    /// whose <see cref="SubmitJobCommand.IdempotencyKey"/> already exists returns
+    /// that existing run with <c>Existing: true</c> and writes no outbox row.
+    /// </summary>
+    ValueTask<IReadOnlyList<SubmitJobResult>> SubmitBatchAsync(
+        IReadOnlyList<SubmitJobCommand> commands,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Schedules a durable work-available signal for a still-pending Run after
     /// broker retry budget is exhausted. Returns false when the Run is no longer
     /// pending and therefore needs no broker re-drive.
@@ -47,6 +60,10 @@ public interface IJobSubmissionStore
         string runId,
         string? reason,
         string? consumerGroup,
+        CancellationToken cancellationToken);
+
+    ValueTask<JobRunRecord?> GetByIdempotencyKeyAsync(
+        string idempotencyKey,
         CancellationToken cancellationToken);
 }
 
@@ -104,6 +121,15 @@ public interface IJobQueryStore
 {
     ValueTask<JobRunRecord?> GetRunAsync(
         string runId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Fetches several runs in one query. Used by the batch admission path to
+    /// diagnose envelopes the claim could not admit without a per-envelope
+    /// round trip. Missing ids are simply absent from the result.
+    /// </summary>
+    ValueTask<IReadOnlyList<JobRunRecord>> GetRunsAsync(
+        IReadOnlyList<string> runIds,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(
@@ -183,8 +209,9 @@ public interface IJobRuntimeMaintenanceStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Deletes only terminal runs without an idempotency key or schedule identity.
-    /// Keyed terminal history remains until idempotency tombstones exist.
+    /// Deletes only terminal runs without an idempotency key or schedule
+    /// identity. Keyed terminal history is retained by design: the idempotency
+    /// key must never be reused while its historical Run still exists.
     /// </summary>
     ValueTask<int> DeleteUnkeyedTerminalRunsAsync(
         DateTimeOffset olderThan,

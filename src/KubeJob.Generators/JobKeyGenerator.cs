@@ -57,8 +57,8 @@ public sealed class JobKeyGenerator : IIncrementalGenerator
             interfaceType.OriginalDefinition.ToDisplayString() == GenericJobMetadataName);
         if (payloadInterface is null)
         {
-            // V2 is additive. Legacy non-generic handlers and classes used only
-            // for attribute metadata remain valid but do not receive Jobs.* keys.
+            // V2 supports only generic IKubeJob<TPayload> handlers; other
+            // types do not receive a generated Jobs.* key.
             return null;
         }
 

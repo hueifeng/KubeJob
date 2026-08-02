@@ -46,6 +46,11 @@ public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
         CancellationToken cancellationToken) =>
         _controlPlane.AdmitAsync(request, cancellationToken);
 
+    public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
+        AdmitExecutionBatchRequest request,
+        CancellationToken cancellationToken) =>
+        _controlPlane.AdmitBatchAsync(request, cancellationToken);
+
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(
         RenewLeasesRequest request,
         CancellationToken cancellationToken)

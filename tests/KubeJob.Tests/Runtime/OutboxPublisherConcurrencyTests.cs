@@ -45,6 +45,7 @@ public sealed class OutboxPublisherConcurrencyTests
             new NullNotifier(),
             new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
+            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(5),
@@ -104,6 +105,7 @@ public sealed class OutboxPublisherConcurrencyTests
             new NullNotifier(),
             new ExecutionTransportRegistry(new[] { transport }),
             new NoopCancelPublisher(),
+            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(5),
@@ -209,7 +211,7 @@ public sealed class OutboxPublisherConcurrencyTests
     }
 
     private static readonly DeliveryTarget BrokerTarget =
-        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "recording");
+        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "recording", "default");
 
     private sealed class NullNotifier : IWorkAvailableNotifier
     {

@@ -50,6 +50,8 @@ public sealed partial class InMemoryJobRuntimeStore
                 HostName = request.HostName,
                 MaxConcurrency = request.MaxConcurrency,
                 AvailableSlots = request.MaxConcurrency,
+                ExecutionLane = request.ExecutionLane,
+                ConsumerGroup = request.ConsumerGroup,
                 Queues = request.Queues.ToArray(),
                 Capabilities = request.Capabilities.ToArray(),
                 Labels = new Dictionary<string, string>(request.Labels, StringComparer.Ordinal),
@@ -115,7 +117,9 @@ public sealed partial class InMemoryJobRuntimeStore
         lock (_gate)
         {
             if (!TryGetSession(request.WorkerId, request.SessionId, request.SessionEpoch, out var session)
-                || session.State != WorkerSessionState.Ready)
+                || session.State != WorkerSessionState.Ready
+                || !string.Equals(session.ConsumerGroup, request.ConsumerGroup, StringComparison.Ordinal)
+                || !string.Equals(session.ExecutionLane, request.ExecutionLane, StringComparison.Ordinal))
             {
                 return ValueTask.FromResult<IReadOnlyList<ClaimedJob>>(Array.Empty<ClaimedJob>());
             }
@@ -150,6 +154,8 @@ public sealed partial class InMemoryJobRuntimeStore
                 .Where(run => run.Phase == JobPhase.Pending)
                 .Where(run => !run.CancelRequested && run.AttemptCount < run.MaxAttempts)
                 .Where(run => run.AvailableAt <= now)
+                .Where(run => string.Equals(run.ConsumerGroup, request.ConsumerGroup, StringComparison.Ordinal))
+                .Where(run => string.Equals(run.ExecutionLane, request.ExecutionLane, StringComparison.Ordinal))
                 .Where(run => allowedQueues.Contains(run.Queue))
                 .Where(run => allowedCapabilities.Contains(run.JobKey))
                 .Where(run => requestedRunIds is null || requestedRunIds.Contains(run.Id))
@@ -168,6 +174,16 @@ public sealed partial class InMemoryJobRuntimeStore
                 }
 
                 if (HasConcurrencyConflict(run))
+                {
+                    continue;
+                }
+
+                if (HasOrderingPredecessor(run))
+                {
+                    continue;
+                }
+
+                if (HasStrictFifoPredecessor(run))
                 {
                     continue;
                 }
@@ -212,7 +228,9 @@ public sealed partial class InMemoryJobRuntimeStore
                     run.JobKey,
                     run.PayloadJson,
                     run.Queue,
-                    run.TimeoutSeconds));
+                    run.TimeoutSeconds,
+                    run.OrderingMode,
+                    run.AvailableAt));
             }
 
             session.AvailableSlots = Math.Max(0, serverAvailable - claimed.Count);

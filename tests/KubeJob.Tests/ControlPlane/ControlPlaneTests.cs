@@ -5,6 +5,7 @@ using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Extensions;
 using KubeJob.Server.Runtime;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Tests.ControlPlane;
 
@@ -30,6 +31,29 @@ public sealed class ControlPlaneTests
         replay.Handle.Should().Be(first.Handle);
         var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
         exception.Which.Code.Should().Be("invalid_job_payload");
+    }
+
+    [Fact]
+    public async Task Job_submission_persists_the_canonical_queue_returned_by_routing()
+    {
+        var options = new QueueDeliveryOptions
+        {
+            Defaults = { Profile = ExecutionDeliveryProfile.Pull }
+        };
+        var optionsWrapper = Options.Create(options);
+        var store = new InMemoryJobRuntimeStore();
+        var controlPlane = new JobControlPlane(
+            store,
+            store,
+            new ConfigurationQueueRouter(optionsWrapper),
+            Options.Create(new JobRuntimeOptions()),
+            new OutboxPublisherSignal());
+
+        var receipt = await controlPlane.SubmitAsync(
+            new EnqueueJobRequest("sample.data", "{}", Queue: " orders.push "));
+
+        var run = await store.GetRunAsync(receipt.Handle.JobId, CancellationToken.None);
+        run!.Queue.Should().Be("orders.push");
     }
 
     [Fact]

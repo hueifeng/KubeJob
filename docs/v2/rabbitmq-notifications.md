@@ -29,6 +29,12 @@ The JSON body is a `RabbitMqJobIngressEnvelope` containing `MessageId`,
 submission, rejects permanent invalid/conflicting messages, and requeues
 transient failures.
 
+Ingress submissions are micro-batched by default: up to 100 messages are
+committed in one transaction, or a partial batch flushes after 10 ms. Configure
+`SubmissionBatchSize` and `SubmissionBatchWait` together with a
+`PrefetchCount` at least as large as the batch size. This reduces peak database
+write overhead without making low-volume messages wait for a full batch.
+
 The real broker test is kept separate from the ordinary unit suite. With a
 RabbitMQ broker available, run it explicitly:
 

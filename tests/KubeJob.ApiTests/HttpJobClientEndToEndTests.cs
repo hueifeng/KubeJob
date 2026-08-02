@@ -3,9 +3,11 @@ using KubeJob.Client;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
 using KubeJob.Server.Extensions;
+using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace KubeJob.ApiTests;
@@ -37,6 +39,26 @@ public sealed class HttpJobClientEndToEndTests
         pending!.Phase.Should().Be(JobPhase.Pending);
         canceled.Should().BeTrue();
         terminal!.Phase.Should().Be(JobPhase.Canceled);
+    }
+
+    [Fact]
+    public async Task Client_uses_the_job_key_as_the_default_logical_queue()
+    {
+        await using var app = await StartServerAsync();
+        using var http = app.GetTestClient();
+        var client = new HttpJobClient(http);
+
+        await client.EnqueueAsync(
+            new JobKey<RemotePayload>("remote.echo"),
+            new RemotePayload("hello"));
+
+        var runs = await app.Services.GetRequiredService<IJobRuntimeDashboardStore>()
+            .GetRunsAsync(
+                new DashboardRunQuery(PageSize: 10, JobKey: "remote.echo", ExactJobKey: true),
+                CancellationToken.None);
+
+        runs.Items.Should().ContainSingle()
+            .Which.Queue.Should().Be("remote.echo");
     }
 
     [Fact]

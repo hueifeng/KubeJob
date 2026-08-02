@@ -27,6 +27,7 @@ public sealed class WorkerRuntimeService : BackgroundService
     private readonly KubeJobWorkerOptions _options;
     private readonly KubeJobWorkerMetrics? _metrics;
     private readonly ILogger<WorkerRuntimeService> _logger;
+    private readonly JobExecutionPipelineBuilder? _pipelineBuilder;
     private Channel<ClaimedJob> _channel;
     private readonly ConcurrentDictionary<string, OwnedAttempt> _owned = new(StringComparer.Ordinal);
     private string _sessionId = Guid.NewGuid().ToString("N");
@@ -38,6 +39,21 @@ public sealed class WorkerRuntimeService : BackgroundService
     private int _reservedSlots;
     private int _draining;
 
+    /// <summary>Set when the session was fenced (heartbeat/renewal rejected); the worker must fail its hosted service.</summary>
+    private int _fenced;
+
+    /// <summary>Set by StopAsync so ExecuteAsync stops even before the host's stoppingToken fires.</summary>
+    private int _stopRequested;
+
+    /// <summary>
+    /// Fires when a fenced session must be torn down regardless of whether
+    /// handlers cooperated; rebuilt per session in <see cref="PrepareNextSession"/>.
+    /// </summary>
+    private TaskCompletionSource _fenceDeadline = CreateFenceDeadlineSource();
+
+    private static TaskCompletionSource CreateFenceDeadlineSource() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public WorkerRuntimeService(
         IServiceScopeFactory scopeFactory,
         JobHandlerRegistry registry,
@@ -45,7 +61,8 @@ public sealed class WorkerRuntimeService : BackgroundService
         IWorkerClaimTrigger claimTrigger,
         IOptions<KubeJobWorkerOptions> options,
         ILogger<WorkerRuntimeService> logger,
-        KubeJobWorkerMetrics? metrics = null)
+        KubeJobWorkerMetrics? metrics = null,
+        JobExecutionPipelineBuilder? pipelineBuilder = null)
     {
         _scopeFactory = scopeFactory;
         _registry = registry;
@@ -55,6 +72,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         _metrics = metrics;
         _logger = logger;
         _options.Validate();
+        _pipelineBuilder = pipelineBuilder;
 
         _channel = CreateExecutionChannel();
     }
@@ -66,7 +84,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         Channel.CreateBounded<ClaimedJob>(new BoundedChannelOptions(_options.MaxConcurrentJobs)
         {
             FullMode = BoundedChannelFullMode.Wait,
-            SingleWriter = true,
+            SingleWriter = false, // both ClaimLoopAsync & ProcessExecutionEnvelopeAsync write
             SingleReader = false,
             AllowSynchronousContinuations = false
         });
@@ -81,12 +99,24 @@ public sealed class WorkerRuntimeService : BackgroundService
             throw exception;
         }
 
-        while (!stoppingToken.IsCancellationRequested)
+        while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _stopRequested) == 0)
         {
             PrepareNextSession();
             try
             {
-                await RunSessionAsync(stoppingToken);
+                var runTask = RunSessionAsync(stoppingToken);
+                var finished = await Task.WhenAny(runTask, _fenceDeadline.Task);
+                if (finished == runTask)
+                {
+                    await runTask;
+                }
+                else
+                {
+                    // The fence deadline fired while a handler was still
+                    // ignoring cancellation; tear the session down so the
+                    // hosted-service failure below can fire.
+                    TearDownSession();
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -94,10 +124,22 @@ public sealed class WorkerRuntimeService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "KubeJob worker session loop failed; restarting session");
+                _logger.LogError(ex, "KubeJob worker session loop failed");
             }
 
-            if (!stoppingToken.IsCancellationRequested)
+            if (Volatile.Read(ref _fenced) != 0)
+            {
+                // The control plane rejected this worker's session identity
+                // (heartbeat or lease renewal failed fencing). Restarting with
+                // a new SessionId is pointless while the rejection persists;
+                // fail the hosted service so the process supervisor restarts
+                // us, as the control-plane contract documents.
+                throw new InvalidOperationException(
+                    "KubeJob worker session was fenced by the control plane; " +
+                    "failing the hosted service so the supervisor can restart it with a new session.");
+            }
+
+            if (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _stopRequested) == 0)
             {
                 try
                 {
@@ -147,20 +189,36 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
         finally
         {
+            TearDownSession();
+        }
+    }
+
+    /// <summary>
+    /// Ends the current session: cancels its lifetime, releases every owned
+    /// attempt, and completes the session-ready gate. Idempotent, so both the
+    /// normal session end and the forced fence-deadline path may call it.
+    /// </summary>
+    private void TearDownSession()
+    {
+        var sessionLifetime = Volatile.Read(ref _sessionLifetime);
+        if (sessionLifetime is not null)
+        {
             sessionLifetime.Cancel();
-            _channel.Writer.TryComplete();
-            foreach (var owned in _owned.Values
-                         .Where(owned => string.Equals(owned.SessionId, _sessionId, StringComparison.Ordinal))
-                         .ToArray())
-            {
-                owned.Completion.TrySetResult(false);
-                ReleaseOwnedAttempt(owned.Job.AttemptId);
-            }
-            if (!_sessionReady.Task.IsCompleted)
-            {
-                _sessionReady.TrySetCanceled();
-            }
             Interlocked.CompareExchange(ref _sessionLifetime, null, sessionLifetime);
+        }
+
+        _channel.Writer.TryComplete();
+        foreach (var owned in _owned.Values
+                     .Where(owned => string.Equals(owned.SessionId, _sessionId, StringComparison.Ordinal))
+                     .ToArray())
+        {
+            owned.Completion.TrySetResult(false);
+            ReleaseOwnedAttempt(owned.Job.AttemptId);
+        }
+
+        if (!_sessionReady.Task.IsCompleted)
+        {
+            _sessionReady.TrySetCanceled();
         }
     }
 
@@ -176,6 +234,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         Interlocked.Exchange(ref _draining, 0);
         _sessionId = Guid.NewGuid().ToString("N");
         _sessionReady = CreateSessionReadySource();
+        _fenceDeadline = CreateFenceDeadlineSource();
         _channel = CreateExecutionChannel();
     }
 
@@ -242,7 +301,9 @@ public sealed class WorkerRuntimeService : BackgroundService
                 availableSlots,
                 envelope.RunId,
                 _options.Queues,
-                _registry.Capabilities),
+                _registry.Capabilities,
+                _options.ConsumerGroup,
+                _options.ExecutionLane),
             cancellationToken);
 
         switch (admission.Status)
@@ -286,6 +347,160 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Admits and executes a batch of broker-delivered Runs in one admission
+    /// transaction. Per-envelope semantics are identical to
+    /// <see cref="ProcessExecutionEnvelopeAsync"/>: the caller may ACK an
+    /// envelope only when its result is Completed, Retry keeps it queued, and
+    /// Reject is a permanent delivery decision. Results preserve input order.
+    /// Each admitted Run still executes concurrently through the same bounded
+    /// channel as Pull claims.
+    /// </summary>
+    /// <summary>
+    /// Admits a batch of broker-delivered Runs in one admission transaction and
+    /// starts the admitted executions without waiting for them to finish. Each
+    /// outcome maps one-to-one onto the input envelopes (same order): a non-null
+    /// <see cref="EnvelopeAdmissionOutcome.Completion"/> means the Run was
+    /// admitted and is executing; the other outcomes are final admission
+    /// decisions (Completed = already terminal, Retry = redeliver, Reject =
+    /// permanent). Per-envelope fencing and ordering semantics are identical to
+    /// the single-envelope path.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<EnvelopeAdmissionOutcome>> AdmitEnvelopesAsync(
+        IReadOnlyList<ExecutionEnvelope> envelopes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(envelopes);
+        var outcomes = new EnvelopeAdmissionOutcome[envelopes.Count];
+        if (envelopes.Count == 0)
+        {
+            return outcomes;
+        }
+
+        var session = await _sessionReady.Task.WaitAsync(cancellationToken);
+        var draining = Volatile.Read(ref _draining) != 0;
+        var eligibleIndexes = new List<int>(envelopes.Count);
+        for (var index = 0; index < envelopes.Count; index++)
+        {
+            var envelope = envelopes[index];
+            if (envelope is null)
+            {
+                outcomes[index] = new EnvelopeAdmissionOutcome(
+                    ExecutionEnvelopeProcessingStatus.Reject,
+                    "invalid_envelope",
+                    Completion: null);
+                continue;
+            }
+
+            if (draining)
+            {
+                // The worker is shutting down. Envelopes will be redelivered
+                // to another worker; we must not loop locally.
+                outcomes[index] = new EnvelopeAdmissionOutcome(
+                    ExecutionEnvelopeProcessingStatus.Retry,
+                    "worker_draining",
+                    Completion: null);
+                continue;
+            }
+
+            if (!_options.Queues.Contains(envelope.Queue, StringComparer.Ordinal))
+            {
+                outcomes[index] = new EnvelopeAdmissionOutcome(
+                    ExecutionEnvelopeProcessingStatus.Retry,
+                    "worker_not_configured_for_queue",
+                    Completion: null);
+                continue;
+            }
+
+            eligibleIndexes.Add(index);
+        }
+
+        if (eligibleIndexes.Count == 0)
+        {
+            return outcomes;
+        }
+
+        var availableSlots = _options.MaxConcurrentJobs - Volatile.Read(ref _reservedSlots);
+        if (availableSlots <= 0)
+        {
+            foreach (var index in eligibleIndexes)
+            {
+                outcomes[index] = new EnvelopeAdmissionOutcome(
+                    ExecutionEnvelopeProcessingStatus.Retry,
+                    "worker_capacity_exhausted",
+                    Completion: null);
+            }
+
+            return outcomes;
+        }
+
+        var admission = await _runtimeClient.AdmitBatchAsync(
+            new AdmitExecutionBatchRequest(
+                session.WorkerId,
+                session.SessionId,
+                Volatile.Read(ref _sessionEpoch),
+                availableSlots,
+                eligibleIndexes.Select(index => envelopes[index].RunId).ToArray(),
+                _options.Queues,
+                _registry.Capabilities,
+                _options.ConsumerGroup,
+                _options.ExecutionLane),
+            cancellationToken);
+        if (admission.Results.Count != eligibleIndexes.Count)
+        {
+            throw new InvalidOperationException(
+                $"Batch admission returned {admission.Results.Count} results for {eligibleIndexes.Count} envelopes.");
+        }
+
+        for (var resultIndex = 0; resultIndex < admission.Results.Count; resultIndex++)
+        {
+            var result = admission.Results[resultIndex];
+            var envelopeIndex = eligibleIndexes[resultIndex];
+            switch (result.Status)
+            {
+                case ExecutionAdmissionStatus.AlreadyTerminal:
+                    outcomes[envelopeIndex] = new EnvelopeAdmissionOutcome(
+                        ExecutionEnvelopeProcessingStatus.Completed,
+                        result.Reason,
+                        Completion: null);
+                    break;
+                case ExecutionAdmissionStatus.NotFound:
+                case ExecutionAdmissionStatus.Rejected:
+                    // Same defensive classification as the single-envelope
+                    // path: unrecoverable transport-level faults surface as
+                    // Reject rather than spinning in the broker retry queue.
+                    outcomes[envelopeIndex] = new EnvelopeAdmissionOutcome(
+                        ExecutionEnvelopeProcessingStatus.Reject,
+                        result.Reason ?? "invalid_admission_response",
+                        Completion: null);
+                    break;
+                case ExecutionAdmissionStatus.Retry:
+                    outcomes[envelopeIndex] = new EnvelopeAdmissionOutcome(
+                        ExecutionEnvelopeProcessingStatus.Retry,
+                        result.Reason,
+                        Completion: null);
+                    break;
+                case ExecutionAdmissionStatus.Admitted when result.Job is not null:
+                    // Start the execution now; the caller tracks the completion
+                    // task so admission of the NEXT batch is never blocked by a
+                    // slow handler.
+                    outcomes[envelopeIndex] = new EnvelopeAdmissionOutcome(
+                        ExecutionEnvelopeProcessingStatus.Admitted,
+                        null,
+                        Completion: EnqueueAdmittedExecutionAsync(result.Job, cancellationToken).AsTask());
+                    break;
+                default:
+                    outcomes[envelopeIndex] = new EnvelopeAdmissionOutcome(
+                        ExecutionEnvelopeProcessingStatus.Reject,
+                        "invalid_admission_response",
+                        Completion: null);
+                    break;
+            }
+        }
+
+        return outcomes;
+    }
+
     private async ValueTask<ExecutionEnvelopeProcessingResult> EnqueueAdmittedExecutionAsync(
         ClaimedJob job,
         CancellationToken cancellationToken)
@@ -327,8 +542,11 @@ public sealed class WorkerRuntimeService : BackgroundService
         }
         catch (ChannelClosedException)
         {
+            // The session ended (fence or drain) between admission and the
+            // channel write. The envelope is perfectly valid; it must be
+            // redelivered to another worker, not dead-lettered.
             return new ExecutionEnvelopeProcessingResult(
-                ExecutionEnvelopeProcessingStatus.Reject,
+                ExecutionEnvelopeProcessingStatus.Retry,
                 "worker_execution_channel_closed");
         }
         finally
@@ -342,6 +560,7 @@ public sealed class WorkerRuntimeService : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        Interlocked.Exchange(ref _stopRequested, 1);
         Interlocked.Exchange(ref _draining, 1);
         _channel.Writer.TryComplete();
         await SendHeartbeatBestEffortAsync(WorkerSessionState.Draining, cancellationToken);
@@ -351,9 +570,9 @@ public sealed class WorkerRuntimeService : BackgroundService
         {
             try
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(100), CancellationToken.None);
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
@@ -364,8 +583,17 @@ public sealed class WorkerRuntimeService : BackgroundService
             CancelOwnedAttempts();
         }
 
+        // End the session so the consumer and coordination loops settle as
+        // soon as their current work finishes.
+        Volatile.Read(ref _sessionLifetime)?.Cancel();
         await CloseSessionBestEffortAsync(CancellationToken.None);
-        await base.StopAsync(cancellationToken);
+
+        // Deliberately do NOT await base.StopAsync (which waits for
+        // ExecuteAsync): a handler that ignores cancellation must not block
+        // process shutdown. The host terminates the process after StopAsync
+        // returns, and the lease reaper reclaims any attempt still in flight.
+        // ExecuteAsync exits on the _stopRequested flag once its current work
+        // settles.
     }
 
     private async Task RegisterSessionUntilAcceptedAsync(CancellationToken cancellationToken)
@@ -378,7 +606,9 @@ public sealed class WorkerRuntimeService : BackgroundService
             _options.MaxConcurrentJobs,
             _options.Queues,
             _registry.Capabilities,
-            new Dictionary<string, string>(_options.Labels, StringComparer.Ordinal));
+            new Dictionary<string, string>(_options.Labels, StringComparer.Ordinal),
+            _options.ConsumerGroup,
+            _options.ExecutionLane);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -426,7 +656,9 @@ public sealed class WorkerRuntimeService : BackgroundService
                         Volatile.Read(ref _sessionEpoch),
                         Math.Min(availableSlots, _options.ClaimBatchSize),
                         _options.Queues,
-                        _registry.Capabilities),
+                        _registry.Capabilities,
+                        ConsumerGroup: _options.ConsumerGroup,
+                        ExecutionLane: _options.ExecutionLane),
                     stoppingToken);
 
                 if (response.Jobs.Count == 0)
@@ -526,6 +758,8 @@ public sealed class WorkerRuntimeService : BackgroundService
                         AttemptId = job.AttemptId,
                         AttemptNumber = job.AttemptNumber,
                         StartedAt = DateTimeOffset.UtcNow,
+                        CancellationToken = executionSource.Token,
+                        ServiceProvider = scope.ServiceProvider,
                         Worker = new WorkerExecutionInfo(
                             _options.WorkerId,
                             _sessionId,
@@ -534,6 +768,9 @@ public sealed class WorkerRuntimeService : BackgroundService
                             _options.BuildId)
                     };
 
+                    // Store job metadata in the context Items bag for middleware access.
+                    context.Items["_JobKey"] = job.JobKey;
+
                     _logger.LogInformation(
                         "Consumer {ConsumerIndex} executing job {RunId} attempt {AttemptNumber} ({JobKey})",
                         consumerIndex,
@@ -541,22 +778,53 @@ public sealed class WorkerRuntimeService : BackgroundService
                         job.AttemptNumber,
                         job.JobKey);
 
+                    // Build the execution pipeline: middleware₁ → middleware₂ → ... → handler.
+                    var handlerTerminal = new JobExecutionDelegate(async ctx =>
+                    {
+                        await handler.InvokeAsync(
+                            ctx.ServiceProvider,
+                            job.PayloadJson,
+                            ctx,
+                            ctx.CancellationToken);
+                    });
+
+                    var pipeline = _pipelineBuilder is not null
+                        ? _pipelineBuilder.Build(handlerTerminal)
+                        : handlerTerminal;
+
                     handlerStartedAt = _metrics?.IsHandlerDurationEnabled == true
                         ? Stopwatch.GetTimestamp()
                         : 0L;
-                    await handler.InvokeAsync(
-                        scope.ServiceProvider,
-                        job.PayloadJson,
-                        context,
-                        executionSource.Token);
+                    await pipeline(context);
 
-                    RecordHandlerDuration(handlerStartedAt, "succeeded");
-                    completionReported = await ReportAsync(
-                        job,
-                        JobAttemptOutcome.Succeeded,
-                        null,
-                        null,
-                        stoppingToken);
+                    // If middleware set an explicit outcome (e.g. ExceptionMappingMiddleware
+                    // caught a known exception), use it; otherwise report success.
+                    if (context.Outcome.HasValue)
+                    {
+                        RecordHandlerDuration(handlerStartedAt, context.Outcome.Value switch
+                        {
+                            JobAttemptOutcome.PermanentFailure => "payload_invalid",
+                            JobAttemptOutcome.TimedOut => "timed_out",
+                            JobAttemptOutcome.Canceled => "canceled",
+                            _ => "failed"
+                        });
+                        completionReported = await ReportAsync(
+                            job,
+                            context.Outcome.Value,
+                            context.FailureCode ?? "middleware_override",
+                            context.FailureMessage ?? "Outcome set by execution middleware.",
+                            stoppingToken);
+                    }
+                    else
+                    {
+                        RecordHandlerDuration(handlerStartedAt, "succeeded");
+                        completionReported = await ReportAsync(
+                            job,
+                            JobAttemptOutcome.Succeeded,
+                            null,
+                            null,
+                            stoppingToken);
+                    }
                 }
                 catch (OperationCanceledException) when (owned.CancellationSource.IsCancellationRequested)
                 {
@@ -603,6 +871,15 @@ public sealed class WorkerRuntimeService : BackgroundService
                 {
                     owned.Completion.TrySetResult(completionReported);
                     ReleaseOwnedAttempt(job.AttemptId);
+                }
+
+                // A session fence or worker drain cancelled the session while
+                // this attempt was running. Exit the consumer once the current
+                // attempt settles so the session can end; handlers that ignore
+                // cancellation keep their slot until they return.
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    break;
                 }
             }
         }
@@ -741,10 +1018,22 @@ public sealed class WorkerRuntimeService : BackgroundService
 
     private void FenceSession()
     {
+        Interlocked.Exchange(ref _fenced, 1);
         Interlocked.Exchange(ref _draining, 1);
         _channel.Writer.TryComplete();
         CancelOwnedAttempts();
         Volatile.Read(ref _sessionLifetime)?.Cancel();
+
+        // A handler that ignores cancellation keeps the session work from ever
+        // settling; after the drain timeout, force the hosted-service failure
+        // so the process supervisor can restart us.
+        _ = ForceFenceDeadlineAsync();
+    }
+
+    private async Task ForceFenceDeadlineAsync()
+    {
+        await Task.Delay(_options.DrainTimeout);
+        _fenceDeadline.TrySetResult();
     }
 
     private void CancelOwnedAttempts()

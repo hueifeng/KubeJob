@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using KubeJob.Core.Runtime;
 using KubeJob.Transport.RabbitMQ.Telemetry;
 using KubeJob.Worker.Options;
@@ -16,16 +17,30 @@ namespace KubeJob.Transport.RabbitMQ;
 /// Consumes durable Execution Envelopes and delegates the whole execution
 /// lifecycle to WorkerRuntimeService. ACK is emitted only after the worker has
 /// durably completed or explicitly classified the Run as terminal/rejected.
+///
+/// Deliveries are collected into a bounded pending buffer and admitted to the
+/// control plane in batches (see <see cref="RabbitMqExecutionOptions.AdmissionBatchSize"/>)
+/// so per-envelope admission round trips amortize into roughly two database
+/// transactions per batch. Per-envelope ACK/reject/retry semantics are
+/// unchanged: the broker never learns about an envelope before its Run is
+/// durably terminal.
+///
+/// All channels are passed by parameter rather than held as fields: the
+/// reconnect loop creates fresh connections and channels per session, and a
+/// delivery tag is only valid on the channel that delivered it.
 /// </summary>
 public sealed class RabbitMqExecutionConsumerService : BackgroundService
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
+    /// <summary>Cancel markers use this AMQP <c>Type</c>; see message-transport.md.</summary>
+    private const string CancelMarkerType = "cancel";
+
     private readonly RabbitMqExecutionOptions _options;
     private readonly KubeJobWorkerOptions _worker;
     private readonly WorkerRuntimeService _runtime;
     private readonly IWorkerRuntimeClient _runtimeClient;
-    private readonly RabbitMqDispatchTopology _topology;
+    private readonly RabbitMqTopologyProvisioner _topology;
     private readonly ILogger<RabbitMqExecutionConsumerService> _logger;
     private readonly KubeJobRabbitMqMetrics? _metrics;
 
@@ -34,7 +49,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         IOptions<KubeJobWorkerOptions> worker,
         WorkerRuntimeService runtime,
         IWorkerRuntimeClient runtimeClient,
-        RabbitMqDispatchTopology topology,
+        RabbitMqTopologyProvisioner topology,
         ILogger<RabbitMqExecutionConsumerService> logger,
         KubeJobRabbitMqMetrics? metrics = null)
     {
@@ -61,6 +76,17 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             {
                 return;
             }
+            catch (RabbitMqTopologyMismatchException exception)
+            {
+                // A cross-host option mismatch will never fix itself by
+                // reconnecting; fail the hosted service so the supervisor can
+                // restart with corrected configuration instead of spinning.
+                _logger.LogError(
+                    exception,
+                    "RabbitMQ KubeJob execution consumer cannot start for worker {WorkerId}: broker topology does not match this deployment's configuration",
+                    _worker.WorkerId);
+                throw;
+            }
             catch (Exception exception)
             {
                 _logger.LogWarning(
@@ -78,6 +104,9 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         {
             Uri = new Uri(_options.ConnectionString, UriKind.Absolute),
             DispatchConsumersAsync = true,
+            ConsumerDispatchConcurrency = _options.ConsumerDispatchConcurrency == 0
+                ? Math.Max(1, _worker.MaxConcurrentJobs)
+                : _options.ConsumerDispatchConcurrency,
             AutomaticRecoveryEnabled = true,
             TopologyRecoveryEnabled = true
         };
@@ -86,18 +115,61 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         using var channel = connection.CreateModel();
         using var connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         channel.BasicQos(0, _options.PrefetchCount, global: false);
-        channel.ConfirmSelect();
+
+        // The consumer channel never publishes, so it needs no confirms. All
+        // retry publications go to a dedicated confirm channel so a blocked
+        // publisher confirm can never stall delivery processing or ACKs.
+        using var publishChannel = connection.CreateModel();
+        publishChannel.ConfirmSelect();
 
         var channelGate = new object();
-        _topology.DeclareTopology(channel);
-        var consumerQueues = _worker.Queues
-            .Select(_options.GetConsumerQueueName)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        // The publish channel is shared between the batch loop and the
+        // fire-and-forget completion path. RabbitMQ.Client's IModel is not
+        // thread-safe and WaitForConfirms tracks per-channel aggregate state,
+        // so every publish-confirm-return sequence is serialized through this
+        // gate.
+        var publishChannelGate = new object();
+        // The consumer only verifies that the provisioner-declared topology
+        // exists with the expected arguments. Active declaration belongs to
+        // RabbitMqTopologyProvisioner; a mismatch here fails fast instead of
+        // looping forever on 406 PRECONDITION_FAILED.
+        var consumerQueues = new List<string>();
+        for (var lane = 0; lane < _options.ExecutionLaneCount; lane++)
+        {
+            foreach (var logicalQueue in _worker.Queues)
+            {
+                consumerQueues.Add(_options.GetConsumerQueueName(logicalQueue, lane));
+            }
+        }
+
+        consumerQueues = consumerQueues.Distinct(StringComparer.Ordinal).ToList();
+        _topology.ValidateConsumerTopology(channel, consumerQueues);
+
+        // Bounded pending buffer: at most one full admission batch waits for
+        // the next drain, so local memory is independent of broker prefetch.
+        var pending = Channel.CreateBounded<BasicDeliverEventArgs>(
+            new BoundedChannelOptions(_options.AdmissionBatchSize)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false,
+                AllowSynchronousContinuations = false
+            });
+        var batchLoop = Task.Run(
+            () => ProcessBatchesAsync(
+                pending.Reader,
+                channel,
+                channelGate,
+                publishChannel,
+                publishChannelGate,
+                connectionLifetime.Token),
+            CancellationToken.None);
+
         foreach (var consumerQueue in consumerQueues)
         {
             var consumer = new AsyncEventingBasicConsumer(channel);
-            consumer.Received += (_, delivery) => ProcessDeliveryAsync(
+            consumer.Received += (_, delivery) => OnDispatchDeliveryAsync(
+                pending.Writer,
                 channel,
                 channelGate,
                 delivery,
@@ -110,13 +182,21 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
 
         if (_options.EnableCancelQueue)
         {
+            // The cancel queue name is keyed by the stable WorkerId, not the
+            // per-restart SessionId, so a restart reuses the same queue name
+            // instead of churning a new ephemeral queue in the management UI.
+            // autoDelete removes it when the worker disconnects, so retired
+            // workers do not accumulate queues. During an overlapping drain
+            // (old and new session alive briefly), both sessions share the
+            // queue and markers may land on either; the durable cancel row,
+            // admission check, and renewal loop remain the correctness path.
             var cancelQueue = _options.GetCancelQueueName(
                 _options.ConsumerGroup,
-                $"{_worker.WorkerId}.{_runtime.SessionId}");
+                _worker.WorkerId);
             channel.QueueDeclare(
                 queue: cancelQueue,
                 durable: false,
-                exclusive: true,
+                exclusive: false,
                 autoDelete: true,
                 arguments: null);
             channel.QueueBind(
@@ -152,7 +232,303 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             disconnected.Task,
             Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken));
         connectionLifetime.Cancel();
+        pending.Writer.TryComplete();
         stoppingToken.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// Routes a delivery from a dispatch queue. Cancel markers that were
+    /// mis-routed onto a dispatch queue are handled as cancel signals (the
+    /// transport dispatches on <c>properties.Type</c>, never on body parsing);
+    /// everything else enters the bounded batch buffer.
+    /// </summary>
+    private async Task OnDispatchDeliveryAsync(
+        ChannelWriter<BasicDeliverEventArgs> pendingWriter,
+        IModel channel,
+        object channelGate,
+        BasicDeliverEventArgs delivery,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(
+                delivery.BasicProperties?.Type,
+                CancelMarkerType,
+                StringComparison.Ordinal))
+        {
+            await ProcessCancelDeliveryAsync(channel, channelGate, delivery);
+            return;
+        }
+
+        try
+        {
+            await pendingWriter.WriteAsync(delivery, cancellationToken);
+        }
+        catch (ChannelClosedException)
+        {
+            // The consumer is shutting down; the delivery stays unacked and
+            // the broker requeues it when the connection closes.
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Drains the pending buffer into admission batches and processes each
+    /// batch. Only this loop calls the batch admission path, so the control
+    /// plane sees one claim transaction per batch rather than one per
+    /// envelope.
+    /// </summary>
+    private async Task ProcessBatchesAsync(
+        ChannelReader<BasicDeliverEventArgs> pendingReader,
+        IModel channel,
+        object channelGate,
+        IModel publishChannel,
+        object publishChannelGate,
+        CancellationToken cancellationToken)
+    {
+        var batch = new List<BasicDeliverEventArgs>(_options.AdmissionBatchSize);
+        try
+        {
+            while (await pendingReader.WaitToReadAsync(cancellationToken))
+            {
+                batch.Clear();
+                var dispositioned = new HashSet<ulong>();
+                while (batch.Count < _options.AdmissionBatchSize
+                       && pendingReader.TryRead(out var delivery))
+                {
+                    batch.Add(delivery);
+                }
+
+                try
+                {
+                    await ProcessBatchAsync(
+                        batch,
+                        channel,
+                        channelGate,
+                        publishChannel,
+                        publishChannelGate,
+                        dispositioned,
+                        cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Deliveries of the interrupted batch stay unacked and are
+                    // requeued by the broker when the connection closes.
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    // Admission failed (control plane outage, DB failure, HTTP
+                    // timeout). Leaving the batch unacked on a live channel
+                    // would wedge the consumer forever once unacked deliveries
+                    // saturate the prefetch limit, so republish every delivery
+                    // the batch had not yet dispositioned to the retry queue
+                    // (which dead-letters back to the lane queue after the TTL)
+                    // and ACK it. Duplicates are deduped by durable admission
+                    // when the control plane recovers.
+                    _logger.LogError(
+                        exception,
+                        "RabbitMQ KubeJob batch admission failed for {Count} deliveries; republishing them to the retry queue",
+                        batch.Count);
+                    foreach (var delivery in batch)
+                    {
+                        if (dispositioned.Contains(delivery.DeliveryTag))
+                        {
+                            continue;
+                        }
+
+                        try
+                        {
+                            var envelope = JsonSerializer.Deserialize<ExecutionEnvelope>(
+                                delivery.Body.Span,
+                                SerializerOptions);
+                            if (envelope is null)
+                            {
+                                Reject(channel, channelGate, delivery.DeliveryTag,
+                                    "admission_failed_and_body_unparseable");
+                                continue;
+                            }
+
+                            RepublishForRetry(
+                                delivery,
+                                envelope,
+                                channel,
+                                channelGate,
+                                publishChannel,
+                                publishChannelGate);
+                        }
+                        catch (Exception retryException)
+                        {
+                            Reject(channel, channelGate, delivery.DeliveryTag,
+                                $"admission_failure_republish_failed: {retryException.Message}");
+                        }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task ProcessBatchAsync(
+        IReadOnlyList<BasicDeliverEventArgs> batch,
+        IModel channel,
+        object channelGate,
+        IModel publishChannel,
+        object publishChannelGate,
+        ISet<ulong> dispositioned,
+        CancellationToken cancellationToken)
+    {
+        // Parse every delivery first so malformed envelopes are rejected
+        // immediately and never enter the admission transaction.
+        var envelopes = new ExecutionEnvelope?[batch.Count];
+        var validIndexes = new List<int>(batch.Count);
+        for (var index = 0; index < batch.Count; index++)
+        {
+            try
+            {
+                envelopes[index] = JsonSerializer.Deserialize<ExecutionEnvelope>(
+                    batch[index].Body.Span,
+                    SerializerOptions)
+                    ?? throw new JsonException("RabbitMQ execution envelope was empty.");
+                validIndexes.Add(index);
+            }
+            catch (JsonException exception)
+            {
+                Reject(channel, channelGate, batch[index].DeliveryTag, exception.Message);
+                dispositioned.Add(batch[index].DeliveryTag);
+                _logger.LogWarning(
+                    exception,
+                    "Rejected malformed RabbitMQ execution envelope {DeliveryTag}",
+                    batch[index].DeliveryTag);
+            }
+        }
+
+        if (validIndexes.Count == 0)
+        {
+            return;
+        }
+
+        var validEnvelopes = validIndexes.Select(index => envelopes[index]!).ToArray();
+        var outcomes = await _runtime.AdmitEnvelopesAsync(validEnvelopes, cancellationToken);
+        if (outcomes.Count != validIndexes.Count)
+        {
+            throw new InvalidOperationException(
+                $"Batch admission returned {outcomes.Count} results for {validIndexes.Count} envelopes.");
+        }
+
+        for (var outcomeIndex = 0; outcomeIndex < outcomes.Count; outcomeIndex++)
+        {
+            var delivery = batch[validIndexes[outcomeIndex]];
+            var envelope = validEnvelopes[outcomeIndex];
+            var outcome = outcomes[outcomeIndex];
+
+            if (outcome.Completion is not null)
+            {
+                // Admitted: the execution runs asynchronously; ACK it when the
+                // attempt completes durably. Never block the batch loop on a
+                // slow handler, so the next batch's admission is not serialized
+                // behind execution.
+                dispositioned.Add(delivery.DeliveryTag);
+                _ = CompleteEnvelopeAsync(
+                    delivery,
+                    envelope,
+                    outcome.Completion,
+                    channel,
+                    channelGate,
+                    publishChannel,
+                    publishChannelGate);
+                continue;
+            }
+
+            switch (outcome.Status)
+            {
+                case ExecutionEnvelopeProcessingStatus.Completed:
+                    Ack(channel, channelGate, delivery.DeliveryTag);
+                    dispositioned.Add(delivery.DeliveryTag);
+                    _logger.LogDebug(
+                        "ACKed RabbitMQ execution envelope {EventId} for Run {RunId}",
+                        envelope.EventId,
+                        envelope.RunId);
+                    break;
+                case ExecutionEnvelopeProcessingStatus.Reject:
+                    Reject(channel, channelGate, delivery.DeliveryTag, outcome.Reason);
+                    dispositioned.Add(delivery.DeliveryTag);
+                    break;
+                case ExecutionEnvelopeProcessingStatus.Retry:
+                    await RepublishOrReconcileAsync(
+                        delivery,
+                        envelope,
+                        "worker_retry",
+                        channel,
+                        channelGate,
+                        publishChannel,
+                        publishChannelGate,
+                        cancellationToken);
+                    dispositioned.Add(delivery.DeliveryTag);
+                    break;
+                default:
+                    Reject(channel, channelGate, delivery.DeliveryTag, "invalid_admission_outcome");
+                    dispositioned.Add(delivery.DeliveryTag);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Waits for an admitted attempt to complete durably, then ACKs/Rejects/
+    /// republishes the delivery accordingly. Fire-and-forget: failures only
+    /// leave the delivery unacked, which the broker requeues.
+    /// </summary>
+    private async Task CompleteEnvelopeAsync(
+        BasicDeliverEventArgs delivery,
+        ExecutionEnvelope envelope,
+        Task<ExecutionEnvelopeProcessingResult> completion,
+        IModel channel,
+        object channelGate,
+        IModel publishChannel,
+        object publishChannelGate)
+    {
+        try
+        {
+            var result = await completion;
+            switch (result.Status)
+            {
+                case ExecutionEnvelopeProcessingStatus.Completed:
+                    Ack(channel, channelGate, delivery.DeliveryTag);
+                    _logger.LogDebug(
+                        "ACKed RabbitMQ execution envelope {EventId} for Run {RunId}",
+                        envelope.EventId,
+                        envelope.RunId);
+                    break;
+                case ExecutionEnvelopeProcessingStatus.Reject:
+                    Reject(channel, channelGate, delivery.DeliveryTag, result.Reason);
+                    break;
+                case ExecutionEnvelopeProcessingStatus.Retry:
+                    await RepublishOrReconcileAsync(
+                        delivery,
+                        envelope,
+                        "worker_retry",
+                        channel,
+                        channelGate,
+                        publishChannel,
+                        publishChannelGate,
+                        CancellationToken.None);
+                    break;
+            }
+        }
+        catch (Exception exception)
+        {
+            // The attempt could not be resolved durably (e.g. the session was
+            // torn down mid-execution). Leave the delivery unacked; the broker
+            // requeues it for another worker.
+            _logger.LogWarning(
+                exception,
+                "RabbitMQ execution envelope {EventId} for Run {RunId} was left unacked after an in-flight attempt; broker will redeliver",
+                envelope.EventId,
+                envelope.RunId);
+        }
     }
 
     private Task ProcessCancelDeliveryAsync(
@@ -197,89 +573,14 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         return Task.CompletedTask;
     }
 
-    private async Task ProcessDeliveryAsync(
-        IModel channel,
-        object channelGate,
-        BasicDeliverEventArgs delivery,
-        CancellationToken stoppingToken)
-    {
-        ExecutionEnvelope? envelope = null;
-        try
-        {
-            envelope = JsonSerializer.Deserialize<ExecutionEnvelope>(
-                delivery.Body.Span,
-                SerializerOptions)
-                ?? throw new JsonException("RabbitMQ execution envelope was empty.");
-
-            var result = await _runtime.ProcessExecutionEnvelopeAsync(
-                envelope,
-                stoppingToken);
-            switch (result.Status)
-            {
-                case ExecutionEnvelopeProcessingStatus.Completed:
-                    Ack(channel, channelGate, delivery.DeliveryTag);
-                    _logger.LogDebug(
-                        "ACKed RabbitMQ execution envelope {EventId} for Run {RunId}",
-                        envelope.EventId,
-                        envelope.RunId);
-                    break;
-                case ExecutionEnvelopeProcessingStatus.Reject:
-                    Reject(channel, channelGate, delivery.DeliveryTag, result.Reason);
-                    break;
-                case ExecutionEnvelopeProcessingStatus.Retry:
-                    await RepublishOrReconcileAsync(
-                        channel,
-                        channelGate,
-                        delivery,
-                        envelope,
-                        "worker_retry",
-                        stoppingToken);
-                    break;
-            }
-        }
-        catch (JsonException exception)
-        {
-            Reject(channel, channelGate, delivery.DeliveryTag, exception.Message);
-            _logger.LogWarning(
-                exception,
-                "Rejected malformed RabbitMQ execution envelope {DeliveryTag}",
-                delivery.DeliveryTag);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            _logger.LogDebug(
-                "RabbitMQ execution delivery {DeliveryTag} was interrupted by connection or host shutdown; broker will requeue the unacked delivery",
-                delivery.DeliveryTag);
-        }
-        catch (Exception exception)
-        {
-            if (envelope is not null)
-            {
-                await RepublishOrReconcileAsync(
-                    channel,
-                    channelGate,
-                    delivery,
-                    envelope,
-                    exception.Message,
-                    stoppingToken);
-            }
-            else
-            {
-                Nack(channel, channelGate, delivery.DeliveryTag, exception.Message);
-            }
-            _logger.LogError(
-                exception,
-                "Transient failure processing RabbitMQ execution envelope {DeliveryTag}; sent to retry queue when possible",
-                delivery.DeliveryTag);
-        }
-    }
-
     private async Task RepublishOrReconcileAsync(
-        IModel channel,
-        object gate,
         BasicDeliverEventArgs delivery,
         ExecutionEnvelope envelope,
         string reason,
+        IModel channel,
+        object channelGate,
+        IModel publishChannel,
+        object publishChannelGate,
         CancellationToken cancellationToken)
     {
         if (GetBrokerRetryCount(delivery.BasicProperties) >= _options.MaxBrokerRetryAttempts)
@@ -291,7 +592,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
                         envelope.RunId,
                         DateTimeOffset.UtcNow + _options.BrokerRetryReconciliationDelay),
                     cancellationToken);
-                Ack(channel, gate, delivery.DeliveryTag);
+                Ack(channel, channelGate, delivery.DeliveryTag);
                 _metrics?.ReconciliationHandedOff();
                 _logger.LogWarning(
                     "ACKed RabbitMQ execution envelope {EventId} after broker retry budget; durable reconciliation scheduled={Scheduled} for Run {RunId}",
@@ -304,7 +605,7 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
                 // Reconciliation failed too: drop into the DLQ via requeue=false
                 // rather than NACK-ing back to the head of the queue, which
                 // would loop indefinitely.
-                Reject(channel, gate, delivery.DeliveryTag,
+                Reject(channel, channelGate, delivery.DeliveryTag,
                     $"{reason}; durable reconciliation failed: {reconciliationException.Message}");
             }
 
@@ -313,7 +614,13 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
 
         try
         {
-            RepublishForRetry(channel, gate, delivery, envelope.Queue);
+            RepublishForRetry(
+                delivery,
+                envelope,
+                channel,
+                channelGate,
+                publishChannel,
+                publishChannelGate);
             _metrics?.BrokerRetried();
         }
         catch (Exception retryException)
@@ -322,63 +629,82 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             // routes the envelope through its DLX. The durable outbox still
             // owns correctness, so we accept a DLQ entry as a poison-pill
             // signal rather than spinning forever.
-            Reject(channel, gate, delivery.DeliveryTag,
+            Reject(channel, channelGate, delivery.DeliveryTag,
                 $"{reason}; retry publication failed: {retryException.Message}");
         }
     }
 
+    /// <summary>
+    /// Republishes a delivery to the group TTL retry queue on the dedicated
+    /// publish channel, then ACKs the original delivery on the consumer
+    /// channel. Publisher-confirm waits block only the publish channel, never
+    /// the channel carrying deliveries and ACKs. The publish channel is shared
+    /// between the batch loop and the fire-and-forget completion path, so the
+    /// whole subscribe-publish-confirm-unsubscribe sequence is serialized
+    /// through <paramref name="publishChannelGate"/>: RabbitMQ.Client's IModel
+    /// is not thread-safe and WaitForConfirms aggregates per-channel state.
+    /// </summary>
     private void RepublishForRetry(
-        IModel channel,
-        object gate,
         BasicDeliverEventArgs delivery,
-        string logicalQueue)
+        ExecutionEnvelope envelope,
+        IModel channel,
+        object channelGate,
+        IModel publishChannel,
+        object publishChannelGate)
     {
-        lock (gate)
+        var messageId = delivery.BasicProperties.MessageId;
+        BasicReturnEventArgs? returned = null;
+        EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
         {
-            var messageId = delivery.BasicProperties.MessageId;
-            BasicReturnEventArgs? returned = null;
-            EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
+            if (string.Equals(args.BasicProperties.MessageId, messageId, StringComparison.Ordinal))
             {
-                if (string.Equals(args.BasicProperties.MessageId, messageId, StringComparison.Ordinal))
-                {
-                    returned = args;
-                }
-            };
-            channel.BasicReturn += returnHandler;
-            try
-            {
-                var retryCount = GetBrokerRetryCount(delivery.BasicProperties) + 1;
-                var properties = delivery.BasicProperties;
-                var headers = properties.Headers is null
-                    ? new Dictionary<string, object>()
-                    : new Dictionary<string, object>(properties.Headers);
-                headers[BrokerRetryCountHeader] = retryCount;
-                properties.Headers = headers;
-
-                channel.BasicPublish(
-                    exchange: _options.GetRetryExchangeName(),
-                    routingKey: logicalQueue,
-                    mandatory: true,
-                    basicProperties: delivery.BasicProperties,
-                    body: delivery.Body.ToArray());
-                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
-                {
-                    throw new IOException(
-                        $"RabbitMQ did not confirm retry publication for delivery {delivery.DeliveryTag}.");
-                }
-
-                if (returned is not null)
-                {
-                    throw new IOException(
-                        $"RabbitMQ could not route retry delivery {delivery.DeliveryTag} for queue '{logicalQueue}'.");
-                }
-
-                channel.BasicAck(delivery.DeliveryTag, multiple: false);
+                returned = args;
             }
-            finally
+        };
+        lock (publishChannelGate)
+        {
+        publishChannel.BasicReturn += returnHandler;
+        try
+        {
+            var retryCount = GetBrokerRetryCount(delivery.BasicProperties) + 1;
+            var properties = delivery.BasicProperties;
+            var headers = properties.Headers is null
+                ? new Dictionary<string, object>()
+                : new Dictionary<string, object>(properties.Headers);
+            headers[BrokerRetryCountHeader] = retryCount;
+            properties.Headers = headers;
+
+            // Re-derive the lane from the envelope's PartitionKey so the
+            // retry lands on the same lane's retry queue. The retry queue
+            // dead-letters without a routing-key override, preserving this
+            // lane-suffixed key and routing the retried message back to the
+            // same lane dispatch queue. N=1 collapses to envelope.Queue.
+            var lane = ExecutionLaneRouter.GetLane(envelope.PartitionKey, _options.ExecutionLaneCount);
+            var routingKey = _options.GetLaneRoutingKey(envelope.Queue, lane);
+            publishChannel.BasicPublish(
+                exchange: _options.GetRetryExchangeName(),
+                routingKey: routingKey,
+                mandatory: true,
+                basicProperties: delivery.BasicProperties,
+                body: delivery.Body.ToArray());
+            if (!publishChannel.WaitForConfirms(_options.PublisherConfirmTimeout))
             {
-                channel.BasicReturn -= returnHandler;
+                throw new IOException(
+                    $"RabbitMQ did not confirm retry publication for delivery {delivery.DeliveryTag}.");
             }
+
+            if (returned is not null)
+            {
+                throw new IOException(
+                    $"RabbitMQ could not route retry delivery {delivery.DeliveryTag} for queue '{routingKey}'.");
+            }
+
+            Ack(channel, channelGate, delivery.DeliveryTag);
+        }
+        finally
+        {
+            publishChannel.BasicReturn -= returnHandler;
+        }
         }
     }
 

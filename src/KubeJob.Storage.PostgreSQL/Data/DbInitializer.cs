@@ -6,7 +6,7 @@ namespace KubeJob.Storage.PostgreSQL.Data;
 
 public sealed class DbInitializer : IStorageInitializer
 {
-    private const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 10;
 
     private readonly string _connectionString;
 
@@ -38,13 +38,16 @@ public sealed class DbInitializer : IStorageInitializer
             if (appliedVersion is null)
             {
                 connection.Execute(@"
+            CREATE SEQUENCE IF NOT EXISTS Kj2_JobRunOrderSequence;
+
             CREATE TABLE IF NOT EXISTS Kj2_JobRuns (
                 Id VARCHAR(64) PRIMARY KEY,
                 JobKey VARCHAR(300) NOT NULL,
                 PayloadJson JSONB NOT NULL,
                 Queue VARCHAR(100) NOT NULL,
-                DeliveryProfile INTEGER NOT NULL DEFAULT 0,
                 ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                DeliveryProfile INTEGER NOT NULL DEFAULT 0,
+                ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
                 TransportId VARCHAR(100),
                 Priority INTEGER NOT NULL DEFAULT 0,
                 Phase INTEGER NOT NULL,
@@ -55,8 +58,13 @@ public sealed class DbInitializer : IStorageInitializer
                 AttemptCount INTEGER NOT NULL DEFAULT 0,
                 MaxAttempts INTEGER NOT NULL,
                 TimeoutSeconds INTEGER NOT NULL,
+                RetryPolicyJson JSONB,
+                ContinuationJson JSONB,
+                CompensationJson JSONB,
                 IdempotencyKey VARCHAR(500),
                 ConcurrencyKey VARCHAR(500),
+                OrderingMode INTEGER NOT NULL DEFAULT 0,
+                OrderingSequence BIGINT NOT NULL DEFAULT nextval('Kj2_JobRunOrderSequence'),
                 ScheduleId VARCHAR(200),
                 ScheduledFor TIMESTAMPTZ,
                 CurrentAttemptId VARCHAR(64),
@@ -75,9 +83,26 @@ public sealed class DbInitializer : IStorageInitializer
                 ON Kj2_JobRuns (Queue, Priority DESC, AvailableAt, CreatedAt)
                 WHERE Phase = 0 AND CancelRequested = FALSE;
 
+            -- JobKey-aware companion to IX_Kj2_JobRuns_Claim: lets the broker
+            -- claim query (Claiming.cs) satisfy Queue=ANY + JobKey=ANY with an
+            -- index range scan per (Queue, JobKey) pair instead of fetching a
+            -- wide Queue prefix and post-filtering on JobKey. Worker capability
+            -- sets can be wide (32 queues × N capabilities) but the planner
+            -- bitmap-ORs the per-pair ranges, which beats a queue-leading
+            -- scan + JobKey filter at moderate backlog.
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_ClaimByJobKey
+                ON Kj2_JobRuns (Queue, JobKey, Priority DESC, AvailableAt, CreatedAt)
+                WHERE Phase = 0 AND CancelRequested = FALSE;
+
+            CREATE SEQUENCE IF NOT EXISTS Kj2_JobRunOrderSequence;
+
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_RunningConcurrency
                 ON Kj2_JobRuns (ConcurrencyKey)
                 WHERE Phase = 1 AND ConcurrencyKey IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_KeyOrderedHead
+                ON Kj2_JobRuns (Queue, ConcurrencyKey, OrderingSequence)
+                WHERE OrderingMode = 1 AND Phase IN (0, 1) AND ConcurrencyKey IS NOT NULL;
 
             CREATE UNIQUE INDEX IF NOT EXISTS UQ_Kj2_JobRuns_ScheduleOccurrence
                 ON Kj2_JobRuns (ScheduleId, ScheduledFor)
@@ -144,6 +169,8 @@ public sealed class DbInitializer : IStorageInitializer
                 State INTEGER NOT NULL,
                 MaxConcurrency INTEGER NOT NULL,
                 AvailableSlots INTEGER NOT NULL,
+                ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
                 Queues JSONB NOT NULL,
                 Capabilities JSONB NOT NULL,
                 Labels JSONB NOT NULL,
@@ -169,6 +196,11 @@ public sealed class DbInitializer : IStorageInitializer
                 CronExpression VARCHAR(200) NOT NULL,
                 TimeZoneId VARCHAR(200) NOT NULL,
                 Queue VARCHAR(100) NOT NULL,
+                ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                DeliveryProfile INTEGER NOT NULL DEFAULT 1,
+                ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
+                TransportId VARCHAR(100),
+                OrderingMode INTEGER NOT NULL DEFAULT 0,
                 Priority INTEGER NOT NULL DEFAULT 0,
                 MisfirePolicy INTEGER NOT NULL,
                 ConcurrencyPolicy INTEGER NOT NULL,
@@ -200,9 +232,12 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE TABLE IF NOT EXISTS Kj2_Outbox (
                 Id VARCHAR(64) PRIMARY KEY,
                 Queue VARCHAR(100) NOT NULL,
-                DeliveryProfile INTEGER NOT NULL DEFAULT 0,
                 ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                DeliveryProfile INTEGER NOT NULL DEFAULT 0,
+                ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
                 TransportId VARCHAR(100),
+                OrderingMode INTEGER NOT NULL DEFAULT 0,
+                PartitionKey VARCHAR(500),
                 EventType VARCHAR(100) NOT NULL,
                 PayloadJson JSONB NOT NULL,
                 State INTEGER NOT NULL,
@@ -216,6 +251,13 @@ public sealed class DbInitializer : IStorageInitializer
 
             ALTER TABLE Kj2_Outbox
                 ADD COLUMN IF NOT EXISTS ClaimToken VARCHAR(64);
+
+            -- Lane partitioning (transport-level co-location of same-key runs)
+            -- is additive: null resolves to lane 0, so existing rows need no
+            -- backfill. The idempotent ALTER covers a table that already
+            -- existed from a prior install without the column.
+            ALTER TABLE Kj2_Outbox
+                ADD COLUMN IF NOT EXISTS PartitionKey VARCHAR(500);
 
             CREATE INDEX IF NOT EXISTS IX_Kj2_Outbox_Pending
                 ON Kj2_Outbox (AvailableAt, CreatedAt)
@@ -236,21 +278,120 @@ public sealed class DbInitializer : IStorageInitializer
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (@Version, CURRENT_TIMESTAMP);",
                     new { Version = CurrentSchemaVersion });
             }
-            else if (appliedVersion == 1)
+            if (appliedVersion < 2)
             {
                 connection.Execute(@"
                     ALTER TABLE Kj2_JobRuns
                         ADD COLUMN IF NOT EXISTS DeliveryProfile INTEGER NOT NULL DEFAULT 0,
-                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                        ADD COLUMN IF NOT EXISTS ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
                         ADD COLUMN IF NOT EXISTS TransportId VARCHAR(100);
                     ALTER TABLE Kj2_Outbox
                         ADD COLUMN IF NOT EXISTS DeliveryProfile INTEGER NOT NULL DEFAULT 0,
-                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default',
+                        ADD COLUMN IF NOT EXISTS ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
                         ADD COLUMN IF NOT EXISTS TransportId VARCHAR(100);");
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (2, CURRENT_TIMESTAMP);");
             }
-            else if (appliedVersion != CurrentSchemaVersion)
+            if (appliedVersion < 3)
+            {
+                // v2 -> v3: add JobKey-leading partial claim index. CONCURRENTLY
+                // is not supported inside an advisory-locked DDL block, but the
+                // partial predicate (Phase=0 AND CancelRequested=FALSE) keeps
+                // the index small, and PG can build it online-ish for an empty
+                // or low-cardinality table; for high-cardinality tables a one-off
+                // CREATE INDEX CONCURRENTLY outside this initializer is preferred.
+                connection.Execute(@"
+                    CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_ClaimByJobKey
+                        ON Kj2_JobRuns (Queue, JobKey, Priority DESC, AvailableAt, CreatedAt)
+                        WHERE Phase = 0 AND CancelRequested = FALSE;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (3, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 4)
+            {
+                connection.Execute(@"
+                    CREATE SEQUENCE IF NOT EXISTS Kj2_JobRunOrderSequence;
+                    ALTER TABLE Kj2_JobRuns
+                        ADD COLUMN IF NOT EXISTS OrderingMode INTEGER NOT NULL DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS OrderingSequence BIGINT;
+                    ALTER TABLE Kj2_JobRuns
+                        ALTER COLUMN OrderingSequence SET DEFAULT nextval('Kj2_JobRunOrderSequence');
+                    UPDATE Kj2_JobRuns
+                    SET OrderingSequence = nextval('Kj2_JobRunOrderSequence')
+                    WHERE OrderingSequence IS NULL;
+                    ALTER TABLE Kj2_JobRuns
+                        ALTER COLUMN OrderingSequence SET NOT NULL;
+                    CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_KeyOrderedHead
+                        ON Kj2_JobRuns (Queue, ConcurrencyKey, OrderingSequence)
+                        WHERE OrderingMode = 1 AND Phase IN (0, 1) AND ConcurrencyKey IS NOT NULL;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (4, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 5)
+            {
+                // v4 -> v5: add the nullable Kj2_Outbox.PartitionKey column used
+                // by transport-level execution lanes. Additive only: null
+                // resolves to lane 0, so existing rows need no backfill.
+                connection.Execute(@"
+                    ALTER TABLE Kj2_Outbox
+                        ADD COLUMN IF NOT EXISTS PartitionKey VARCHAR(500);");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (5, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 6)
+            {
+                // v5 -> v6: add RetryPolicyJson, ContinuationJson, CompensationJson
+                // columns to Kj2_JobRuns. Additive: null means no per-run override.
+                connection.Execute(@"
+                    ALTER TABLE Kj2_JobRuns
+                        ADD COLUMN IF NOT EXISTS RetryPolicyJson JSONB,
+                        ADD COLUMN IF NOT EXISTS ContinuationJson JSONB,
+                        ADD COLUMN IF NOT EXISTS CompensationJson JSONB;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (6, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 7)
+            {
+                connection.Execute(@"
+                    ALTER TABLE Kj2_WorkerSessions
+                        ADD COLUMN IF NOT EXISTS ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default';");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (7, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 8)
+            {
+                connection.Execute(@"
+                    ALTER TABLE Kj2_JobSchedules
+                        ADD COLUMN IF NOT EXISTS DeliveryProfile INTEGER NOT NULL DEFAULT 1,
+                        ADD COLUMN IF NOT EXISTS ConsumerGroup VARCHAR(200) NOT NULL DEFAULT 'default',
+                        ADD COLUMN IF NOT EXISTS TransportId VARCHAR(100),
+                        ADD COLUMN IF NOT EXISTS OrderingMode INTEGER NOT NULL DEFAULT 0;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (8, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 9)
+            {
+                connection.Execute(@"
+                    ALTER TABLE Kj2_JobRuns
+                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default';
+                    ALTER TABLE Kj2_WorkerSessions
+                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default';
+                    ALTER TABLE Kj2_JobSchedules
+                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default';
+                    ALTER TABLE Kj2_Outbox
+                        ADD COLUMN IF NOT EXISTS ExecutionLane VARCHAR(200) NOT NULL DEFAULT 'default';");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (9, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 10)
+            {
+                connection.Execute(@"
+                    ALTER TABLE Kj2_Outbox
+                        ADD COLUMN IF NOT EXISTS OrderingMode INTEGER NOT NULL DEFAULT 0;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (10, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion > CurrentSchemaVersion)
             {
                 throw new InvalidOperationException(
                     $"Unsupported KubeJob schema version {appliedVersion}; application supports {CurrentSchemaVersion}.");
@@ -272,15 +413,27 @@ public sealed class DbInitializer : IStorageInitializer
             FROM (VALUES
                 ('Kj2_JobRuns', 'Id'),
                 ('Kj2_JobRuns', 'PayloadJson'),
+                ('Kj2_JobRuns', 'ExecutionLane'),
                 ('Kj2_JobRuns', 'CancelRequested'),
+                ('Kj2_JobRuns', 'RetryPolicyJson'),
+                ('Kj2_JobRuns', 'ContinuationJson'),
+                ('Kj2_JobRuns', 'CompensationJson'),
                 ('Kj2_JobRuns', 'Version'),
                 ('Kj2_JobAttempts', 'RunId'),
                 ('Kj2_JobAttempts', 'LeaseExpiresAt'),
                 ('Kj2_WorkerSessions', 'Epoch'),
                 ('Kj2_WorkerSessions', 'AvailableSlots'),
+                ('Kj2_WorkerSessions', 'ExecutionLane'),
+                ('Kj2_WorkerSessions', 'ConsumerGroup'),
                 ('Kj2_JobSchedules', 'ClaimToken'),
+                ('Kj2_JobSchedules', 'ExecutionLane'),
+                ('Kj2_JobSchedules', 'ConsumerGroup'),
+                ('Kj2_JobSchedules', 'OrderingMode'),
                 ('Kj2_Outbox', 'EventType'),
-                ('Kj2_Outbox', 'ClaimToken')) AS expected(table_name, column_name)
+                ('Kj2_Outbox', 'ExecutionLane'),
+                ('Kj2_Outbox', 'OrderingMode'),
+                ('Kj2_Outbox', 'ClaimToken'),
+                ('Kj2_Outbox', 'PartitionKey')) AS expected(table_name, column_name)
             LEFT JOIN information_schema.columns columns
                 ON columns.table_schema = current_schema()
                AND lower(columns.table_name) = lower(expected.table_name)

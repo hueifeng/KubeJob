@@ -49,15 +49,20 @@ Current instruments include:
 ```text
 kubejob.job.submissions
 kubejob.job.idempotency_hits
+kubejob.control_plane.admission.duration
+kubejob.control_plane.lease_reaper.reclaimed
+kubejob.control_plane.outbox.publish_lag
 kubejob.worker.active_attempts
 kubejob.worker.handler.duration
 kubejob.storage.database_gate_wait.duration
 kubejob.rabbitmq.execution.published
 kubejob.rabbitmq.execution.publish_failures
 kubejob.rabbitmq.execution.publish.duration
+kubejob.rabbitmq.execution.broker_retries
+kubejob.rabbitmq.execution.reconciliation_handoffs
 ```
 
-Duration units are seconds (`s`). `kubejob.worker.active_attempts` is an `UpDownCounter`; its start and finish tags are deliberately identical.
+Duration units are seconds (`s`). `kubejob.worker.active_attempts` is an `UpDownCounter`; its start and finish tags are deliberately identical. `kubejob.control_plane.admission.duration` is a histogram tagged with `kubejob.admission.status` (e.g. `admitted`, `run_not_found`, `run_already_running`); `kubejob.control_plane.outbox.publish_lag` is a histogram of the elapsed time between an outbox row becoming available and its publication to a transport. `kubejob.control_plane.lease_reaper.reclaimed`, `kubejob.rabbitmq.execution.broker_retries`, and `kubejob.rabbitmq.execution.reconciliation_handoffs` are monotonic counters (`{attempt}` / `{message}`).
 
 ## Cardinality and sensitive data
 

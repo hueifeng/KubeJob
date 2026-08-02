@@ -32,7 +32,6 @@ public sealed class DefaultJobClient : IJobClient
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
 
         if (job.IsEmpty)
         {
@@ -45,16 +44,60 @@ public sealed class DefaultJobClient : IJobClient
             new EnqueueJobRequest(
                 job.Value,
                 payloadJson,
-                options.Queue,
+                options.ResolveQueue(job.Value),
                 options.Priority,
                 options.NotBefore?.ToUniversalTime(),
                 options.IdempotencyKey,
                 options.ConcurrencyKey,
                 options.MaxAttempts,
-                timeoutSeconds),
+                timeoutSeconds,
+                RetryPolicy: options.RetryPolicy,
+                Continuation: options.Continuation,
+                Compensation: options.Compensation),
             cancellationToken);
 
         return receipt.Handle;
+    }
+
+    public async ValueTask<IReadOnlyList<JobHandle>> EnqueueBatchAsync<TPayload>(
+        JobKey<TPayload> job,
+        IReadOnlyList<(TPayload Payload, JobEnqueueOptions? Options)> batch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        if (batch.Count == 0) return Array.Empty<JobHandle>();
+        if (job.IsEmpty)
+            throw new ArgumentException("The job key must be initialized.", nameof(job));
+
+        var requests = new EnqueueJobRequest[batch.Count];
+        for (var i = 0; i < batch.Count; i++)
+        {
+            var (payload, options) = batch[i];
+            var opts = options ?? new JobEnqueueOptions();
+            var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
+            var timeoutSeconds = checked((int)Math.Ceiling(opts.Timeout.TotalSeconds));
+            requests[i] = new EnqueueJobRequest(
+                job.Value,
+                payloadJson,
+                opts.ResolveQueue(job.Value),
+                opts.Priority,
+                opts.NotBefore?.ToUniversalTime(),
+                opts.IdempotencyKey,
+                opts.ConcurrencyKey,
+                opts.MaxAttempts,
+                timeoutSeconds,
+                RetryPolicy: opts.RetryPolicy,
+                Continuation: opts.Continuation,
+                Compensation: opts.Compensation);
+        }
+
+        var receipts = await _controlPlane.SubmitBatchAsync(requests, cancellationToken);
+        var handles = new JobHandle[receipts.Count];
+        for (var i = 0; i < receipts.Count; i++)
+        {
+            handles[i] = receipts[i].Handle;
+        }
+        return handles;
     }
 
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(

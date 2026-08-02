@@ -22,7 +22,9 @@
     <Compile Include="..\KubeJob.Server\Runtime\JobRuntimeHostedServices.cs" Link="Runtime\JobRuntimeHostedServices.cs" />
     <Compile Include="..\KubeJob.Server\Runtime\JobRuntimeOptions.cs" Link="Runtime\JobRuntimeOptions.cs" />
     <Compile Include="..\KubeJob.Server\Runtime\JobSubmissionIdentity.cs" Link="Runtime\JobSubmissionIdentity.cs" />
+    <Compile Include="..\KubeJob.Server\Runtime\OutboxPublisherSignal.cs" Link="Runtime\OutboxPublisherSignal.cs" />
     <Compile Include="..\KubeJob.Server\Runtime\QueueRouting.cs" Link="Runtime\QueueRouting.cs" />
+    <Compile Include="..\KubeJob.Server\Runtime\TerminalActionPlanner.cs" Link="Runtime\TerminalActionPlanner.cs" />
     <Compile Include="..\KubeJob.Server\Runtime\ScheduleReconciliationPlanner.cs" Link="Runtime\ScheduleReconciliationPlanner.cs" />
     <Compile Include="..\KubeJob.Server\Runtime\ScheduleReconcilerService.cs" Link="Runtime\ScheduleReconcilerService.cs" />
   </ItemGroup>

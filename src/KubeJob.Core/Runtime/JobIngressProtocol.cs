@@ -24,3 +24,14 @@ public interface IJobMessageIngress
         JobIngressMessage message,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Batch-capable form of <see cref="IJobMessageIngress"/>. Results preserve
+/// input order and are returned only after every accepted Run is durable.
+/// </summary>
+public interface IJobMessageIngressBatch : IJobMessageIngress
+{
+    ValueTask<IReadOnlyList<JobIngressResult>> SubmitBatchAsync(
+        IReadOnlyList<JobIngressMessage> messages,
+        CancellationToken cancellationToken = default);
+}

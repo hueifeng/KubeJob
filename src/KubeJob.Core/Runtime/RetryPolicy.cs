@@ -2,8 +2,20 @@ namespace KubeJob.Core.Runtime;
 
 public enum BackoffStrategy
 {
+    /// <summary>Same delay for every retry.</summary>
     Fixed,
-    Exponential
+
+    /// <summary>Delay = BaseDelay * Multiplier^(attempt-1)</summary>
+    Exponential,
+
+    /// <summary>Delay = BaseDelay * attempt</summary>
+    Linear,
+
+    /// <summary>
+    /// Exponential with full jitter: delay = random(0, exponential_delay).
+    /// Recommended by AWS Architecture Blog for reducing thundering-herd effects.
+    /// </summary>
+    ExponentialWithJitter
 }
 
 public sealed record RetryPolicy(
@@ -24,21 +36,39 @@ public sealed record RetryPolicy(
             BackoffStrategy.Fixed => BaseDelay,
             BackoffStrategy.Exponential => TimeSpanFromSeconds(
                 BaseDelay.TotalSeconds * Math.Pow(Multiplier, Math.Max(0, attemptCount - 1))),
+            BackoffStrategy.Linear => TimeSpanFromSeconds(
+                BaseDelay.TotalSeconds * attemptCount),
+            BackoffStrategy.ExponentialWithJitter => AddFullJitter(
+                TimeSpanFromSeconds(
+                    BaseDelay.TotalSeconds * Math.Pow(Multiplier, Math.Max(0, attemptCount - 1))),
+                random),
             _ => throw new ArgumentOutOfRangeException(nameof(Strategy), Strategy, null)
         };
+
+        // Apply proportional jitter when configured (and not already using full jitter).
+        if (Strategy != BackoffStrategy.ExponentialWithJitter && JitterRatio > 0)
+        {
+            var jitterFactor = 1 + JitterRatio * (random.NextDouble() * 2 - 1);
+            delay = TimeSpanFromSeconds(delay.TotalSeconds * jitterFactor);
+        }
 
         if (delay > MaxDelay)
         {
             delay = MaxDelay;
         }
 
-        if (JitterRatio > 0)
-        {
-            var jitter = delay.TotalSeconds * JitterRatio * ((random.NextDouble() * 2) - 1);
-            delay = TimeSpanFromSeconds(Math.Max(0, delay.TotalSeconds + jitter));
-        }
-
         return delay;
+    }
+
+    /// <summary>
+    /// Full jitter: random delay between 0 and <paramref name="baseDelay"/>.
+    /// Reference: <see href="https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"/>
+    /// </summary>
+    private static TimeSpan AddFullJitter(TimeSpan baseDelay, Random random)
+    {
+        var totalMs = (long)baseDelay.TotalMilliseconds;
+        if (totalMs <= 0) return TimeSpan.Zero;
+        return TimeSpan.FromMilliseconds(random.NextInt64(0, totalMs + 1));
     }
 
     public void Validate()
@@ -53,7 +83,8 @@ public sealed record RetryPolicy(
             throw new InvalidOperationException("RetryPolicy.MaxDelay cannot be less than BaseDelay.");
         }
 
-        if (Strategy == BackoffStrategy.Exponential && Multiplier < 1)
+        if ((Strategy == BackoffStrategy.Exponential || Strategy == BackoffStrategy.ExponentialWithJitter)
+            && Multiplier < 1)
         {
             throw new InvalidOperationException("RetryPolicy.Multiplier must be at least 1 for Exponential backoff.");
         }

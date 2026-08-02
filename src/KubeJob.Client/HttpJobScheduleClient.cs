@@ -33,13 +33,12 @@ public sealed class HttpJobScheduleClient : IJobScheduleClient
         }
 
         options ??= new CronScheduleOptions();
-        options.Validate();
         var request = new UpsertCronScheduleRequest(
             job.Value,
             JsonSerializer.Serialize(payload, SerializerOptions),
             cronExpression,
             options.TimeZoneId,
-            options.Queue,
+            options.ResolveQueue(job.Value),
             options.Priority,
             options.MisfirePolicy,
             options.ConcurrencyPolicy,

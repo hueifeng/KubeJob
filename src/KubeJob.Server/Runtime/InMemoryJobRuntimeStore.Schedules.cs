@@ -203,6 +203,11 @@ public sealed partial class InMemoryJobRuntimeStore
                         JobKey = schedule.JobKey,
                         PayloadJson = schedule.PayloadJson,
                         Queue = schedule.Queue,
+                        DeliveryProfile = schedule.DeliveryProfile,
+                        ExecutionLane = schedule.ExecutionLane,
+                        ConsumerGroup = schedule.ConsumerGroup,
+                        TransportId = schedule.TransportId,
+                        OrderingMode = schedule.OrderingMode,
                         Priority = schedule.Priority,
                         Phase = JobPhase.Pending,
                         AvailableAt = now,
@@ -211,7 +216,8 @@ public sealed partial class InMemoryJobRuntimeStore
                         TimeoutSeconds = schedule.TimeoutSeconds,
                         IdempotencyKey = command.IdempotencyKey,
                         ScheduleId = schedule.Id,
-                        ScheduledFor = scheduledFor
+                        ScheduledFor = scheduledFor,
+                        OrderingSequence = ++_nextOrderingSequence
                     };
 
                     if (!_runs.TryAdd(run.Id, run))
@@ -266,6 +272,11 @@ public sealed partial class InMemoryJobRuntimeStore
         CronExpression = source.CronExpression,
         TimeZoneId = source.TimeZoneId,
         Queue = source.Queue,
+        DeliveryProfile = source.DeliveryProfile,
+        ExecutionLane = source.ExecutionLane,
+        ConsumerGroup = source.ConsumerGroup,
+        TransportId = source.TransportId,
+        OrderingMode = source.OrderingMode,
         Priority = source.Priority,
         MisfirePolicy = source.MisfirePolicy,
         ConcurrencyPolicy = source.ConcurrencyPolicy,

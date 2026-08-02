@@ -133,12 +133,15 @@ public sealed class RabbitMqIngressIntegrationTests
             using var dispatcher = new RabbitMqExecutionDispatcher(
                 Microsoft.Extensions.Options.Options.Create(options));
             var action = async () => await dispatcher.PublishAsync(
-                new ExecutionEnvelope(
-                    ExecutionEnvelope.CurrentSchemaVersion,
-                    $"event-{suffix}",
-                    "missing-queue",
-                    "default",
-                    $"run-{suffix}"),
+                new ExecutionEnvelope
+                {
+                    SchemaVersion = ExecutionEnvelope.CurrentSchemaVersion,
+                    EventId = $"event-{suffix}",
+                    Queue = "missing-queue",
+                    ExecutionLane = "default",
+                    ConsumerGroup = options.ConsumerGroup,
+                    RunId = $"run-{suffix}"
+                },
                 CancellationToken.None);
 
             var exception = await action.Should().ThrowAsync<IOException>();

@@ -20,7 +20,7 @@ public sealed class JobControlPlane
     private readonly IJobSubmissionStore _submissions;
     private readonly IJobQueryStore _queries;
     private readonly IQueueRouter _queueRouter;
-    private readonly IExecutionGroupResolver _executionGroupResolver;
+    private readonly OutboxPublisherSignal _wake;
     private readonly JobRuntimeOptions _options;
     private readonly KubeJobControlPlaneMetrics? _metrics;
 
@@ -28,14 +28,15 @@ public sealed class JobControlPlane
         IJobSubmissionStore submissions,
         IJobQueryStore queries,
         IQueueRouter queueRouter,
-        IExecutionGroupResolver executionGroupResolver,
         IOptions<JobRuntimeOptions> options,
+        OutboxPublisherSignal wake,
         KubeJobControlPlaneMetrics? metrics = null)
     {
+        ArgumentNullException.ThrowIfNull(wake);
         _submissions = submissions;
         _queries = queries;
         _queueRouter = queueRouter;
-        _executionGroupResolver = executionGroupResolver;
+        _wake = wake;
         _options = options.Value;
         _metrics = metrics;
     }
@@ -46,20 +47,25 @@ public sealed class JobControlPlane
     {
         ValidateSubmission(request);
         using var activity = KubeJobTelemetry.ActivitySource.StartActivity("kubejob.submit");
+
         var route = _queueRouter.Resolve(request.Queue);
+        ValidateOrdering(request, route.Target);
 
         var result = await _submissions.SubmitAsync(
             new SubmitJobCommand(
                 request.JobKey,
                 request.PayloadJson,
-                request.Queue,
+                route.Queue,
                 request.Priority,
                 (request.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime(),
                 request.IdempotencyKey,
                 request.ConcurrencyKey,
                 request.MaxAttempts,
                 request.TimeoutSeconds,
-                DeliveryTarget: route.Target),
+                DeliveryTarget: route.Target,
+                RetryPolicy: request.RetryPolicy,
+                Continuation: request.Continuation,
+                Compensation: request.Compensation),
             cancellationToken);
 
         _metrics?.SubmissionCompleted(result.Existing);
@@ -68,7 +74,76 @@ public sealed class JobControlPlane
             activity.SetTag("kubejob.idempotency.existing", result.Existing);
         }
 
+        // Wake the in-process OutboxPublisherService so the new row is
+        // claimed on the next dispatch iteration instead of waiting for the
+        // OutboxPollInterval tick. Idempotent dedupes (Existing == true)
+        // don't enqueue a new outbox row, so they don't need to wake.
+        if (!result.Existing)
+        {
+            _wake.Signal();
+        }
+
         return new JobSubmissionReceipt(new JobHandle(result.Run.Id), result.Existing);
+    }
+
+    public async ValueTask<IReadOnlyList<JobSubmissionReceipt>> SubmitBatchAsync(
+        IReadOnlyList<EnqueueJobRequest> requests,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        if (requests.Count == 0)
+        {
+            return Array.Empty<JobSubmissionReceipt>();
+        }
+
+        var commands = new SubmitJobCommand[requests.Count];
+        for (var index = 0; index < requests.Count; index++)
+        {
+            var request = requests[index];
+            ValidateSubmission(request);
+            var route = _queueRouter.Resolve(request.Queue);
+            ValidateOrdering(request, route.Target);
+            commands[index] = new SubmitJobCommand(
+                request.JobKey,
+                request.PayloadJson,
+                route.Queue,
+                request.Priority,
+                (request.NotBefore ?? DateTimeOffset.UtcNow).ToUniversalTime(),
+                request.IdempotencyKey,
+                request.ConcurrencyKey,
+                request.MaxAttempts,
+                request.TimeoutSeconds,
+                DeliveryTarget: route.Target,
+                RetryPolicy: request.RetryPolicy,
+                Continuation: request.Continuation,
+                Compensation: request.Compensation);
+        }
+
+        using var activity = KubeJobTelemetry.ActivitySource.StartActivity("kubejob.submit_batch");
+        var results = await _submissions.SubmitBatchAsync(commands, cancellationToken);
+        var receipts = new JobSubmissionReceipt[results.Count];
+        for (var index = 0; index < results.Count; index++)
+        {
+            var result = results[index];
+            _metrics?.SubmissionCompleted(result.Existing);
+            receipts[index] = new JobSubmissionReceipt(new JobHandle(result.Run.Id), result.Existing);
+        }
+
+        if (activity?.IsAllDataRequested == true)
+        {
+            activity.SetTag("kubejob.submit_batch.count", results.Count);
+        }
+
+        // Wake once per batch — coalescing in OutboxPublisherSignal means a
+        // single Signal() collapses any number of additional concurrent
+        // writers into one extra scan. Only signal if at least one result
+        // produced a new row.
+        if (results.Any(r => !r.Existing))
+        {
+            _wake.Signal();
+        }
+
+        return receipts;
     }
 
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(
@@ -94,7 +169,10 @@ public sealed class JobControlPlane
             if (run is not null
                 && _queueRouter.Resolve(run.Queue).Target.Profile == ExecutionDeliveryProfile.BrokerDispatch)
             {
-                group = _executionGroupResolver.Resolve(run.Queue);
+                // Use the group persisted on the Run at submission time. The
+                // routing config may have changed since; re-resolving here
+                // could fan the cancel marker out to the wrong group.
+                group = run.ConsumerGroup;
             }
         }
 
@@ -163,6 +241,17 @@ public sealed class JobControlPlane
             throw new ControlPlaneValidationException(
                 "invalid_job_payload",
                 "PayloadJson must contain valid JSON.");
+        }
+    }
+
+    private static void ValidateOrdering(EnqueueJobRequest request, DeliveryTarget target)
+    {
+        if (target.OrderingMode == ExecutionOrderingMode.KeyOrdered
+            && string.IsNullOrWhiteSpace(request.ConcurrencyKey))
+        {
+            throw new ControlPlaneValidationException(
+                "ordering_key_required",
+                "KeyOrdered queues require a non-empty ConcurrencyKey as the partition key.");
         }
     }
 

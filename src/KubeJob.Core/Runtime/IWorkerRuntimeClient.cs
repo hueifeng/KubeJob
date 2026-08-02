@@ -26,6 +26,16 @@ public interface IWorkerRuntimeClient
         AdmitExecutionRequest request,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Admits several envelopes in one claim transaction so the broker consumer
+    /// can amortize admission round trips across a batch instead of paying one
+    /// per envelope. Per-Run fencing and ordering gates are unchanged; results
+    /// are returned in input order.
+    /// </summary>
+    ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
+        AdmitExecutionBatchRequest request,
+        CancellationToken cancellationToken);
+
     ValueTask<RenewLeasesResponse> RenewLeasesAsync(
         RenewLeasesRequest request,
         CancellationToken cancellationToken);

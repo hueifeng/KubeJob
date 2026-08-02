@@ -26,6 +26,7 @@ public sealed partial class InMemoryJobRuntimeStore :
     private readonly Dictionary<string, JobScheduleRecord> _schedules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _idempotency = new(StringComparer.Ordinal);
     private readonly Dictionary<string, OutboxMessageRecord> _outbox = new(StringComparer.Ordinal);
+    private long _nextOrderingSequence;
 
     private bool TryGetSession(
         string workerId,
@@ -49,15 +50,59 @@ public sealed partial class InMemoryJobRuntimeStore :
             && string.Equals(other.ConcurrencyKey, candidate.ConcurrencyKey, StringComparison.Ordinal));
     }
 
+    private bool HasOrderingPredecessor(JobRunRecord candidate) =>
+        candidate.OrderingMode == ExecutionOrderingMode.KeyOrdered
+        && !string.IsNullOrWhiteSpace(candidate.ConcurrencyKey)
+        && _runs.Values.Any(other =>
+            !string.Equals(other.Id, candidate.Id, StringComparison.Ordinal)
+            && other.OrderingMode == ExecutionOrderingMode.KeyOrdered
+            && string.Equals(other.Queue, candidate.Queue, StringComparison.Ordinal)
+            && string.Equals(other.ExecutionLane, candidate.ExecutionLane, StringComparison.Ordinal)
+            && string.Equals(other.ConcurrencyKey, candidate.ConcurrencyKey, StringComparison.Ordinal)
+            && !IsTerminal(other.Phase)
+            && other.OrderingSequence < candidate.OrderingSequence);
+
+    /// <summary>
+    /// For StrictFifo lanes: the entire queue (or lane) is a single logical
+    /// worker. A new run is NOT admitted while any prior run on the same
+    /// queue/lane is inflight (not terminal). This is a coarser gate than
+    /// KeyOrdered: no per-key filtering, just "any inflight on this queue/lane".
+    /// </summary>
+    private bool HasStrictFifoPredecessor(JobRunRecord candidate) =>
+        candidate.OrderingMode == ExecutionOrderingMode.StrictFifo
+        && _runs.Values.Any(other =>
+            !string.Equals(other.Id, candidate.Id, StringComparison.Ordinal)
+            && string.Equals(other.Queue, candidate.Queue, StringComparison.Ordinal)
+            && string.Equals(other.ExecutionLane, candidate.ExecutionLane, StringComparison.Ordinal)
+            && !IsTerminal(other.Phase)
+            && other.OrderingSequence < candidate.OrderingSequence);
+
+    /// <summary>
+    /// True when a StrictFifo lane has any inflight run — used to detect
+    /// lane blockage for metrics and dashboard.
+    /// </summary>
+    private int CountStrictFifoBlockers(string queue, long candidateSequence) =>
+        _runs.Values.Count(other =>
+            other.Queue == queue
+            && other.OrderingMode == ExecutionOrderingMode.StrictFifo
+            && !IsTerminal(other.Phase)
+            && other.OrderingSequence < candidateSequence);
+
     private void AddWorkAvailableOutbox(JobRunRecord run, DateTimeOffset now)
     {
         var message = new OutboxMessageRecord
         {
             Id = NewId(),
             Queue = run.Queue,
-            DeliveryProfile = run.DeliveryProfile,
             ExecutionLane = run.ExecutionLane,
+            DeliveryProfile = run.DeliveryProfile,
+            ConsumerGroup = run.ConsumerGroup,
             TransportId = run.TransportId,
+            OrderingMode = run.OrderingMode,
+            // PartitionKey carries the run's ConcurrencyKey so the transport
+            // can co-locate same-key runs on one physical lane queue. Null for
+            // un-keyed runs resolves to lane 0.
+            PartitionKey = run.ConcurrencyKey,
             EventType = OutboxEventTypes.WorkAvailable,
             PayloadJson = JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }),
             AvailableAt = run.AvailableAt > now ? run.AvailableAt : now,

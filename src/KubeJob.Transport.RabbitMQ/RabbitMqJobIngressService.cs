@@ -63,6 +63,9 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         {
             Uri = new Uri(_options.ConnectionString, UriKind.Absolute),
             DispatchConsumersAsync = true,
+            ConsumerDispatchConcurrency = _options.ConsumerDispatchConcurrency == 0
+                ? Math.Min(_options.PrefetchCount, (ushort)_options.SubmissionBatchSize)
+                : _options.ConsumerDispatchConcurrency,
             AutomaticRecoveryEnabled = true,
             TopologyRecoveryEnabled = true
         };
@@ -70,6 +73,10 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         using var connection = factory.CreateConnection("KubeJob.RabbitMq.Ingress");
         using var channel = connection.CreateModel();
         using var connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        await using var batcher = new JobIngressMicroBatcher(
+            _ingress,
+            _options.SubmissionBatchSize,
+            _options.SubmissionBatchWait);
         channel.ExchangeDeclare(
             exchange: _options.ExchangeName,
             type: ExchangeType.Topic,
@@ -102,7 +109,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
         var consumer = new AsyncEventingBasicConsumer(channel);
         consumer.Received += async (_, delivery) =>
         {
-            await ProcessDeliveryAsync(channel, delivery, connectionLifetime.Token);
+            await ProcessDeliveryAsync(channel, batcher, delivery, connectionLifetime.Token);
         };
         channel.BasicConsume(
             queue: _options.QueueName,
@@ -131,6 +138,7 @@ public sealed class RabbitMqJobIngressService : BackgroundService
 
     private async Task ProcessDeliveryAsync(
         IModel channel,
+        JobIngressMicroBatcher batcher,
         BasicDeliverEventArgs delivery,
         CancellationToken stoppingToken)
     {
@@ -153,9 +161,10 @@ public sealed class RabbitMqJobIngressService : BackgroundService
                 IdempotencyKey: null,
                 envelope.ConcurrencyKey,
                 envelope.MaxAttempts,
-                envelope.TimeoutSeconds);
+                envelope.TimeoutSeconds,
+                RetryPolicy: null);
 
-            var result = await _ingress.SubmitAsync(
+            var result = await batcher.SubmitAsync(
                 new JobIngressMessage(_options.Source, messageId, request),
                 stoppingToken);
             Ack(channel, delivery.DeliveryTag);

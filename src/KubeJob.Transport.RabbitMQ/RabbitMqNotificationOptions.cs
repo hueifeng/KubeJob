@@ -1,3 +1,4 @@
+using KubeJob.Core.Queues;
 using System.Text;
 
 namespace KubeJob.Transport.RabbitMQ;
@@ -68,8 +69,14 @@ public sealed class RabbitMqNotificationOptions
 
     internal string GetConsumerQueueName(string logicalQueue)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(logicalQueue);
-        var segment = RabbitMqExecutionOptions.SanitizeSegment(logicalQueue);
-        return $"{ConsumerQueuePrefix}.{ConsumerGroup}.{segment}.queue";
+        logicalQueue = LogicalQueueName.Normalize(logicalQueue, nameof(logicalQueue));
+        var name = $"{ConsumerQueuePrefix}.{ConsumerGroup}.{logicalQueue}.queue";
+        if (Encoding.UTF8.GetByteCount(name) >= 255)
+        {
+            throw new InvalidOperationException(
+                $"RabbitMQ notification queue names must be shorter than 255 UTF-8 bytes; got '{name}'.");
+        }
+
+        return name;
     }
 }

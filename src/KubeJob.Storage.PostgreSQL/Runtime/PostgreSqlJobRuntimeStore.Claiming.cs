@@ -31,6 +31,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var session = await connection.QuerySingleOrDefaultAsync<ClaimSessionRow>(new CommandDefinition(@"
             SELECT MaxConcurrency,
                    State,
+                   ExecutionLane,
+                   ConsumerGroup,
                    Queues::text AS QueuesJson,
                    Capabilities::text AS CapabilitiesJson
             FROM Kj2_WorkerSessions
@@ -42,7 +44,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken));
 
-        if (session is null || session.State != WorkerSessionState.Ready)
+        if (session is null
+            || session.State != WorkerSessionState.Ready
+            || !string.Equals(session.ConsumerGroup, request.ConsumerGroup, StringComparison.Ordinal)
+            || !string.Equals(session.ExecutionLane, request.ExecutionLane, StringComparison.Ordinal))
         {
             await transaction.RollbackAsync(cancellationToken);
             return Array.Empty<ClaimedJob>();
@@ -118,18 +123,54 @@ public sealed partial class PostgreSqlJobRuntimeStore
             FROM Kj2_JobRuns r
             WHERE r.Phase = @Pending
               AND r.CancelRequested = FALSE
+              AND r.ExecutionLane = @ExecutionLane
+              AND r.ConsumerGroup = @ConsumerGroup
               AND r.AttemptCount < r.MaxAttempts
               AND r.AvailableAt <= @Now
               AND r.Queue = ANY(@Queues)
               AND r.JobKey = ANY(@Capabilities)
+              AND (r.OrderingMode <> @KeyOrdered
+                   OR r.ConcurrencyKey IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1
+                       FROM Kj2_JobRuns predecessor
+                       WHERE predecessor.Queue = r.Queue
+                         AND predecessor.ConcurrencyKey = r.ConcurrencyKey
+                         AND predecessor.OrderingMode = @KeyOrdered
+                         AND predecessor.Phase IN (@Pending, @Running)
+                         AND predecessor.OrderingSequence < r.OrderingSequence))
+              AND (r.OrderingMode <> @StrictFifo
+                   OR NOT EXISTS (
+                       SELECT 1
+                       FROM Kj2_JobRuns predecessor
+                       WHERE predecessor.Queue = r.Queue
+                         AND predecessor.OrderingMode = @StrictFifo
+                         AND predecessor.Phase IN (@Pending, @Running)
+                         AND predecessor.OrderingSequence < r.OrderingSequence))
 {runFilter}
+            -- Soft ordering guarantee: OrderingSequence is assigned by nextval
+            -- at INSERT time while READ COMMITTED visibility applies at COMMIT
+            -- time. A run whose transaction commits late can therefore be
+            -- admitted after a later-sequenced run was already claimed (two
+            -- concurrent runs on one StrictFifo lane, or inverted KeyOrdered
+            -- order) when the earlier submission's transaction spans the later
+            -- submission's claim. The window is the commit gap between the two
+            -- submissions; the in-memory store serializes submissions and
+            -- claims under one lock and cannot exhibit it. Do not ""fix"" this
+            -- by reading uncommitted rows: ordering must never depend on data
+            -- the submitting transaction may still roll back.
             ORDER BY r.Priority DESC, r.AvailableAt, r.CreatedAt, r.Id
             FOR UPDATE SKIP LOCKED
             LIMIT @CandidateLimit;",
             new
             {
                 Pending = (int)JobPhase.Pending,
+                Running = (int)JobPhase.Running,
+                KeyOrdered = (int)ExecutionOrderingMode.KeyOrdered,
+                StrictFifo = (int)ExecutionOrderingMode.StrictFifo,
                 Now = now,
+                ExecutionLane = request.ExecutionLane,
+                ConsumerGroup = request.ConsumerGroup,
                 Queues = allowedQueues,
                 Capabilities = allowedCapabilities,
                 RunIds = request.RunIds?.ToArray(),
@@ -308,7 +349,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             run.JobKey,
             run.PayloadJson,
             run.Queue,
-            run.TimeoutSeconds);
+            run.TimeoutSeconds,
+            run.OrderingMode,
+            run.AvailableAt);
     }
 
     private static async ValueTask<List<ClaimedJob>> ClaimBatchAsync(
@@ -417,7 +460,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 item.Run.JobKey,
                 item.Run.PayloadJson,
                 item.Run.Queue,
-                item.Run.TimeoutSeconds));
+                item.Run.TimeoutSeconds,
+                item.Run.OrderingMode,
+                item.Run.AvailableAt));
         }
 
         return claimed;
@@ -445,13 +490,39 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return false;
         }
 
-        return !runningConcurrencyKeys.Contains(run.ConcurrencyKey);
+        if (runningConcurrencyKeys.Contains(run.ConcurrencyKey))
+        {
+            return false;
+        }
+
+        // The runningConcurrencyKeys snapshot was taken before this lock was
+        // acquired, so a concurrent claim of the same key may have committed
+        // in between and released the advisory lock. Holding the lock now
+        // guarantees no other claimant is in flight, so a committed Running
+        // row is the only remaining overlap to detect; re-verify instead of
+        // trusting the stale snapshot.
+        var runningNow = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT EXISTS (
+                SELECT 1
+                FROM Kj2_JobRuns
+                WHERE ConcurrencyKey = @ConcurrencyKey
+                  AND Phase = @Running);",
+            new
+            {
+                run.ConcurrencyKey,
+                Running = (int)JobPhase.Running
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        return !runningNow;
     }
 
     private sealed class ClaimSessionRow
     {
         public int MaxConcurrency { get; set; }
         public WorkerSessionState State { get; set; }
+        public string ExecutionLane { get; set; } = "default";
+        public string ConsumerGroup { get; set; } = "default";
         public string QueuesJson { get; set; } = "[]";
         public string CapabilitiesJson { get; set; } = "[]";
     }

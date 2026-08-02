@@ -1,6 +1,7 @@
 using System.Data;
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Runtime;
@@ -47,6 +48,15 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         // Dapper otherwise falls back to Convert.ChangeType, which cannot
         // convert DateTime to DateTimeOffset for scalar queries.
         SqlMapper.AddTypeHandler(UtcDateTimeOffsetHandler.Instance);
+
+        // JSONB columns are named *Json while their CLR properties are not
+        // (ContinuationJson -> JobRunRecord.Continuation). Dapper's default
+        // name matching cannot pair them, so every read path returned null
+        // for these fields. The type map below strips the suffix and the
+        // handlers decode the JSON cells.
+        SqlMapper.SetTypeMap(typeof(JobRunRecord), new JsonSuffixTypeMap());
+        SqlMapper.AddTypeHandler(ContinuationJsonHandler.Instance);
+        SqlMapper.AddTypeHandler(CompensationJsonHandler.Instance);
     }
 
     public PostgreSqlJobRuntimeStore(NpgsqlDataSource dataSource)
@@ -133,26 +143,30 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         string payloadJson,
         DateTimeOffset availableAt,
         CancellationToken cancellationToken,
-        DeliveryTarget? deliveryTarget = null)
+        DeliveryTarget? deliveryTarget = null,
+        string? partitionKey = null)
     {
         var target = deliveryTarget
-            ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null);
+            ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null, "default");
         target.Validate();
         var command = new CommandDefinition(@"
             INSERT INTO Kj2_Outbox
-                (Id, Queue, DeliveryProfile, ExecutionLane, TransportId, EventType, PayloadJson, State, PublishAttempts,
+                (Id, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode, PartitionKey, EventType, PayloadJson, State, PublishAttempts,
                  AvailableAt, CreatedAt)
             VALUES
-                (@Id, @Queue, @DeliveryProfile, @ExecutionLane, @TransportId, @EventType, CAST(@PayloadJson AS jsonb),
+                (@Id, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode, @PartitionKey, @EventType, CAST(@PayloadJson AS jsonb),
                  @State, 0, GREATEST(@AvailableAt, clock_timestamp()),
                  clock_timestamp());",
             new
             {
                 Id = NewId(),
                 Queue = queue,
-                DeliveryProfile = (int)target.Profile,
                 target.ExecutionLane,
+                DeliveryProfile = (int)target.Profile,
+                target.ConsumerGroup,
                 target.TransportId,
+                OrderingMode = (int)target.OrderingMode,
+                PartitionKey = partitionKey,
                 EventType = eventType,
                 PayloadJson = payloadJson,
                 State = (int)OutboxDeliveryState.Pending,
@@ -198,6 +212,76 @@ public sealed partial class PostgreSqlJobRuntimeStore :
             transaction,
             cancellationToken: cancellationToken);
         await connection.ExecuteAsync(command);
+    }
+
+    /// <summary>
+    /// Maps <c>*Json</c> columns to their unsuffixed CLR properties
+    /// (e.g. <c>ContinuationJson</c> → <see cref="JobRunRecord.Continuation"/>),
+    /// which Dapper's default name matching cannot do. JSON cell decoding is
+    /// handled by the per-type handlers.
+    /// </summary>
+    private sealed class JsonSuffixTypeMap : SqlMapper.ITypeMap
+    {
+        private readonly DefaultTypeMap _inner = new(typeof(JobRunRecord));
+
+        public ConstructorInfo? FindConstructor(string[] names, Type[] types) =>
+            _inner.FindConstructor(names, types);
+
+        public ConstructorInfo? FindExplicitConstructor() =>
+            _inner.FindExplicitConstructor();
+
+        public SqlMapper.IMemberMap? GetConstructorParameter(ConstructorInfo constructor, string columnName) =>
+            _inner.GetConstructorParameter(constructor, columnName);
+
+        public SqlMapper.IMemberMap? GetMember(string columnName)
+        {
+            var member = _inner.GetMember(columnName);
+            if (member is not null)
+            {
+                return member;
+            }
+
+            // PostgreSQL folds unquoted identifiers to lowercase, so the raw
+            // column name is "continuationjson" rather than "ContinuationJson".
+            if (columnName.EndsWith("Json", StringComparison.OrdinalIgnoreCase))
+            {
+                return _inner.GetMember(columnName[..^"Json".Length]);
+            }
+
+            return null;
+        }
+    }
+
+    private sealed class ContinuationJsonHandler : SqlMapper.TypeHandler<Continuation>
+    {
+        public static ContinuationJsonHandler Instance { get; } = new();
+
+        public override Continuation Parse(object value) =>
+            JsonSerializer.Deserialize<Continuation>(
+                (string)value,
+                SerializerOptions)!;
+
+        public override void SetValue(IDbDataParameter parameter, Continuation value)
+        {
+            parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
+            parameter.DbType = DbType.String;
+        }
+    }
+
+    private sealed class CompensationJsonHandler : SqlMapper.TypeHandler<Compensation>
+    {
+        public static CompensationJsonHandler Instance { get; } = new();
+
+        public override Compensation Parse(object value) =>
+            JsonSerializer.Deserialize<Compensation>(
+                (string)value,
+                SerializerOptions)!;
+
+        public override void SetValue(IDbDataParameter parameter, Compensation value)
+        {
+            parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
+            parameter.DbType = DbType.String;
+        }
     }
 
     private sealed class UtcDateTimeOffsetHandler : SqlMapper.TypeHandler<DateTimeOffset>

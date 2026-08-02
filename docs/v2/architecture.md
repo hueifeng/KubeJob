@@ -107,6 +107,19 @@ The PostgreSQL claim transaction:
 No central in-memory scheduler is required, and multiple control-plane replicas
 may claim concurrently.
 
+## Key-ordered queues
+
+Queues default to `Parallel`. A deployment may set a queue's
+`QueueDeliveryOptions.Queues[queue].OrderingMode` to `KeyOrdered`; every submission to that queue
+must then provide `ConcurrencyKey`. PostgreSQL assigns each Run an immutable
+`OrderingSequence` when it is persisted. A claim may execute a key-ordered Run
+only when no non-terminal earlier Run with the same queue and key exists.
+
+This is a durable ordering gate: broker prefetch, redelivery, retry delay, and
+worker failover cannot allow a later Run to overtake its predecessor. Different
+keys remain fully parallel. A retry therefore blocks only its own key, rather
+than the whole logical queue.
+
 ## Completion fencing
 
 A completion is accepted only when all durable identity and ownership values
@@ -119,7 +132,16 @@ therefore becomes a harmless lookup of an already terminal Run.
 
 A Worker whose heartbeat is rejected stops claiming, cancels its local Attempts,
 and fails its hosted service so the process supervisor can restart it with a new
-SessionId. It does not continue polling with a fenced identity.
+SessionId. It does not continue polling with a fenced identity. If a handler
+ignores cancellation, the worker still fails its hosted service after the
+configured drain timeout so the supervisor can interrupt it.
+
+Handlers must honor the `CancellationToken` in their `JobExecutionContext`.
+The token links the attempt timeout, the session fence, and worker drain.
+Delivery is at-least-once: an attempt whose handler ignores cancellation may
+keep running after its lease expires and the control plane has requeued the
+Run, so a later attempt can execute concurrently until the old handler returns
+or its process is restarted.
 
 ## Retry and lease recovery
 

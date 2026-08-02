@@ -84,6 +84,12 @@ public sealed class JobClientWaitTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public ValueTask<IReadOnlyList<JobHandle>> EnqueueBatchAsync<TPayload>(
+            JobKey<TPayload> job,
+            IReadOnlyList<(TPayload Payload, JobEnqueueOptions? Options)> batch,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public ValueTask<JobStatusSnapshot?> GetStatusAsync(
             string jobId,
             CancellationToken cancellationToken = default)

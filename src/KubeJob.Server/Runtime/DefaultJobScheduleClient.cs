@@ -32,7 +32,6 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
         }
 
         options ??= new CronScheduleOptions();
-        options.Validate();
         await _controlPlane.UpsertCronAsync(
             scheduleId,
             new UpsertCronScheduleRequest(
@@ -40,7 +39,7 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
                 JsonSerializer.Serialize(payload, SerializerOptions),
                 cronExpression,
                 options.TimeZoneId,
-                options.Queue,
+                options.ResolveQueue(job.Value),
                 options.Priority,
                 options.MisfirePolicy,
                 options.ConcurrencyPolicy,

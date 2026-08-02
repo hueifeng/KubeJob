@@ -16,6 +16,25 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
+    public ValueTask<IReadOnlyList<JobRunRecord>> GetRunsAsync(
+        IReadOnlyList<string> runIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(runIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (runIds.Count == 0)
+        {
+            return ValueTask.FromResult<IReadOnlyList<JobRunRecord>>(Array.Empty<JobRunRecord>());
+        }
+
+        lock (_gate)
+        {
+            var ids = runIds.ToHashSet(StringComparer.Ordinal);
+            return ValueTask.FromResult<IReadOnlyList<JobRunRecord>>(
+                _runs.Values.Where(run => ids.Contains(run.Id)).ToArray());
+        }
+    }
+
     public ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(
         string runId,
         CancellationToken cancellationToken)
@@ -193,36 +212,58 @@ public sealed partial class InMemoryJobRuntimeStore
 
         var pendingPublish = new List<OutboxPublication>(claimedBatch.Count);
 
-        foreach (var claimed in claimedBatch)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                FlushPublished(pendingPublish);
-                cancellationToken.ThrowIfCancellationRequested();
-            }
+        // Dispatch the whole claimed batch concurrently so broker confirms
+        // pipeline (per-slot locks are held only for BasicPublish, not the
+        // confirm wait). Per-message outcomes are inspected after Task.WhenAll;
+        // the in-memory mark phase takes the lock one row at a time.
+        var dispatchTasks = claimedBatch
+            .Select(claimed => DispatchToTaskAsync(claimed, dispatch, cancellationToken))
+            .ToArray();
 
-            try
+        try
+        {
+            await Task.WhenAll(dispatchTasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Task.WhenAll rethrows the first failure, but every task is now
+            // complete; classify each outcome below.
+        }
+
+        for (var index = 0; index < claimedBatch.Count; index++)
+        {
+            var claimed = claimedBatch[index];
+            var task = dispatchTasks[index];
+
+            if (task.IsCompletedSuccessfully)
             {
-                await dispatch(claimed, cancellationToken).ConfigureAwait(false);
                 pendingPublish.Add(new OutboxPublication(claimed.Id, claimed.ClaimToken!));
                 dispatched.Add(claimed.Id);
+                continue;
             }
-            catch (PermanentOutboxException ex)
+
+            var exception = task.IsFaulted
+                ? task.Exception!.GetBaseException()
+                : task.IsCanceled
+                    ? new OperationCanceledException(cancellationToken)
+                    : null;
+
+            if (exception is PermanentOutboxException permanent)
             {
                 await MarkAbandonedAsync(
                     new OutboxFailure(
                         claimed.Id,
                         claimed.ClaimToken!,
-                        ex.Message,
+                        permanent.Message,
                         DateTimeOffset.UtcNow),
                     CancellationToken.None);
                 abandoned.Add(claimed.Id);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            else
             {
-                // Worker is shutting down. Roll the claim back so a different
-                // publisher (or the next iteration) can pick it up.
-                FlushPublished(pendingPublish);
+                var error = exception is OperationCanceledException
+                    ? "publisher_canceled"
+                    : exception?.Message ?? "publisher_canceled";
                 lock (_gate)
                 {
                     if (_outbox.TryGetValue(claimed.Id, out var message)
@@ -230,25 +271,7 @@ public sealed partial class InMemoryJobRuntimeStore
                         && message.ClaimToken == claimed.ClaimToken)
                     {
                         message.State = OutboxDeliveryState.Failed;
-                        message.LastError = "publisher_canceled";
-                        message.AvailableAt = DateTimeOffset.UtcNow.Add(retryDelay);
-                        message.ClaimToken = null;
-                    }
-                }
-
-                failed.Add(claimed.Id);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                lock (_gate)
-                {
-                    if (_outbox.TryGetValue(claimed.Id, out var message)
-                        && message.State == OutboxDeliveryState.Publishing
-                        && message.ClaimToken == claimed.ClaimToken)
-                    {
-                        message.State = OutboxDeliveryState.Failed;
-                        message.LastError = ex.Message;
+                        message.LastError = error;
                         message.AvailableAt = DateTimeOffset.UtcNow.Add(retryDelay);
                         message.ClaimToken = null;
                     }
@@ -260,7 +283,28 @@ public sealed partial class InMemoryJobRuntimeStore
 
         FlushPublished(pendingPublish);
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         return new OutboxDispatchBatch(dispatched, failed, abandoned);
+    }
+
+    /// <summary>
+    /// Invokes the per-message dispatch callback inside an async entry point so a
+    /// synchronously thrown exception (e.g. <see cref="PermanentOutboxException"/>
+    /// from an unknown event type) is captured into the returned <see cref="Task"/>
+    /// instead of escaping the <see cref="Task.WhenAll(Task[])"/> setup. The
+    /// caller inspects each task's outcome to classify it as published, failed, or
+    /// abandoned.
+    /// </summary>
+    private static async Task DispatchToTaskAsync(
+        OutboxMessageRecord claimed,
+        Func<OutboxMessageRecord, CancellationToken, ValueTask> dispatch,
+        CancellationToken cancellationToken)
+    {
+        await dispatch(claimed, cancellationToken).ConfigureAwait(false);
     }
 
     private void FlushPublished(List<OutboxPublication> pendingPublish)

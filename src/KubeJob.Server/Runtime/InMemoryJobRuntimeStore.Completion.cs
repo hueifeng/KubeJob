@@ -57,22 +57,26 @@ public sealed partial class InMemoryJobRuntimeStore
             {
                 case JobAttemptOutcome.Succeeded:
                     MakeTerminal(run, JobPhase.Succeeded, now, null, null);
+                    FireContinuation(run, request.Outcome, now);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 case JobAttemptOutcome.PermanentFailure:
                     MakeTerminal(run, JobPhase.Failed, now, request.FailureCode, request.FailureMessage);
+                    FireContinuation(run, request.Outcome, now);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 case JobAttemptOutcome.RetryableFailure:
                 case JobAttemptOutcome.TimedOut:
                     if (run.AttemptCount < run.MaxAttempts)
                     {
-                        Requeue(run, now.Add(retryPolicy.ComputeDelay(run.AttemptCount)), request.FailureCode, request.FailureMessage);
+                        var effectivePolicy = run.RetryPolicy ?? retryPolicy;
+                        Requeue(run, now.Add(effectivePolicy.ComputeDelay(run.AttemptCount)), request.FailureCode, request.FailureMessage);
                         AddWorkAvailableOutbox(run, now);
                         return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, true));
                     }
 
                     MakeTerminal(run, JobPhase.Dead, now, request.FailureCode, request.FailureMessage);
+                    FireContinuation(run, request.Outcome, now);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 default:
@@ -153,5 +157,91 @@ public sealed partial class InMemoryJobRuntimeStore
 
             return ValueTask.FromResult(changed);
         }
+    }
+
+    /// <summary>
+    /// Enqueues a continuation or compensation job when a run reaches a
+    /// terminal state. This is a fire-and-forget operation; failures do not
+    /// affect the parent run's completion.
+    /// </summary>
+    private void FireContinuation(
+        JobRunRecord run,
+        JobAttemptOutcome outcome,
+        DateTimeOffset now)
+    {
+        var parent = new FollowUpInheritance(
+            run.Queue,
+            run.DeliveryProfile,
+            run.ExecutionLane,
+            run.ConsumerGroup,
+            run.TransportId,
+            run.Priority,
+            run.MaxAttempts,
+            run.TimeoutSeconds,
+            run.OrderingMode,
+            run.ConcurrencyKey);
+
+        // Check for continuation.
+        if (run.Continuation is { } continuation
+            && TerminalActionPlanner.PlanContinuation(continuation, outcome, parent) is { } continuationSpec)
+        {
+            var continuationRun = CreateFollowUpRun(run, continuationSpec, now, "_continuationOf");
+            if (continuationRun is not null)
+            {
+                _runs.TryAdd(continuationRun.Id, continuationRun);
+                AddWorkAvailableOutbox(continuationRun, now);
+            }
+        }
+
+        // Check for compensation.
+        if (run.Compensation is { } compensation
+            && TerminalActionPlanner.PlanCompensation(compensation, outcome, parent) is { } compensationSpec)
+        {
+            var compensationRun = CreateFollowUpRun(run, compensationSpec, now, "_compensationOf");
+            if (compensationRun is not null)
+            {
+                _runs.TryAdd(compensationRun.Id, compensationRun);
+                AddWorkAvailableOutbox(compensationRun, now);
+            }
+        }
+    }
+
+    private JobRunRecord? CreateFollowUpRun(
+        JobRunRecord parent,
+        FollowUpRunSpec spec,
+        DateTimeOffset now,
+        string lineageKey)
+    {
+        var runId = Guid.NewGuid().ToString("N");
+        return new JobRunRecord
+        {
+            Id = runId,
+            JobKey = spec.JobKey,
+            PayloadJson = spec.PayloadJson,
+            Queue = spec.Queue,
+            DeliveryProfile = spec.DeliveryProfile,
+            ExecutionLane = spec.ExecutionLane,
+            ConsumerGroup = spec.ConsumerGroup,
+            TransportId = spec.TransportId,
+            Priority = spec.Priority,
+            AvailableAt = now.UtcDateTime,
+            CreatedAt = now.UtcDateTime,
+            Phase = JobPhase.Pending,
+            MaxAttempts = spec.MaxAttempts,
+            TimeoutSeconds = spec.TimeoutSeconds,
+            OrderingMode = spec.OrderingMode,
+            ConcurrencyKey = spec.ConcurrencyKey,
+            OrderingSequence = Interlocked.Increment(ref _nextOrderingSequence),
+            Metadata = lineageKey == "_compensationOf"
+                ? new Dictionary<string, string?>
+                {
+                    [lineageKey] = parent.Id,
+                    ["_compensatedOutcome"] = parent.Phase.ToString()
+                }
+                : new Dictionary<string, string?>
+                {
+                    [lineageKey] = parent.Id
+                }
+        };
     }
 }

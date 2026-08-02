@@ -11,7 +11,7 @@ builder.Services.AddKubeJobWorker(options =>
     options.WorkerId = Environment.GetEnvironmentVariable("WORKER_ID")
         ?? Environment.MachineName;
     options.MaxConcurrentJobs = 5;
-    options.Queues = new List<string> { "default", "samples" };
+    options.Queues = new List<string> { "sample.data" };
     options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
     options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
     options.Labels["app"] = "sample-remote-worker";

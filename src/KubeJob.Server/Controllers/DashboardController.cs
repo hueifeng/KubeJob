@@ -18,19 +18,22 @@ public sealed class DashboardController : Controller
     private readonly ScheduleControlPlane _schedules;
     private readonly KubeJobDashboardOptions _options;
     private readonly DashboardCatalogReader _catalog;
+    private readonly QueueInventoryService _queueInventory;
 
     public DashboardController(
         IJobRuntimeDashboardStore dashboard,
         JobControlPlane jobs,
         ScheduleControlPlane schedules,
         KubeJobDashboardOptions options,
-        DashboardCatalogReader catalog)
+        DashboardCatalogReader catalog,
+        QueueInventoryService queueInventory)
     {
         _dashboard = dashboard;
         _jobs = jobs;
         _schedules = schedules;
         _options = options;
         _catalog = catalog;
+        _queueInventory = queueInventory;
     }
 
     [HttpGet("")]
@@ -183,6 +186,15 @@ public sealed class DashboardController : Controller
 
     private static bool IsActiveWorkerSession(WorkerSessionRecord session) =>
         session.State is WorkerSessionState.Ready or WorkerSessionState.Draining;
+
+    [HttpGet("queues")]
+    public async Task<IActionResult> Queues(CancellationToken cancellationToken)
+    {
+        var model = await _queueInventory.ReadAsync(
+            _options.GetNormalizedMaximumWorkerSessions(),
+            cancellationToken);
+        return View("~/Views/Dashboard/Queues.cshtml", model);
+    }
 
     [HttpGet("job-types")]
     public async Task<IActionResult> JobTypes(CancellationToken cancellationToken)
