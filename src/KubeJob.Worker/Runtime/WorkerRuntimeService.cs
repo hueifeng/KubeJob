@@ -797,8 +797,8 @@ public sealed class WorkerRuntimeService : BackgroundService
                         : 0L;
                     await pipeline(context);
 
-                    // If middleware set an explicit outcome (e.g. ExceptionMappingMiddleware
-                    // caught a known exception), use it; otherwise report success.
+                    // If middleware set an explicit outcome, use it; otherwise
+                    // report success.
                     if (context.Outcome.HasValue)
                     {
                         RecordHandlerDuration(handlerStartedAt, context.Outcome.Value switch

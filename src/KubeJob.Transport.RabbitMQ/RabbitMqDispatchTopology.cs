@@ -151,62 +151,6 @@ public sealed class RabbitMqTopologyProvisioner : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <summary>
-    /// Verifies that the queues and exchanges this consumer depends on already
-    /// exist on the broker. The consumer must not actively declare the topology
-    /// (declaration is the provisioner's job, and a cross-host argument
-    /// mismatch fails the provisioner's active declare with a clear 406 error).
-    /// Existence-only verification turns a missing topology into a clear
-    /// startup failure instead of a silent consume or an infinite reconnect
-    /// loop.
-    /// </summary>
-    internal void ValidateConsumerTopology(IModel channel, IReadOnlyList<string> consumerQueues)
-    {
-        ArgumentNullException.ThrowIfNull(channel);
-        ArgumentNullException.ThrowIfNull(consumerQueues);
-        VerifyExchange(channel, _options.GetGroupExchangeName(), "execution exchange");
-        VerifyExchange(channel, _options.GetRetryExchangeName(), "retry exchange");
-        if (_options.EnableCancelQueue)
-        {
-            VerifyExchange(channel, _options.GetCancelExchangeName(_options.ConsumerGroup), "cancel exchange");
-        }
-
-        foreach (var consumerQueue in consumerQueues.Distinct(StringComparer.Ordinal))
-        {
-            VerifyQueue(channel, consumerQueue);
-        }
-    }
-
-    private static void VerifyExchange(IModel channel, string exchange, string label)
-    {
-        try
-        {
-            channel.ExchangeDeclarePassive(exchange);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            throw new RabbitMqTopologyMismatchException(
-                $"RabbitMQ KubeJob {label} '{exchange}' is missing on the broker. " +
-                $"Start a host that declares the Direct Dispatch topology (or run the topology provisioner) before consuming: {exception.Message}",
-                exception);
-        }
-    }
-
-    private static void VerifyQueue(IModel channel, string queue)
-    {
-        try
-        {
-            channel.QueueDeclarePassive(queue);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            throw new RabbitMqTopologyMismatchException(
-                $"RabbitMQ KubeJob execution queue '{queue}' is missing on the broker. " +
-                $"Start a host that declares the Direct Dispatch topology (or run the topology provisioner) before consuming: {exception.Message}",
-                exception);
-        }
-    }
-
     internal void DeclareTopology(IModel channel)
     {
         ValidateWorkerQueues();

@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using KubeJob.Core.Runtime;
@@ -760,14 +759,9 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             return 0;
         }
 
-        return value switch
-        {
-            byte[] bytes when int.TryParse(Encoding.UTF8.GetString(bytes), out var parsedBytes) => parsedBytes,
-            int integer => integer,
-            long longValue when longValue is >= 0 and <= int.MaxValue => (int)longValue,
-            string text when int.TryParse(text, out var parsedString) => parsedString,
-            _ => 0
-        };
+        // The header is written only by our own republish path as an int; any
+        // other encoding is a foreign producer and is treated as zero.
+        return value is int integer ? integer : 0;
     }
 
     private sealed record CancelEnvelope(string RunId);
