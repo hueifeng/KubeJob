@@ -44,6 +44,14 @@ Repository、LeaseToken 或 fencing token。
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+builder.Services.ConfigureKubeJobQueueRouting(routing =>
+{
+    // 这个最小进程内示例没有注册 RabbitMQ，因此要把逻辑队列显式钉在数据库 Pull 档位上。
+    routing.Queues["mail"] = new QueueDefinition
+    {
+        Profile = ExecutionDeliveryProfile.Pull
+    };
+});
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
 builder.Services.AddKubeJob(
@@ -188,7 +196,9 @@ await schedules.UpsertCronAsync(
 ```
 
 多个控制面通过可过期的 Schedule Claim 和版本号协调。推进 `NextFireAt`、创建 occurrence
-Run、写入 Outbox 在同一事务中完成。Occurrence 会继承 Schedule 的
+Run、写入 Outbox 在同一事务中完成。当 Schedule 落后超过一个周期时，`FireOnce`
+最多补发一次 occurrence，且仅当错过时间仍在 `ScheduleMisfireThreshold`（默认 1 小时）
+以内；更陈旧的错过（例如禁用很久后重新启用的 Schedule）会被跳过。Occurrence 会继承 Schedule 的
 `ConcurrencyKey`、重试策略和终态动作；如果目标 Queue 是 `KeyOrdered` 而没有提供 key，
 控制面会拒绝该 Schedule。
 
@@ -254,6 +264,23 @@ builder.Services.UseRabbitMqKubeJobExecutionDispatcher(options =>
 可能有工作”；执行 envelope 仍然经过 PostgreSQL 的 durable admission 和统一
 Lease/Complete 路径。重复或丢失的消息都不能创建有效 Attempt。没有 Broker 的 Host 必须
 显式把对应 Queue 配置为 `Pull`。
+
+如果 RabbitMQ 同时还是业务消息的来源，需要单独注册其 ingress 队列：
+
+```csharp
+builder.Services.AddRabbitMqKubeJobIngress(options =>
+{
+    options.ConnectionString = "amqp://kubejob:secret@rabbitmq:5672/";
+    options.QueueName = "mailer-ingress";
+    options.RoutingKey = "mail.#";
+    options.Source = "rabbitmq.mailer";
+    options.DeadLetterExchangeName = "kubejob.job-ingress.dlx";
+    options.DeadLetterRoutingKey = "dead";
+});
+```
+
+Ingress 的 ACK 发生在 durable Run 交接之后。无效消息会被 Reject 进入死信处理；
+瞬时的持久化或连接故障会被重新入队。这条业务消息路径与 notification exchange 相互独立。
 
 ## 9. 交付保证
 

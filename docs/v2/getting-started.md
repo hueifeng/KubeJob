@@ -48,6 +48,8 @@ The control plane and worker can share one process without localhost HTTP:
 
 ```csharp
 using KubeJob;
+using KubeJob.ControlPlane.Runtime;
+using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
 using KubeJob.Storage.PostgreSQL.Extensions;
 using KubeJob.Worker.Extensions;
@@ -55,6 +57,15 @@ using KubeJob.Worker.Extensions;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+builder.Services.ConfigureKubeJobQueueRouting(routing =>
+{
+    // This minimal in-process sample does not register RabbitMQ, so keep its
+    // logical queue on the database Pull profile explicitly.
+    routing.Queues["mail"] = new QueueDefinition
+    {
+        Profile = ExecutionDeliveryProfile.Pull
+    };
+});
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
 builder.Services.AddKubeJob(
@@ -205,7 +216,11 @@ await schedules.UpsertCronAsync(
 
 Multiple control-plane replicas use expiring Schedule claims and optimistic
 versions. Advancing `NextFireAt`, creating the occurrence Run, and writing its
-Outbox entry happen in one transaction. The occurrence inherits the Schedule's
+Outbox entry happen in one transaction. When a Schedule is more than one
+interval behind, `FireOnce` backfills at most one occurrence, and only while
+the miss is within the `ScheduleMisfireThreshold` (default 1 hour); older
+misses — e.g. a Schedule disabled for a long time and re-enabled — are
+skipped. The occurrence inherits the Schedule's
 `ConcurrencyKey`, retry policy, and terminal actions; an occurrence created for
 a `KeyOrdered` queue is rejected at the control-plane boundary if the key is
 missing.

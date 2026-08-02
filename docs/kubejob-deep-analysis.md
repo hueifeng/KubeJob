@@ -1,5 +1,7 @@
 # KubeJob 深度分析与设计演进建议
 
+> 状态：历史分析资料（2026-08 写作）。当前实现已继续演进——其中"当前架构诊断"章节描述的中间件管道、重试配置等现状断言已过期（中间件管道已实现，见 `src/KubeJob.Core/Execution/Middleware/`），提案章节中部分建议（KeyOrdered/StrictFifo 排序、retention）已落地。请以最新源码、ADR 和 `docs/v2/architecture.md` 为准。
+
 > 基于对 KubeJob 源码的全面分析，结合 Temporal / Kafka / MassTransit / K8s Controller / Hangfire / NATS JetStream 等标杆项目的设计思想，提出分阶段的架构演进方案。
 
 ---

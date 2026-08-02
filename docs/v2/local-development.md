@@ -11,7 +11,7 @@ Compose stack that works with Docker Compose, `podman compose`, or
 
 ## Prerequisites
 
-- .NET 9 SDK;
+- .NET 10 SDK;
 - Docker with the Compose plugin, or Podman with a Compose provider.
 
 The scripts prefer Docker when both engines are installed. Set

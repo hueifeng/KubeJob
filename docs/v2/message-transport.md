@@ -122,15 +122,16 @@ never receiving work.
 The RabbitMQ adapter declares the following topology once at startup via
 `RabbitMqTopologyProvisioner` (an `IHostedService` that retries a bounded
 number of times and then fails startup with a clear error). The worker
-consumer does **not** actively declare anything: it passively verifies that
-its dispatch queues and the group/retry/cancel exchanges exist and fails fast
-if a host joins with options that do not match the provisioned topology,
-instead of looping forever on `406 PRECONDITION_FAILED`.
+consumer additionally re-declares the topology on every consumer session, so
+a queue or exchange deleted while the process is running is recreated on
+reconnect (self-healing); broker-side argument mismatches still surface as
+`406 PRECONDITION_FAILED`, and the consumer reconnects with
+`ReconnectDelay` backoff rather than consuming silently.
 
 | Resource | Name | Type | Notes |
 | --- | --- | --- | --- |
 | Group exchange | `kubejob.execution.{group}` | direct, durable | Each logical execution queue binds its own routing key. Names derive from `RabbitMqExecutionOptions.ConsumerQueuePrefix` (default `kubejob.execution`) + `ConsumerGroup`. |
-| Group DLX | `kubejob.execution.{group}.dlx` | fanout, durable | Catches poison envelopes whose `x-delivery-count` has saturated. |
+| Group DLX | `kubejob.execution.{group}.dlx` | fanout, durable | Receives envelopes `Reject`ed with `requeue=false`: malformed envelopes, failed retry publications, and envelopes whose durable reconciliation also failed. Only when `DefaultDeliveryLimit > 0` does it also catch delivery-count-saturated envelopes. |
 | Group DLQ | `kubejob.execution.{group}.dlq.queue` | quorum, durable | Bound to the group DLX; inspect here for permanently failed envelopes. |
 | Dispatch queue | `kubejob.execution.{group}.{logical-queue}.queue` | quorum, durable | One stable queue per business logical queue (and per lane when configured); the logical name is literal, with no hash suffix. `x-dead-letter-exchange` is set to the group DLX. `x-delivery-limit` is disabled by default and must only be enabled with a Pending-Run DLQ re-drive policy. |
 | Retry exchange | `kubejob.execution.{group}.retry` | direct, durable | Temporary admission/capacity failures are republished here instead of incrementing the dispatch queue delivery count. |
@@ -143,10 +144,12 @@ instead of looping forever on `406 PRECONDITION_FAILED`.
 - **Who creates queues.** `RabbitMqTopologyProvisioner` declares the group
   topology (exchanges, retry queue, DLX/DLQ, one dispatch queue per
   logical queue and lane) for the queues registered by the worker at startup.
-  The publisher (dispatcher) and the consumer never declare topology; the
-  consumer passively verifies that its queues exist and fails fast on a
-  mismatch. Restarting a host with unchanged options is a no-op on the broker:
-  the same physical queue names are reused, nothing accumulates.
+  The dispatcher declares the group exchange on each new channel, and the
+  consumer re-declares the full topology (including its per-worker cancel
+  queue) on every session, so a broker restart or runtime topology loss
+  self-heals without operator action. Restarting a host with unchanged
+  options is a no-op on the broker: the same physical queue names are reused,
+  nothing accumulates.
 - **Stable names, ephemeral cancel queues.** Durable dispatch/retry/DLQ names
   are stable across restarts and must never be suffixed with process IDs or
   session IDs. The only ephemeral queue is the per-worker cancel queue, whose
@@ -191,6 +194,7 @@ Per-message header conventions:
 
 - Dispatch envelopes set `properties.Type = "execution-envelope"` and `MessageId = EventId`. Consumers dispatch on type, not on body parsing.
 - Cancel markers set `properties.Type = "cancel"` and `X-KubeJob-Event-Type = "cancel"`. Each worker-session cancel consumer calls the in-flight attempt cancellation hook and ACKs the marker.
+- Retry publications carry `x-kubejob-broker-retry-count` as an integer (any other encoding is treated as zero). When a delivery's count reaches `RabbitMqExecutionOptions.MaxBrokerRetryAttempts` (default 8), the consumer hands the Run back to durable reconciliation instead of republishing to the retry queue again.
 - Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the group TTL retry queue and the original delivery is ACKed only after retry publication is confirmed. A retry-publication failure is a `Reject` (requeue=false), routing the envelope through the group DLX rather than NACKing it back to the head of the queue (which would loop indefinitely); `Nack(requeue=true)` is reserved for cancel-marker transient failures, and shutdown leaves deliveries unacked so the broker requeues them on connection close.
 
 Retry ownership: KubeJob's `MaxAttempts` (enforced by the completion store)
@@ -199,6 +203,13 @@ only transient broker/worker admission delay; it does not create a new
 Attempt or increment `MaxAttempts`. `x-delivery-limit` is disabled by default;
 if explicitly enabled, the deployment must provide a DLQ re-drive policy for
 Pending Runs rather than treating the broker DLQ as the business state machine.
+The broker-side retry budget is `RabbitMqExecutionOptions.MaxBrokerRetryAttempts`
+(default 8): once a delivery has cycled through the TTL retry queue that many
+times, the consumer calls `RequeueExecutionAsync` (scheduling a durable
+reconciliation at `BrokerRetryReconciliationDelay`, default 1 minute) and ACKs
+the delivery; only if that reconciliation also fails is the envelope rejected
+into the group DLX. This prevents a persistently failing delivery from cycling
+the retry queue forever without consuming the worker's `MaxAttempts` budget.
 
 Cancel ownership: the cancel outbox row is durable and is the single source
 of truth for cancel propagation. The RabbitMQ cancel exchange is a low-latency

@@ -169,6 +169,18 @@ Schedule also persists its per-run `RetryPolicy`, `Continuation`, and
 `Compensation`, so an occurrence does not silently fall back to a different
 submission contract.
 
+## Strict-FIFO queues
+
+A queue may instead set `OrderingMode` to `StrictFifo`: the entire queue (or
+lane) is processed one Run at a time — a Run is never claimed while a
+non-terminal predecessor on the same queue and lane exists, equivalent to
+prefetch=1 on every consumer. The claim gate verifies OrderingSequence
+monotonicity like `KeyOrdered`, but it is keyed on the whole lane rather than
+per `ConcurrencyKey`, so no key is required. RabbitMQ deployments must satisfy
+`ValidateStrictFifoPolicy`: `UseSingleActiveConsumer` enabled
+(x-single-active-consumer), `PrefetchCount` = 1, and `ExecutionLaneCount` = 1
+for global FIFO; the transport fails startup with a clear error otherwise.
+
 ## Completion fencing
 
 A completion is accepted only when all durable identity and ownership values
@@ -227,8 +239,16 @@ The PostgreSQL fire transaction:
 5. advances `NextFireAt` and clears the claim;
 6. commits once.
 
-`FireOnce` creates one compensating Run after multiple missed occurrences.
-`SkipMissed` advances directly to the next future occurrence.
+`FireOnce` creates one compensating Run after multiple missed occurrences,
+but only while the miss is still within the configured
+`ScheduleMisfireThreshold` (default 1 hour); a stale miss — e.g. a schedule
+that was disabled for a long time and re-enabled, whose `NextFireAt` still
+points at the old due time — is skipped like `SkipMissed` instead of
+backfilling an outdated occurrence. `SkipMissed` advances directly to the next
+future occurrence. Failed claim processing backs off with
+`ScheduleFailureDelay` jittered to `[0.5, 1.5] x` so a recovering database
+blip does not re-synchronize every schedule and control-plane instance onto
+the same retry instant.
 
 ## Dashboard query boundary
 

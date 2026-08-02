@@ -32,8 +32,8 @@ the cached value and never runs a database query.
 * **In-memory store**: scans `_runs` (bounded; dev/test only).
 * **PostgreSQL**: a single window-function query over the partial index
   `IX_Kj2_JobRuns_KeyOrderedHead ON (Queue, ConcurrencyKey, OrderingSequence)
-  WHERE OrderingMode = 1 AND Phase IN (0, 1)` — only KeyOrdered non-terminal
-  rows, never a full table scan. The head (lowest `OrderingSequence`) of each
+  WHERE OrderingMode = 1 AND Phase IN (0, 1) AND ConcurrencyKey IS NOT NULL`
+  — only KeyOrdered non-terminal rows, never a full table scan. The head (lowest `OrderingSequence`) of each
   `(Queue, ConcurrencyKey)` group is the claimable run; every successor
   (`rn > 1`) is counted as blocked, and its age is `clock_timestamp() -
   AvailableAt` clamped at 0.
@@ -62,7 +62,9 @@ exposes `ConcurrencyKey`.
 
 ## Per-lane backlog
 
-Lane-level contention inside a queue is observable from the control plane via
-`lane_blocked_runs` (above). Transport-level queue depth (RabbitMQ
+Lane-level contention inside a queue is observable via `lane_blocked_runs`
+(above) — currently **only in the in-memory store (dev/test)**: the PostgreSQL
+backlog query does not yet produce lane samples, so the gauge stays empty on
+PostgreSQL deployments. Transport-level queue depth (RabbitMQ
 ready/unacked per lane queue) remains a broker-side metric, tracked with the
 execution-lane feature (see `docs/v2/message-ordering-research.zh-CN.md`).

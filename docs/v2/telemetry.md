@@ -60,9 +60,18 @@ kubejob.rabbitmq.execution.publish_failures
 kubejob.rabbitmq.execution.publish.duration
 kubejob.rabbitmq.execution.broker_retries
 kubejob.rabbitmq.execution.reconciliation_handoffs
+kubejob.control_plane.ordering.wait_duration
+kubejob.control_plane.ordering.blocked_runs
+kubejob.control_plane.ordering.oldest_blocked_age
+kubejob.control_plane.ordering.active_keys
+kubejob.control_plane.ordering.strictfifo_blocked_runs
+kubejob.control_plane.ordering.retry_blocked_runs
+kubejob.control_plane.ordering.lane_blocked_runs
 ```
 
 Duration units are seconds (`s`). `kubejob.worker.active_attempts` is an `UpDownCounter`; its start and finish tags are deliberately identical. `kubejob.control_plane.admission.duration` is a histogram tagged with `kubejob.admission.status` (e.g. `admitted`, `run_not_found`, `run_already_running`); `kubejob.control_plane.outbox.publish_lag` is a histogram of the elapsed time between an outbox row becoming available and its publication to a transport. `kubejob.control_plane.lease_reaper.reclaimed`, `kubejob.rabbitmq.execution.broker_retries`, and `kubejob.rabbitmq.execution.reconciliation_handoffs` are monotonic counters (`{attempt}` / `{message}`).
+
+The `kubejob.control_plane.ordering.*` instruments expose the cached ordering-backlog snapshot refreshed by `OrderingMetricsRefreshService` (see `docs/v2/ordering-observability.md`): `wait_duration` is a histogram (`s`); `blocked_runs`, `strictfifo_blocked_runs`, `retry_blocked_runs`, and `lane_blocked_runs` are observable gauges (`{run}`); `oldest_blocked_age` an observable gauge (`s`); `active_keys` an observable gauge (`{key}`). `lane_blocked_runs` is currently populated only by the in-memory store (dev/test); it stays empty on PostgreSQL deployments.
 
 ## Cardinality and sensitive data
 

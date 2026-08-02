@@ -224,8 +224,8 @@ IExecutionTransport.PublishAsync(ExecutionEnvelope, CancellationToken)
 logical Queue: orders.push
         ↓
 QueueRouter / Delivery Profile
-        ├── PullExecutionAdapter
-        └── BrokerExecutionAdapter
+        ├── Pull：IWorkAvailableNotifier
+        └── Broker：IExecutionTransport → RabbitMqExecutionDispatcher
 ```
 
 当前默认策略是 `BrokerDispatch`（见 [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)）。

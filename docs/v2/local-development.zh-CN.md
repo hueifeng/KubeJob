@@ -9,7 +9,7 @@ KubeJob 使用 PostgreSQL 作为持久化事实来源，并可选使用 RabbitMQ
 
 ## 前置条件
 
-- .NET 9 SDK；
+- .NET 10 SDK；
 - Docker + Compose 插件，或安装了 Compose Provider 的 Podman。
 
 同时安装 Docker 和 Podman 时，脚本默认优先 Docker。可设置
