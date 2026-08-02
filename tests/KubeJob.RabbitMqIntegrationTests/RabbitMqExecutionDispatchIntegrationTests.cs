@@ -7,6 +7,7 @@ using KubeJob.Core.Interfaces;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Extensions;
@@ -14,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace KubeJob.RabbitMqIntegrationTests;
 
@@ -38,6 +40,62 @@ public sealed class RabbitMqExecutionDispatchIntegrationTests
                 new ExecutionDispatchPayload("succeed", FailAttempts: 0),
                 new JobEnqueueOptions { Queue = "default", MaxAttempts = 3 });
 
+            var status = await jobs.WaitForCompletionAsync(
+                handle,
+                pollInterval: TimeSpan.FromMilliseconds(100),
+                cancellationToken: new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+
+            status.Phase.Should().Be(JobPhase.Succeeded);
+        }
+        finally
+        {
+            await host.StopAsync();
+            DeleteGroupTopology(connectionString, group);
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_recreates_a_deleted_dispatch_queue_after_broker_consumer_cancel()
+    {
+        var connectionString = RequireConnectionString();
+        var group = $"exec-topology-recovery-{Guid.NewGuid():N}";
+
+        using var host = BuildHost(connectionString, group, out var options);
+        await host.StartAsync();
+        try
+        {
+            using var connection = CreateConnection(connectionString);
+            using var channel = connection.CreateModel();
+            var queue = options.GetConsumerQueueName("default");
+            async Task<bool> HasConsumerAsync()
+            {
+                using var probeConnection = CreateConnection(connectionString);
+                using var probeChannel = probeConnection.CreateModel();
+                try
+                {
+                    return probeChannel.ConsumerCount(queue) >= 1;
+                }
+                catch (OperationInterruptedException exception) when (exception.ShutdownReason?.ReplyCode == 404)
+                {
+                    return false;
+                }
+            }
+
+            await EventuallyAsync(
+                HasConsumerAsync,
+                attempts: 200);
+
+            channel.QueueDelete(queue, ifUnused: false, ifEmpty: false);
+
+            await EventuallyAsync(
+                HasConsumerAsync,
+                attempts: 200);
+
+            var jobs = host.Services.GetRequiredService<IJobClient>();
+            var handle = await jobs.EnqueueAsync(
+                JobKey,
+                new ExecutionDispatchPayload("succeed", FailAttempts: 0),
+                new JobEnqueueOptions { Queue = "default", MaxAttempts = 1 });
             var status = await jobs.WaitForCompletionAsync(
                 handle,
                 pollInterval: TimeSpan.FromMilliseconds(100),

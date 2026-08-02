@@ -2,6 +2,7 @@ using KubeJob;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Sample.Unified.Jobs;
 using KubeJob.Server.Extensions;
@@ -67,11 +68,11 @@ if (!string.IsNullOrWhiteSpace(rabbitMqConnectionString))
         // submit only a logical queue and cannot select RabbitMQ per Run.
         // Each queue the worker serves gets one definition; the consumer
         // group must match the transport group configured below.
-        options.Queues["sample.data"] = new KubeJob.Server.Runtime.QueueDefinition
+        options.Queues["sample.data"] = new KubeJob.ControlPlane.Runtime.QueueDefinition
         {
             ConsumerGroup = "unified-sample"
         };
-        options.Queues["sample.dashboard-demo"] = new KubeJob.Server.Runtime.QueueDefinition
+        options.Queues["sample.dashboard-demo"] = new KubeJob.ControlPlane.Runtime.QueueDefinition
         {
             ConsumerGroup = "unified-sample"
         };

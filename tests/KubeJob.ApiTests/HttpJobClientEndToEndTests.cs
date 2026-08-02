@@ -5,6 +5,7 @@ using KubeJob.Client;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;

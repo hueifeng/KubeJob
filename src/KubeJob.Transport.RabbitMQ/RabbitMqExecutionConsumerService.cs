@@ -129,10 +129,10 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         // so every publish-confirm-return sequence is serialized through this
         // gate.
         var publishChannelGate = new object();
-        // The consumer only verifies that the provisioner-declared topology
-        // exists with the expected arguments. Active declaration belongs to
-        // RabbitMqTopologyProvisioner; a mismatch here fails fast instead of
-        // looping forever on 406 PRECONDITION_FAILED.
+        // Re-declare the topology on every consumer session. The separate
+        // startup provisioner cannot repair a queue/exchange deleted while the
+        // process is running; active declaration here makes reconnect self-heal
+        // missing topology while RabbitMQ still rejects argument mismatches.
         var consumerQueues = new List<string>();
         for (var lane = 0; lane < _options.ExecutionLaneCount; lane++)
         {
@@ -143,7 +143,15 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         }
 
         consumerQueues = consumerQueues.Distinct(StringComparer.Ordinal).ToList();
-        _topology.ValidateConsumerTopology(channel, consumerQueues);
+        _topology.DeclareTopology(channel);
+
+        var disconnected = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        void SignalDisconnected()
+        {
+            connectionLifetime.Cancel();
+            disconnected.TrySetResult();
+        }
 
         // Bounded pending buffer: at most one full admission batch waits for
         // the next drain, so local memory is independent of broker prefetch.
@@ -168,6 +176,11 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
         foreach (var consumerQueue in consumerQueues)
         {
             var consumer = new AsyncEventingBasicConsumer(channel);
+            consumer.ConsumerCancelled += (_, _) =>
+            {
+                SignalDisconnected();
+                return Task.CompletedTask;
+            };
             consumer.Received += (_, delivery) => OnDispatchDeliveryAsync(
                 pending.Writer,
                 channel,
@@ -205,6 +218,11 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
                 routingKey: string.Empty,
                 arguments: null);
             var cancelConsumer = new AsyncEventingBasicConsumer(channel);
+            cancelConsumer.ConsumerCancelled += (_, _) =>
+            {
+                SignalDisconnected();
+                return Task.CompletedTask;
+            };
             cancelConsumer.Received += (_, delivery) => ProcessCancelDeliveryAsync(
                 channel,
                 channelGate,
@@ -221,18 +239,30 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
             _options.ConsumerGroup,
             string.Join(",", _worker.Queues));
 
-        var disconnected = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         connection.ConnectionShutdown += (_, _) =>
         {
-            connectionLifetime.Cancel();
-            disconnected.TrySetResult();
+            SignalDisconnected();
+        };
+        connection.CallbackException += (_, _) =>
+        {
+            SignalDisconnected();
+        };
+        channel.ModelShutdown += (_, _) =>
+        {
+            SignalDisconnected();
         };
         await Task.WhenAny(
             disconnected.Task,
             Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken));
         connectionLifetime.Cancel();
         pending.Writer.TryComplete();
+        try
+        {
+            await batchLoop.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested || connectionLifetime.IsCancellationRequested)
+        {
+        }
         stoppingToken.ThrowIfCancellationRequested();
     }
 

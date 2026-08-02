@@ -4,7 +4,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Telemetry;
 using KubeJob.ControlPlane.Telemetry;
-using KubeJob.Server.Runtime;
+using KubeJob.ControlPlane.Runtime;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.ControlPlane;

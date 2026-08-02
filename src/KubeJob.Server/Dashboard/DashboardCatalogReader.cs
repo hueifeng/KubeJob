@@ -1,6 +1,7 @@
 using KubeJob.Core.Scheduling;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Options;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 
 namespace KubeJob.Server.Dashboard;

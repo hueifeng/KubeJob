@@ -5,6 +5,7 @@ using KubeJob.Core.Scheduling;
 using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Dashboard;
 using KubeJob.Server.Options;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Mvc;
 

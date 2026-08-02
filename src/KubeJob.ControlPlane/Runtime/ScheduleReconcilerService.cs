@@ -1,12 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 public sealed class ScheduleReconcilerService : BackgroundService
 {
@@ -95,11 +96,11 @@ public sealed class ScheduleReconcilerService : BackgroundService
         CancellationToken cancellationToken)
     {
         var schedule = claim.Schedule;
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, observedNow);
+        var runId = CreateOccurrenceId(schedule.Id, plan.ScheduledFor);
+        var idempotencyKey = $"schedule:{schedule.Id}:{plan.ScheduledFor.UtcTicks}";
         try
         {
-            var plan = ScheduleReconciliationPlanner.Plan(schedule, observedNow);
-            var runId = CreateOccurrenceId(schedule.Id, plan.ScheduledFor);
-            var idempotencyKey = $"schedule:{schedule.Id}:{plan.ScheduledFor.UtcTicks}";
             await _store.CommitFireAsync(
                 new CommitScheduleFireCommand(
                     schedule.Id,
@@ -108,6 +109,26 @@ public sealed class ScheduleReconcilerService : BackgroundService
                     plan.ScheduledFor,
                     plan.NextFireAt,
                     plan.CreateRun,
+                    runId,
+                    idempotencyKey),
+                cancellationToken);
+        }
+        catch (IdempotencyConflictException exception)
+        {
+            _logger.LogError(
+                exception,
+                "Schedule {ScheduleId} occurrence {ScheduledFor} collided with existing Run {ExistingRunId}; advancing the schedule without creating a duplicate",
+                schedule.Id,
+                plan.ScheduledFor,
+                exception.ExistingJobId);
+            await _store.CommitFireAsync(
+                new CommitScheduleFireCommand(
+                    schedule.Id,
+                    claim.ClaimToken,
+                    claim.ExpectedVersion,
+                    plan.ScheduledFor,
+                    plan.NextFireAt,
+                    false,
                     runId,
                     idempotencyKey),
                 cancellationToken);

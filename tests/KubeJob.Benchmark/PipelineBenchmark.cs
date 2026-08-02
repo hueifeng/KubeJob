@@ -5,6 +5,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
 using KubeJob.Server.Options;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Data;
 using KubeJob.Storage.PostgreSQL.Extensions;
@@ -436,10 +437,10 @@ public sealed class PipelineBenchmark
 
     // --- Submission ---
 
-    private Task SubmitAsync(IHost host, BenchScenario scenario, string queue, BenchTopology topology, IConnection connection)
+    private Task SubmitAsync(IHost host, BenchScenario scenario, string queue, BenchTopology? topology, IConnection? connection)
     {
         return _opts.SubmissionMode == SubmissionMode.Ingress
-            ? SubmitIngressAsync(scenario, queue, topology, connection)
+            ? SubmitIngressAsync(scenario, queue, topology ?? throw new InvalidOperationException("Ingress benchmark topology is required."), connection ?? throw new InvalidOperationException("Ingress benchmark connection is required."))
             : SubmitTypedAsync(host, scenario, queue);
     }
 

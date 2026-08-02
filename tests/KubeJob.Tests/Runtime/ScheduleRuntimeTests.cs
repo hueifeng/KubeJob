@@ -3,6 +3,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Server.ControlPlane;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.Extensions.Options;
 

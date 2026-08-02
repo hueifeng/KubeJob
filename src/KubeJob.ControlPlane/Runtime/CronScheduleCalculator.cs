@@ -1,6 +1,6 @@
 using Cronos;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 public static class CronScheduleCalculator
 {

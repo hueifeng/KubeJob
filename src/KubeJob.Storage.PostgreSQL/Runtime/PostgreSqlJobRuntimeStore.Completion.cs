@@ -3,7 +3,7 @@ using System.Text.Json;
 using Dapper;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
-using KubeJob.Server.Runtime;
+using KubeJob.ControlPlane.Runtime;
 using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;

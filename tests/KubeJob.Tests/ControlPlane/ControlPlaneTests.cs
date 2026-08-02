@@ -3,6 +3,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;

@@ -1,6 +1,6 @@
 using System.Threading.Channels;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 /// <summary>
 /// In-process wake-up signal that lets a same-process writer notify the

@@ -2,7 +2,7 @@ using System.Text.Json;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 public sealed partial class InMemoryJobRuntimeStore
 {

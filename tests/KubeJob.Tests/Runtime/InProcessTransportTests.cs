@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;

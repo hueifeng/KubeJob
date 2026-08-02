@@ -1,6 +1,6 @@
 using KubeJob.Core.Runtime;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 /// <summary>
 /// Fully-resolved follow-up job to create when a parent run reaches a terminal

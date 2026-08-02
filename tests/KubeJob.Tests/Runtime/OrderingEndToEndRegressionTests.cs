@@ -8,6 +8,7 @@ using KubeJob.Core.Interfaces;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Data;
 using KubeJob.Storage.PostgreSQL.Extensions;

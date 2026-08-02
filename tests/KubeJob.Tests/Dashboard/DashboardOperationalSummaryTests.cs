@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KubeJob.Server.Dashboard;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 
 namespace KubeJob.Tests.Dashboard;

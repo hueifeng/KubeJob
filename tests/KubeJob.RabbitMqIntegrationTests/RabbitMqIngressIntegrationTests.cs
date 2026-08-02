@@ -3,6 +3,7 @@ using System.Text.Json;
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Transport.RabbitMQ;
 using Microsoft.Extensions.DependencyInjection;

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 
 namespace KubeJob.Tests.Runtime;

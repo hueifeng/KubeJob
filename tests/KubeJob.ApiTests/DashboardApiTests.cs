@@ -7,6 +7,7 @@ using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;

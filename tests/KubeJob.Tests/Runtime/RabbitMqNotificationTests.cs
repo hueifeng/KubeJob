@@ -2,6 +2,7 @@ using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Extensions;

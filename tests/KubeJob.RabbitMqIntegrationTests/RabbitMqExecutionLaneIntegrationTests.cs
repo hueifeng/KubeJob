@@ -157,6 +157,8 @@ public sealed class RabbitMqExecutionLaneIntegrationTests
 
             // The retried message re-landed on the SAME lane dispatch queue,
             // and the other lanes did not receive it.
+            await EventuallyAsync(() =>
+                Task.FromResult(channel.MessageCount(dispatchQueue) == 1));
             channel.MessageCount(dispatchQueue).Should().Be(1);
             for (var other = 0; other < options.ExecutionLaneCount; other++)
             {

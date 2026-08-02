@@ -1,6 +1,6 @@
 using KubeJob.Core.Runtime;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 public sealed class JobRuntimeOptions
 {

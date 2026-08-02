@@ -2,6 +2,7 @@ using System.Net;
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.Extensions;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;

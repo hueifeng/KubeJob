@@ -3,7 +3,7 @@ using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 public sealed record QueueRoute(string Queue, DeliveryTarget Target);
 

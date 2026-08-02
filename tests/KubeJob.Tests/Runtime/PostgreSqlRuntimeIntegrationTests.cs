@@ -4,6 +4,7 @@ using FluentAssertions;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Storage.PostgreSQL.Data;
 using KubeJob.Storage.PostgreSQL.Runtime;
@@ -507,6 +508,41 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 
         canceled.Requested.Should().BeTrue();
         scheduledAfterCancel.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Schedule_occurrence_idempotency_conflict_is_classified_instead_of_retried_forever()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var scheduledFor = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var schedule = NewSchedule(scheduledFor);
+        await store.CreateIfAbsentAsync(schedule, CancellationToken.None);
+        var idempotencyKey = $"schedule:{schedule.Id}:{scheduledFor.UtcTicks}";
+        var conflicting = (await store.SubmitAsync(
+            NewSubmission(idempotencyKey: idempotencyKey, deliveryTarget: BrokerDispatchTarget()),
+            CancellationToken.None)).Run;
+
+        var claim = (await store.ClaimDueAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Should().ContainSingle().Subject;
+
+        var act = () => store.CommitFireAsync(
+            new CommitScheduleFireCommand(
+                schedule.Id,
+                claim.ClaimToken,
+                claim.ExpectedVersion,
+                scheduledFor,
+                scheduledFor.AddMinutes(5),
+                true,
+                ScheduleReconcilerService.CreateOccurrenceId(schedule.Id, scheduledFor),
+                idempotencyKey),
+            CancellationToken.None).AsTask();
+
+        await act.Should().ThrowAsync<IdempotencyConflictException>()
+            .Where(exception => exception.ExistingJobId == conflicting.Id);
     }
 
     [Fact]

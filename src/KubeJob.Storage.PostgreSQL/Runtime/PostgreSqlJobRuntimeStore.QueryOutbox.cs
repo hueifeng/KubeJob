@@ -1,6 +1,6 @@
 using Dapper;
 using KubeJob.Core.Runtime;
-using KubeJob.Server.Runtime;
+using KubeJob.ControlPlane.Runtime;
 using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Runtime;

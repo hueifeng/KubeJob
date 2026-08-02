@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 
 namespace KubeJob.Server.Dashboard;

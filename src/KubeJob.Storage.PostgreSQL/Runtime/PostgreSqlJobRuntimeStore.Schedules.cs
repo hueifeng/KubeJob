@@ -380,9 +380,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                      CAST(@RetryPolicyJson AS jsonb), CAST(@ContinuationJson AS jsonb),
                      CAST(@CompensationJson AS jsonb),
                      @IdempotencyKey, @ConcurrencyKey, @ScheduleId, @ScheduledFor, FALSE, 0)
-                ON CONFLICT (ScheduleId, ScheduledFor)
-                    WHERE ScheduleId IS NOT NULL AND ScheduledFor IS NOT NULL
-                DO NOTHING;",
+                ON CONFLICT DO NOTHING;",
                 new
                 {
                     Id = command.RunId,
@@ -447,6 +445,26 @@ public sealed partial class PostgreSqlJobRuntimeStore
                         schedule.ConsumerGroup,
                         schedule.OrderingMode),
                     partitionKey: run.ConcurrencyKey);
+            }
+            else if (inserted == 0 && run is null && !string.IsNullOrWhiteSpace(command.IdempotencyKey))
+            {
+                var conflictingRunId = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(@"
+                    SELECT Id
+                    FROM Kj2_JobRuns
+                    WHERE IdempotencyKey = @IdempotencyKey
+                    LIMIT 1;",
+                    new { command.IdempotencyKey },
+                    transaction,
+                    cancellationToken: cancellationToken));
+                if (!string.IsNullOrWhiteSpace(conflictingRunId))
+                {
+                    throw new IdempotencyConflictException(command.IdempotencyKey, conflictingRunId);
+                }
+            }
+            else if (inserted == 0 && run is null)
+            {
+                throw new InvalidOperationException(
+                    $"Schedule occurrence '{schedule.Id}/{command.ScheduledFor:O}' could not be inserted because of an unknown uniqueness conflict.");
             }
         }
 

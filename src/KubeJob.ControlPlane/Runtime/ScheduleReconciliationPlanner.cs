@@ -1,7 +1,7 @@
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 
-namespace KubeJob.Server.Runtime;
+namespace KubeJob.ControlPlane.Runtime;
 
 public sealed record ScheduleFirePlan(
     DateTimeOffset ScheduledFor,

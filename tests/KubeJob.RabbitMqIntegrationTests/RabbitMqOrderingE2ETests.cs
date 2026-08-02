@@ -7,6 +7,7 @@ using KubeJob.Core.Execution;
 using KubeJob.Core.Interfaces;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
+using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Server.Extensions;
 using KubeJob.Transport.RabbitMQ;

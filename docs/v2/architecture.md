@@ -15,6 +15,20 @@ The implementation is layered as `KubeJob.Core` contracts, the independent
 packages such as RabbitMQ. `KubeJob.Server` assembles these modules but does not
 own the durable state machine implementation.
 
+The project dependency direction follows the same boundary:
+
+```text
+KubeJob.Core
+    ↑
+KubeJob.ControlPlane ← KubeJob.Storage.PostgreSQL
+    ↑                         ↑
+KubeJob.Server ───────────────┘
+```
+
+`KubeJob.Storage.PostgreSQL` exposes a service-collection registration seam;
+`KubeJob.Server` owns the `KubeJobServerOptions` composition wrapper. Storage
+must not depend on ASP.NET Server types or the Server project.
+
 For the end-to-end topology and request sequences, see
 [Logical Architecture and Sequences](./logical-architecture.md).
 

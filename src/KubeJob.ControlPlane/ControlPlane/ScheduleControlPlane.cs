@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
-using KubeJob.Server.Runtime;
+using KubeJob.ControlPlane.Runtime;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.ControlPlane;

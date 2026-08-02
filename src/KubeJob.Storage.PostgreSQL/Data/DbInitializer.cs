@@ -1,5 +1,5 @@
 using Dapper;
-using KubeJob.Server.Data;
+using KubeJob.ControlPlane.Data;
 using Npgsql;
 
 namespace KubeJob.Storage.PostgreSQL.Data;
