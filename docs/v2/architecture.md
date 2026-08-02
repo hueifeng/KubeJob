@@ -100,14 +100,13 @@ PostgreSQL is the authoritative state source. A submission transaction inserts:
 
 ```text
 Kj2_JobRuns
-Kj2_Outbox   (work-available delivery hint)
+Kj2_Outbox   (BrokerDispatch-profile queues only)
 ```
 
-Every submission writes a `work-available` Outbox row. For `Pull` queues the
-publisher invokes `IWorkAvailableNotifier` (the default is a no-op because
-workers periodically poll); for `BrokerDispatch` queues it publishes through
-the selected transport adapter. In both cases the notification is only a hint:
-PostgreSQL remains the execution-state authority.
+The outbox row is written only for `BrokerDispatch`-profile queues; `Pull`
+submissions skip it because workers discover claimable runs directly via the
+control plane. The Outbox publisher converts the durable row to an execution
+envelope through the selected transport adapter.
 
 The Outbox publisher invokes `IWorkAvailableNotifier`. The default implementation
 is a no-op because workers periodically pull. MQ adapters may wake workers sooner,

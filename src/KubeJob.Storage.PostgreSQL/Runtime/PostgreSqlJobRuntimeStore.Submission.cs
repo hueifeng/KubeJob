@@ -107,16 +107,21 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return new SubmitJobResult(existing, Existing: true);
         }
 
-        await AddOutboxAsync(
-            connection,
-            transaction,
-            inserted.Queue,
-            OutboxEventTypes.WorkAvailable,
-            JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
-            inserted.AvailableAt,
-            cancellationToken,
-            target,
-            partitionKey: inserted.ConcurrencyKey);
+        // Pull workers discover claimable runs through the control plane;
+        // only BrokerDispatch requires a durable work-available publication.
+        if (target.Profile == ExecutionDeliveryProfile.BrokerDispatch)
+        {
+            await AddOutboxAsync(
+                connection,
+                transaction,
+                inserted.Queue,
+                OutboxEventTypes.WorkAvailable,
+                JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
+                inserted.AvailableAt,
+                cancellationToken,
+                target,
+                partitionKey: inserted.ConcurrencyKey);
+        }
 
         await transaction.CommitAsync(cancellationToken);
         return new SubmitJobResult(inserted, Existing: false);
@@ -281,18 +286,21 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var results = new SubmitJobResult[count];
-        var outboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
+        var brokerOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
         for (var index = 0; index < count; index++)
         {
             if (inserted.TryGetValue(ids[index], out var run))
             {
                 results[index] = new SubmitJobResult(run, Existing: false);
-                outboxItems.Add((
-                    run.Queue,
-                    JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
-                    run.AvailableAt,
-                    targets[index],
-                    run.ConcurrencyKey));
+                if (targets[index].Profile == ExecutionDeliveryProfile.BrokerDispatch)
+                {
+                    brokerOutboxItems.Add((
+                        run.Queue,
+                        JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
+                        run.AvailableAt,
+                        targets[index],
+                        run.ConcurrencyKey));
+                }
             }
             else
             {
@@ -310,12 +318,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        if (outboxItems.Count > 0)
+        if (brokerOutboxItems.Count > 0)
         {
             await AddOutboxBatchAsync(
                 connection,
                 transaction,
-                outboxItems,
+                brokerOutboxItems,
                 OutboxEventTypes.WorkAvailable,
                 cancellationToken);
         }
