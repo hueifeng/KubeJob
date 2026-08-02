@@ -12,7 +12,8 @@ public static class ScheduleReconciliationPlanner
 {
     public static ScheduleFirePlan Plan(
         JobScheduleRecord schedule,
-        DateTimeOffset observedNow)
+        DateTimeOffset observedNow,
+        TimeSpan misfireThreshold)
     {
         ArgumentNullException.ThrowIfNull(schedule);
         var now = observedNow.ToUniversalTime();
@@ -24,13 +25,21 @@ public static class ScheduleReconciliationPlanner
 
         if (nextAfterScheduled <= now)
         {
+            // More than one interval behind: a misfire. FireOnce backfills at
+            // most one Run for the oldest missed occurrence, but only while
+            // the miss is still within the misfire threshold; an older miss
+            // (e.g. a long-disabled schedule re-enabled) is stale and is
+            // skipped exactly like SkipMissed. TimeSpan.MaxValue restores the
+            // unbounded backfill.
+            var createRun = schedule.MisfirePolicy == MisfirePolicy.FireOnce
+                && now - scheduledFor <= misfireThreshold;
             return new ScheduleFirePlan(
                 scheduledFor,
                 CronScheduleCalculator.GetRequiredNextOccurrence(
                     schedule.CronExpression,
                     schedule.TimeZoneId,
                     now),
-                schedule.MisfirePolicy == MisfirePolicy.FireOnce);
+                createRun);
         }
 
         return new ScheduleFirePlan(scheduledFor, nextAfterScheduled, CreateRun: true);

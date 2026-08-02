@@ -16,10 +16,53 @@ public sealed class ScheduleMisfireTests
             nextFireAt: now.AddMinutes(-10),
             MisfirePolicy.FireOnce);
 
-        var plan = ScheduleReconciliationPlanner.Plan(schedule, now);
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, now, TimeSpan.FromHours(1));
 
         plan.CreateRun.Should().BeTrue();
         plan.ScheduledFor.Should().Be(schedule.NextFireAt);
+        plan.NextFireAt.Should().BeAfter(now);
+    }
+
+    [Fact]
+    public void Fire_once_skips_occurrences_missed_beyond_the_misfire_threshold()
+    {
+        var now = DateTimeOffset.Parse("2026-07-23T12:00:30Z");
+        var schedule = NewSchedule(
+            nextFireAt: now.AddHours(-2),
+            MisfirePolicy.FireOnce);
+
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, now, TimeSpan.FromHours(1));
+
+        plan.CreateRun.Should().BeFalse();
+        plan.NextFireAt.Should().BeAfter(now);
+    }
+
+    [Fact]
+    public void Fire_once_backfills_without_bound_when_the_threshold_is_infinite()
+    {
+        var now = DateTimeOffset.Parse("2026-07-23T12:00:30Z");
+        var schedule = NewSchedule(
+            nextFireAt: now.AddHours(-2),
+            MisfirePolicy.FireOnce);
+
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, now, TimeSpan.MaxValue);
+
+        plan.CreateRun.Should().BeTrue();
+        plan.ScheduledFor.Should().Be(schedule.NextFireAt);
+        plan.NextFireAt.Should().BeAfter(now);
+    }
+
+    [Fact]
+    public void Fire_once_never_backfills_when_the_threshold_is_zero()
+    {
+        var now = DateTimeOffset.Parse("2026-07-23T12:00:30Z");
+        var schedule = NewSchedule(
+            nextFireAt: now.AddMinutes(-10),
+            MisfirePolicy.FireOnce);
+
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, now, TimeSpan.Zero);
+
+        plan.CreateRun.Should().BeFalse();
         plan.NextFireAt.Should().BeAfter(now);
     }
 
@@ -31,7 +74,7 @@ public sealed class ScheduleMisfireTests
             nextFireAt: now.AddMinutes(-10),
             MisfirePolicy.SkipMissed);
 
-        var plan = ScheduleReconciliationPlanner.Plan(schedule, now);
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, now, TimeSpan.FromHours(1));
 
         plan.CreateRun.Should().BeFalse();
         plan.NextFireAt.Should().BeAfter(now);
@@ -45,7 +88,7 @@ public sealed class ScheduleMisfireTests
             nextFireAt: DateTimeOffset.Parse("2026-07-23T12:00:00Z"),
             MisfirePolicy.SkipMissed);
 
-        var plan = ScheduleReconciliationPlanner.Plan(schedule, now);
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, now, TimeSpan.FromHours(1));
 
         plan.CreateRun.Should().BeTrue();
         plan.NextFireAt.Should().Be(DateTimeOffset.Parse("2026-07-23T12:01:00Z"));

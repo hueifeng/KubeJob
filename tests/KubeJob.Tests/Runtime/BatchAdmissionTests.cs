@@ -458,7 +458,7 @@ public sealed class BatchAdmissionTests
             16,
             CancellationToken.None);
         var claim = claims.Should().ContainSingle().Subject;
-        var planned = ScheduleReconciliationPlanner.Plan(claim.Schedule, DateTimeOffset.UtcNow);
+        var planned = ScheduleReconciliationPlanner.Plan(claim.Schedule, DateTimeOffset.UtcNow, TimeSpan.MaxValue);
         var run = await store.CommitFireAsync(
             new CommitScheduleFireCommand(
                 claim.Schedule.Id,

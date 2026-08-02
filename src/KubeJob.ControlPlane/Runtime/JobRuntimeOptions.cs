@@ -23,6 +23,20 @@ public sealed class JobRuntimeOptions
 
     public TimeSpan ScheduleFailureDelay { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// How old a missed occurrence may be before a <see cref="MisfirePolicy.FireOnce"/>
+    /// schedule skips it instead of backfilling. When a schedule is behind by
+    /// more than one interval, FireOnce creates at most one Run for the oldest
+    /// missed occurrence, and only if the miss fell within this window; an
+    /// older miss is stale (e.g. a long-disabled schedule re-enabled) and is
+    /// skipped like <see cref="MisfirePolicy.SkipMissed"/>. Set to
+    /// <see cref="TimeSpan.Zero"/> to never backfill missed occurrences; set
+    /// to <see cref="TimeSpan.MaxValue"/> to backfill regardless of age (the
+    /// pre-threshold behavior). Note <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>
+    /// is negative and cannot be used here. Default 1 hour.
+    /// </summary>
+    public TimeSpan ScheduleMisfireThreshold { get; set; } = TimeSpan.FromHours(1);
+
     public int MaxClaimBatchSize { get; set; } = 32;
 
     /// <summary>
@@ -146,6 +160,11 @@ public sealed class JobRuntimeOptions
         if (ScheduleFailureDelay < TimeSpan.Zero)
         {
             throw new InvalidOperationException("ScheduleFailureDelay cannot be negative.");
+        }
+
+        if (ScheduleMisfireThreshold < TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("ScheduleMisfireThreshold cannot be negative.");
         }
 
         if (MaxClaimBatchSize is < 1 or > 1024)

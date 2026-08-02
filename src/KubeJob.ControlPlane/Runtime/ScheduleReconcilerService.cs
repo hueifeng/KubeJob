@@ -59,7 +59,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "KubeJob schedule reconciliation iteration failed");
-                await Task.Delay(_options.ScheduleFailureDelay, stoppingToken);
+                await Task.Delay(ApplyJitter(_options.ScheduleFailureDelay), stoppingToken);
             }
         }
     }
@@ -96,7 +96,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
         CancellationToken cancellationToken)
     {
         var schedule = claim.Schedule;
-        var plan = ScheduleReconciliationPlanner.Plan(schedule, observedNow);
+        var plan = ScheduleReconciliationPlanner.Plan(schedule, observedNow, _options.ScheduleMisfireThreshold);
         var runId = CreateOccurrenceId(schedule.Id, plan.ScheduledFor);
         var idempotencyKey = $"schedule:{schedule.Id}:{plan.ScheduledFor.UtcTicks}";
         try
@@ -147,7 +147,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
             await _store.ReleaseClaimAsync(
                 schedule.Id,
                 claim.ClaimToken,
-                DateTimeOffset.UtcNow.Add(_options.ScheduleFailureDelay),
+                DateTimeOffset.UtcNow.Add(ApplyJitter(_options.ScheduleFailureDelay)),
                 cancellationToken);
         }
     }
@@ -159,5 +159,16 @@ public sealed class ScheduleReconcilerService : BackgroundService
         ArgumentException.ThrowIfNullOrWhiteSpace(scheduleId);
         var bytes = Encoding.UTF8.GetBytes($"{scheduleId}\n{scheduledFor.ToUniversalTime():O}");
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Scatters a retry delay within [0.5, 1.5] x delay so a burst of failures
+    /// (e.g. a database blip recovering) does not re-synchronize every
+    /// schedule and control-plane instance onto the same retry instant.
+    /// </summary>
+    internal static TimeSpan ApplyJitter(TimeSpan delay)
+    {
+        var factor = 0.5 + (Random.Shared.NextDouble() * 1.0);
+        return TimeSpan.FromTicks((long)(delay.Ticks * factor));
     }
 }
