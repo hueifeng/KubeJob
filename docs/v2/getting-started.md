@@ -101,10 +101,10 @@ var status = await jobs.GetStatusAsync(handle.JobId, cancellationToken);
 ```
 
 An idempotency key may be reused only for the same JobKey, semantically equal
-JSON payload, and execution identity (Queue, Priority, ConcurrencyKey,
-MaxAttempts, and TimeoutSeconds). Reusing it with another execution identity,
-job, or payload throws `IdempotencyConflictException`; the HTTP API returns
-`409 Conflict`.
+JSON payload, execution identity (Queue, Priority, ConcurrencyKey,
+MaxAttempts, and TimeoutSeconds), RetryPolicy, Continuation, and Compensation.
+Action payload JSON is compared semantically. Reusing the key with any changed
+behavior throws `IdempotencyConflictException`; the HTTP API returns `409 Conflict`.
 
 Cancellation is cooperative:
 
@@ -114,6 +114,26 @@ await jobs.CancelAsync(
     "The user canceled the export",
     cancellationToken);
 ```
+
+For independent Runs, `IJobClient.EnqueueBatchAsync` sends one bounded control-
+plane batch and returns one `JobHandle` per input item:
+
+```csharp
+var handles = await jobs.EnqueueBatchAsync(
+    Jobs.SendEmail,
+    new[]
+    {
+        (new SendEmail("a@example.com", "Welcome", "Hello"),
+            (JobEnqueueOptions?)new JobEnqueueOptions { IdempotencyKey = "welcome:a" }),
+        (new SendEmail("b@example.com", "Welcome", "Hello"),
+            (JobEnqueueOptions?)new JobEnqueueOptions { IdempotencyKey = "welcome:b" })
+    },
+    cancellationToken);
+```
+
+This is transactional admission and throughput optimization, not a durable
+`JobBatch` with group lifecycle or `MaxParallelism`. The default maximum is 256
+items per batch and can be changed with `JobRuntimeOptions.MaxSubmissionBatchSize`.
 
 ## 4. Distributed control plane and workers
 
@@ -146,7 +166,7 @@ create one current Attempt and lease atomically.
 ## 5. State transitions
 
 ```text
-Submission transaction: Run(Pending) + Outbox
+Submission transaction: BrokerDispatch Run(Pending) + Outbox; Pull Run(Pending)
 Claim transaction: create Attempt/lease, Run -> Running
 Success transaction: Attempt/Run -> Succeeded
 Retryable failure: close Attempt, Run -> Pending, write another Outbox entry
@@ -173,13 +193,22 @@ await schedules.UpsertCronAsync(
         MisfirePolicy = MisfirePolicy.FireOnce,
         ConcurrencyPolicy = ScheduleConcurrencyPolicy.SkipIfRunning,
         MaxAttempts = 3,
-        Timeout = TimeSpan.FromMinutes(30)
+        Timeout = TimeSpan.FromMinutes(30),
+        // Required when the target queue uses ExecutionOrderingMode.KeyOrdered.
+        ConcurrencyKey = "report:daily",
+        RetryPolicy = new RetryPolicy(
+            BackoffStrategy.Exponential,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMinutes(2))
     });
 ```
 
 Multiple control-plane replicas use expiring Schedule claims and optimistic
 versions. Advancing `NextFireAt`, creating the occurrence Run, and writing its
-Outbox entry happen in one transaction.
+Outbox entry happen in one transaction. The occurrence inherits the Schedule's
+`ConcurrencyKey`, retry policy, and terminal actions; an occurrence created for
+a `KeyOrdered` queue is rejected at the control-plane boundary if the key is
+missing.
 
 ## 7. Dashboard
 
@@ -211,7 +240,7 @@ The Dashboard is read-only by default. Payloads are hidden by default. Set
 `AllowMutatingActions` only when operators should be able to cancel Runs and
 enable or disable Schedules. Lease and fencing credentials are never rendered.
 
-## 8. RabbitMQ notification acceleration
+## 8. RabbitMQ execution dispatch and notification acceleration
 
 ```csharp
 builder.Services.UseRabbitMqKubeJobNotifications(options =>
@@ -220,11 +249,23 @@ builder.Services.UseRabbitMqKubeJobNotifications(options =>
 });
 ```
 
+For the default `BrokerDispatch` profile, register the execution dispatcher as
+well:
+
+```csharp
+builder.Services.UseRabbitMqKubeJobExecutionDispatcher(options =>
+{
+    options.ConnectionString = "amqp://kubejob:secret@rabbitmq:5672/";
+    options.ConsumerGroup = "mailer";
+});
+```
+
 Remote workers can add `AddRabbitMqKubeJobWorkerNotifications` with the same
-broker settings. Notifications are only queue-specific wake-up hints. Workers
-still claim from PostgreSQL, so duplicate or missing messages cannot create
-another valid Attempt. Workers with the same `ConsumerGroup` compete for each
-hint, avoiding a claim storm across every worker.
+broker settings. Notification messages are only queue-specific wake-up hints;
+execution envelopes still go through durable PostgreSQL admission and the
+normal lease/completion path. Duplicate or missing messages cannot create
+another valid Attempt. A host without a broker must explicitly configure its
+queues for `Pull`.
 
 If RabbitMQ is also the business-message source, register its ingress queue
 separately:

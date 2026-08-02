@@ -186,7 +186,22 @@ public sealed class ScheduleRuntimeTests
                 "report.generate",
                 "{}",
                 "* * * * *",
-                Queue: " reports.generate "));
+                Queue: " reports.generate ",
+                ConcurrencyKey: "report:42",
+                RetryPolicy: new RetryPolicy(
+                    BackoffStrategy.Fixed,
+                    TimeSpan.FromSeconds(1),
+                    TimeSpan.FromSeconds(1)),
+                Continuation: new Continuation
+                {
+                    JobKey = "report.followup",
+                    PayloadJson = "{}"
+                },
+                Compensation: new Compensation
+                {
+                    JobKey = "report.compensate",
+                    PayloadJson = "{}"
+                }));
         var persistedSchedule = await store.GetAsync(
             "daily-report-routing",
             CancellationToken.None);
@@ -217,11 +232,19 @@ public sealed class ScheduleRuntimeTests
         persistedSchedule.ConsumerGroup.Should().Be("reports-workers");
         persistedSchedule.TransportId.Should().Be("rabbitmq");
         persistedSchedule.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
+        persistedSchedule.ConcurrencyKey.Should().Be("report:42");
+        persistedSchedule.RetryPolicy.Should().NotBeNull();
+        persistedSchedule.Continuation!.JobKey.Should().Be("report.followup");
+        persistedSchedule.Compensation!.JobKey.Should().Be("report.compensate");
         run.Should().NotBeNull();
         run!.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
         run.ConsumerGroup.Should().Be("reports-workers");
         run.TransportId.Should().Be("rabbitmq");
         run.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
+        run.ConcurrencyKey.Should().Be("report:42");
+        run.RetryPolicy.Should().BeEquivalentTo(persistedSchedule.RetryPolicy);
+        run.Continuation.Should().BeEquivalentTo(persistedSchedule.Continuation);
+        run.Compensation.Should().BeEquivalentTo(persistedSchedule.Compensation);
         var work = outbox.Should().ContainSingle(message => message.PayloadJson.Contains("cron-run-1")).Subject;
         work.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
         work.ConsumerGroup.Should().Be("reports-workers");
@@ -229,6 +252,30 @@ public sealed class ScheduleRuntimeTests
         var orderingMode = typeof(OutboxMessageRecord).GetProperty("OrderingMode");
         orderingMode.Should().NotBeNull();
         ((ExecutionOrderingMode)orderingMode!.GetValue(work)!).Should().Be(ExecutionOrderingMode.KeyOrdered);
+    }
+
+    [Fact]
+    public async Task KeyOrdered_schedule_requires_a_concurrency_key()
+    {
+        var options = new QueueDeliveryOptions();
+        options.Queues["reports.generate"] = new QueueDefinition
+        {
+            OrderingMode = ExecutionOrderingMode.KeyOrdered
+        };
+        var schedules = new ScheduleControlPlane(
+            new InMemoryJobRuntimeStore(),
+            new QueueCatalog(Options.Create(options)));
+
+        var action = async () => await schedules.CreateCronAsync(
+            "daily-report-key-required",
+            new UpsertCronScheduleRequest(
+                "report.generate",
+                "{}",
+                "* * * * *",
+                Queue: "reports.generate"));
+
+        var exception = await action.Should().ThrowAsync<ControlPlaneValidationException>();
+        exception.Which.Code.Should().Be("ordering_key_required");
     }
 
     [Fact]

@@ -49,8 +49,8 @@ failures.
 - Validation behavior cannot drift between typed, HTTP, and broker callers.
 - Tests exercise behavior through the control-plane interface rather than
   duplicating controller internals.
-- The runtime implementation and storage contracts now compile into the
-  `KubeJob.ControlPlane` assembly. Source files retain the historical
-  `KubeJob.Server.Runtime` namespace during this incremental extraction so
-  existing using directives remain source-compatible. ASP.NET Server contains
-  only transport, Dashboard, and composition code.
+- The runtime implementation and storage contracts now live physically in and
+  compile into the `KubeJob.ControlPlane` assembly. Source files retain the
+  historical `KubeJob.Server.Runtime` namespace so existing using directives
+  remain source-compatible. ASP.NET Server contains only transport, Dashboard,
+  and composition code; it no longer source-links the control-plane runtime.

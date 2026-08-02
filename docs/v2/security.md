@@ -78,7 +78,10 @@ builder.Services.AddKubeJobServer(options =>
 The Client policy protects submission, status, cancellation, attempt-history,
 and Schedule endpoints. The Worker policy protects registration, claim,
 renewal, heartbeat, close, and completion. They are optional for backward
-compatibility, but distributed production deployments should configure both.
+compatibility. **This is fail-open when omitted:** a production deployment that
+does not configure the Client, Worker, and Dashboard policies may expose those
+endpoints anonymously. Configure all applicable policies before exposing the
+server beyond a trusted network.
 The host must still register authentication and call `UseAuthentication()` and
 `UseAuthorization()`.
 

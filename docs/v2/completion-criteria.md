@@ -13,6 +13,10 @@ the following pass on the final PR Head:
 - Lease expiry requeues or terminates according to attempt policy.
 - Idempotency conflicts are explicit and race-safe.
 - Schedule fire advances the cursor and inserts Run + Outbox atomically.
+- Schedule occurrences carry the same ordering key, retry policy, and terminal
+  actions as their Schedule; KeyOrdered schedules without a key are rejected.
+- Terminal-action children persist `ParentRunId` and `RelationKind` and expose
+  that lineage through status and Dashboard projections.
 - Outbox publishing claims recover after publisher crashes.
 - Attempt query DTOs do not expose lease or fencing credentials.
 - RabbitMQ notifications remain non-authoritative and polling remains a fallback.

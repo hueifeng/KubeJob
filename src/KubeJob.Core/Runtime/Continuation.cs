@@ -32,7 +32,9 @@ public sealed record Continuation
 
     /// <summary>
     /// Optional queue for the continuation job. When <c>null</c> the
-    /// original run's queue is reused.
+    /// original run's queue is reused. The current control-plane contract
+    /// requires an explicit queue, when supplied, to match the parent queue;
+    /// cross-queue actions need a separately persisted delivery target.
     /// </summary>
     public string? Queue { get; init; }
 }
@@ -54,6 +56,7 @@ public enum ContinuationTrigger
 
 /// <summary>
 /// A compensating action that fires when the original run fails.
+/// This includes a terminal Dead run after retry exhaustion.
 /// Equivalent to MassTransit Courier's <c>Compensate()</c>.
 /// Opposite of <see cref="Continuation"/> (which fires on success).
 /// </summary>
@@ -71,6 +74,9 @@ public sealed record Compensation
 
     /// <summary>
     /// Optional queue. When <c>null</c> the original run's queue is reused.
+    /// The current control-plane contract requires an explicit queue, when
+    /// supplied, to match the parent queue; cross-queue actions need a
+    /// separately persisted delivery target.
     /// </summary>
     public string? Queue { get; init; }
 }

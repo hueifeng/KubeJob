@@ -46,6 +46,7 @@ public sealed class JobMessageIngress : IJobMessageIngressBatch
         {
             return Array.Empty<JobIngressResult>();
         }
+        _controlPlane.ValidateSubmissionBatchSize(messages.Count);
 
         var requests = new EnqueueJobRequest[messages.Count];
         for (var index = 0; index < messages.Count; index++)

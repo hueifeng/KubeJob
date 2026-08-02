@@ -35,19 +35,7 @@ public sealed class HttpJobClient : IJobClient
             throw new ArgumentException("The job key must be initialized.", nameof(job));
         }
 
-        var request = new EnqueueJobRequest(
-            job.Value,
-            JsonSerializer.Serialize(payload, SerializerOptions),
-            options.ResolveQueue(job.Value),
-            options.Priority,
-            options.NotBefore?.ToUniversalTime(),
-            options.IdempotencyKey,
-            options.ConcurrencyKey,
-            options.MaxAttempts,
-            checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
-            RetryPolicy: options.RetryPolicy,
-            Continuation: options.Continuation,
-            Compensation: options.Compensation);
+        var request = CreateRequest(job, payload, options);
 
         using var response = await _httpClient.PostAsJsonAsync(
             "api/kubejob/jobs",
@@ -79,24 +67,44 @@ public sealed class HttpJobClient : IJobClient
     {
         ArgumentNullException.ThrowIfNull(batch);
         if (batch.Count == 0) return Array.Empty<JobHandle>();
+        if (job.IsEmpty)
+        {
+            throw new ArgumentException("The job key must be initialized.", nameof(job));
+        }
 
-        // HTTP client does not have a batch endpoint; issue individual concurrent
-        // enqueues. In-process callers should use EnqueueBatchAsync on
-        // DefaultJobClient for true DB-level batching.
-        var handles = new JobHandle[batch.Count];
-        var tasks = new Task[batch.Count];
+        var requests = new EnqueueJobRequest[batch.Count];
         for (var i = 0; i < batch.Count; i++)
         {
-            var index = i;
             var (payload, options) = batch[i];
-            tasks[i] = EnqueueAsync(job, payload, options ?? new JobEnqueueOptions(), cancellationToken)
-                .AsTask()
-                .ContinueWith(t =>
-                {
-                    handles[index] = t.Result;
-                }, TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously);
+            requests[i] = CreateRequest(job, payload, options ?? new JobEnqueueOptions());
         }
-        await Task.WhenAll(tasks);
+
+        using var response = await _httpClient.PostAsJsonAsync(
+            "api/kubejob/jobs/batch",
+            requests,
+            SerializerOptions,
+            cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            var conflict = await response.Content.ReadFromJsonAsync<IdempotencyConflictPayload>(
+                SerializerOptions,
+                cancellationToken);
+            throw new IdempotencyConflictException(
+                conflict?.IdempotencyKey ?? string.Empty,
+                conflict?.ExistingJobId ?? string.Empty);
+        }
+
+        response.EnsureSuccessStatusCode();
+        var handles = await response.Content.ReadFromJsonAsync<JobHandle[]>(
+            SerializerOptions,
+            cancellationToken);
+        if (handles is null || handles.Length != batch.Count)
+        {
+            throw new InvalidOperationException(
+                "KubeJob batch enqueue returned an unexpected handle count.");
+        }
+
         return handles;
     }
 
@@ -145,4 +153,21 @@ public sealed class HttpJobClient : IJobClient
         string Code,
         string IdempotencyKey,
         string ExistingJobId);
+
+    private static EnqueueJobRequest CreateRequest<TPayload>(
+        JobKey<TPayload> job,
+        TPayload payload,
+        JobEnqueueOptions options) => new(
+            job.Value,
+            JsonSerializer.Serialize(payload, SerializerOptions),
+            options.ResolveQueue(job.Value),
+            options.Priority,
+            options.NotBefore?.ToUniversalTime(),
+            options.IdempotencyKey,
+            options.ConcurrencyKey,
+            options.MaxAttempts,
+            checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
+            RetryPolicy: options.RetryPolicy,
+            Continuation: options.Continuation,
+            Compensation: options.Compensation);
 }

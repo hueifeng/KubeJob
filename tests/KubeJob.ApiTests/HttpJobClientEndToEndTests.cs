@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http.Json;
 using FluentAssertions;
 using KubeJob.Client;
 using KubeJob.Core.Client;
@@ -85,6 +87,55 @@ public sealed class HttpJobClientEndToEndTests
         var exception = await action.Should().ThrowAsync<IdempotencyConflictException>();
         exception.Which.IdempotencyKey.Should().Be("remote:conflict");
         exception.Which.ExistingJobId.Should().Be(first.JobId);
+    }
+
+    [Fact]
+    public async Task Client_uses_the_atomic_server_batch_endpoint()
+    {
+        await using var app = await StartServerAsync();
+        using var http = app.GetTestClient();
+        var client = new HttpJobClient(http);
+        var key = new JobKey<RemotePayload>("remote.batch");
+        var batch = new (RemotePayload Payload, JobEnqueueOptions? Options)[]
+        {
+            (new RemotePayload("first"), new JobEnqueueOptions
+            {
+                IdempotencyKey = "remote:batch:1"
+            }),
+            (new RemotePayload("second"), new JobEnqueueOptions
+            {
+                IdempotencyKey = "remote:batch:2"
+            })
+        };
+
+        var handles = await client.EnqueueBatchAsync(key, batch);
+        var replay = await client.EnqueueBatchAsync(key, batch);
+        var runs = await app.Services.GetRequiredService<IJobRuntimeDashboardStore>()
+            .GetRunsAsync(
+                new DashboardRunQuery(PageSize: 10, JobKey: "remote.batch", ExactJobKey: true),
+                CancellationToken.None);
+
+        handles.Should().HaveCount(2);
+        replay.Should().Equal(handles);
+        runs.TotalCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Batch_endpoint_rejects_null_items_as_a_validation_error()
+    {
+        await using var app = await StartServerAsync();
+        using var http = app.GetTestClient();
+
+        using var response = await http.PostAsJsonAsync<object?[]>(
+            "api/kubejob/jobs/batch",
+            new object?[] { null });
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        body.Should().Contain("invalid_job_submission");
+        var runs = await app.Services.GetRequiredService<IJobRuntimeDashboardStore>()
+            .GetRunsAsync(new DashboardRunQuery(PageSize: 10), CancellationToken.None);
+        runs.TotalCount.Should().Be(0);
     }
 
     private static async Task<WebApplication> StartServerAsync()

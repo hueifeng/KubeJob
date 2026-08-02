@@ -52,9 +52,15 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         // JSONB columns are named *Json while their CLR properties are not
         // (ContinuationJson -> JobRunRecord.Continuation). Dapper's default
         // name matching cannot pair them, so every read path returned null
-        // for these fields. The type map below strips the suffix and the
-        // handlers decode the JSON cells.
-        SqlMapper.SetTypeMap(typeof(JobRunRecord), new JsonSuffixTypeMap());
+        // for these fields. The type map below strips the suffix for both Run
+        // and Schedule records, and the handlers decode the JSON cells.
+        SqlMapper.SetTypeMap(
+            typeof(JobRunRecord),
+            new JsonSuffixTypeMap(typeof(JobRunRecord)));
+        SqlMapper.SetTypeMap(
+            typeof(JobScheduleRecord),
+            new JsonSuffixTypeMap(typeof(JobScheduleRecord)));
+        SqlMapper.AddTypeHandler(RetryPolicyJsonHandler.Instance);
         SqlMapper.AddTypeHandler(ContinuationJsonHandler.Instance);
         SqlMapper.AddTypeHandler(CompensationJsonHandler.Instance);
     }
@@ -222,7 +228,12 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     /// </summary>
     private sealed class JsonSuffixTypeMap : SqlMapper.ITypeMap
     {
-        private readonly DefaultTypeMap _inner = new(typeof(JobRunRecord));
+        private readonly DefaultTypeMap _inner;
+
+        public JsonSuffixTypeMap(Type type)
+        {
+            _inner = new DefaultTypeMap(type);
+        }
 
         public ConstructorInfo? FindConstructor(string[] names, Type[] types) =>
             _inner.FindConstructor(names, types);
@@ -261,7 +272,23 @@ public sealed partial class PostgreSqlJobRuntimeStore :
                 (string)value,
                 SerializerOptions)!;
 
-        public override void SetValue(IDbDataParameter parameter, Continuation value)
+        public override void SetValue(IDbDataParameter parameter, Continuation? value)
+        {
+            parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
+            parameter.DbType = DbType.String;
+        }
+    }
+
+    private sealed class RetryPolicyJsonHandler : SqlMapper.TypeHandler<RetryPolicy>
+    {
+        public static RetryPolicyJsonHandler Instance { get; } = new();
+
+        public override RetryPolicy Parse(object value) =>
+            JsonSerializer.Deserialize<RetryPolicy>(
+                (string)value,
+                SerializerOptions)!;
+
+        public override void SetValue(IDbDataParameter parameter, RetryPolicy? value)
         {
             parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
             parameter.DbType = DbType.String;
@@ -277,7 +304,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
                 (string)value,
                 SerializerOptions)!;
 
-        public override void SetValue(IDbDataParameter parameter, Compensation value)
+        public override void SetValue(IDbDataParameter parameter, Compensation? value)
         {
             parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
             parameter.DbType = DbType.String;

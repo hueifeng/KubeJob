@@ -47,6 +47,7 @@ public sealed partial class InMemoryJobRuntimeStore :
         return _runs.Values.Any(other =>
             !string.Equals(other.Id, candidate.Id, StringComparison.Ordinal)
             && other.Phase == JobPhase.Running
+            && string.Equals(other.ExecutionLane, candidate.ExecutionLane, StringComparison.Ordinal)
             && string.Equals(other.ConcurrencyKey, candidate.ConcurrencyKey, StringComparison.Ordinal));
     }
 

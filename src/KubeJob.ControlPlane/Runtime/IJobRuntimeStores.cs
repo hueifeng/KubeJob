@@ -41,6 +41,8 @@ public interface IJobSubmissionStore
     /// trips and WAL flushes. Per-command results preserve idempotency: a command
     /// whose <see cref="SubmitJobCommand.IdempotencyKey"/> already exists returns
     /// that existing run with <c>Existing: true</c> and writes no outbox row.
+    /// Implementations must preflight conflicts and leave no new rows behind if
+    /// any command cannot be admitted.
     /// </summary>
     ValueTask<IReadOnlyList<SubmitJobResult>> SubmitBatchAsync(
         IReadOnlyList<SubmitJobCommand> commands,

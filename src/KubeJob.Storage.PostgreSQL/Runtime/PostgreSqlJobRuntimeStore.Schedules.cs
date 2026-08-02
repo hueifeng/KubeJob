@@ -14,19 +14,31 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
+        var retryPolicyJson = schedule.RetryPolicy is null
+            ? null
+            : JsonSerializer.Serialize(schedule.RetryPolicy, SerializerOptions);
+        var continuationJson = schedule.Continuation is null
+            ? null
+            : JsonSerializer.Serialize(schedule.Continuation, SerializerOptions);
+        var compensationJson = schedule.Compensation is null
+            ? null
+            : JsonSerializer.Serialize(schedule.Compensation, SerializerOptions);
         return await connection.QuerySingleOrDefaultAsync<JobScheduleRecord>(new CommandDefinition(@"
             INSERT INTO Kj2_JobSchedules
                 (Id, JobKey, PayloadJson, CronExpression, TimeZoneId, Queue,
                  ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode,
                  Priority, MisfirePolicy, ConcurrencyPolicy, MaxAttempts,
-                 TimeoutSeconds, Enabled, NextFireAt, LastFireAt, ClaimToken,
+                 TimeoutSeconds, ConcurrencyKey, RetryPolicyJson, ContinuationJson,
+                 CompensationJson, Enabled, NextFireAt, LastFireAt, ClaimToken,
                  ClaimUntil, CreatedAt, UpdatedAt, Version)
             VALUES
                 (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @CronExpression,
                  @TimeZoneId, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode,
                  @Priority, @MisfirePolicy,
-                 @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @Enabled,
-                 @NextFireAt, @LastFireAt, NULL, NULL, clock_timestamp(),
+                 @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @ConcurrencyKey,
+                 CAST(@RetryPolicyJson AS jsonb),
+                 CAST(@ContinuationJson AS jsonb), CAST(@CompensationJson AS jsonb),
+                 @Enabled, @NextFireAt, @LastFireAt, NULL, NULL, clock_timestamp(),
                  clock_timestamp(), 1)
             ON CONFLICT (Id) DO NOTHING
             RETURNING *;",
@@ -48,6 +60,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 ConcurrencyPolicy = (int)schedule.ConcurrencyPolicy,
                 schedule.MaxAttempts,
                 schedule.TimeoutSeconds,
+                schedule.ConcurrencyKey,
+                RetryPolicyJson = retryPolicyJson,
+                ContinuationJson = continuationJson,
+                CompensationJson = compensationJson,
                 schedule.Enabled,
                 NextFireAt = schedule.NextFireAt.ToUniversalTime(),
                 LastFireAt = schedule.LastFireAt?.ToUniversalTime()
@@ -61,19 +77,31 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
         await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
+        var retryPolicyJson = schedule.RetryPolicy is null
+            ? null
+            : JsonSerializer.Serialize(schedule.RetryPolicy, SerializerOptions);
+        var continuationJson = schedule.Continuation is null
+            ? null
+            : JsonSerializer.Serialize(schedule.Continuation, SerializerOptions);
+        var compensationJson = schedule.Compensation is null
+            ? null
+            : JsonSerializer.Serialize(schedule.Compensation, SerializerOptions);
         var stored = await connection.QuerySingleAsync<JobScheduleRecord>(new CommandDefinition(@"
             INSERT INTO Kj2_JobSchedules
                 (Id, JobKey, PayloadJson, CronExpression, TimeZoneId, Queue,
                  ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode,
                  Priority, MisfirePolicy, ConcurrencyPolicy, MaxAttempts,
-                 TimeoutSeconds, Enabled, NextFireAt, LastFireAt, ClaimToken,
+                 TimeoutSeconds, ConcurrencyKey, RetryPolicyJson, ContinuationJson,
+                 CompensationJson, Enabled, NextFireAt, LastFireAt, ClaimToken,
                  ClaimUntil, CreatedAt, UpdatedAt, Version)
             VALUES
                 (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @CronExpression,
                  @TimeZoneId, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode,
                  @Priority, @MisfirePolicy,
-                 @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @Enabled,
-                 @NextFireAt, @LastFireAt, NULL, NULL, clock_timestamp(),
+                 @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @ConcurrencyKey,
+                 CAST(@RetryPolicyJson AS jsonb),
+                 CAST(@ContinuationJson AS jsonb), CAST(@CompensationJson AS jsonb),
+                 @Enabled, @NextFireAt, @LastFireAt, NULL, NULL, clock_timestamp(),
                  clock_timestamp(), 1)
             ON CONFLICT (Id) DO UPDATE SET
                 JobKey = EXCLUDED.JobKey,
@@ -86,10 +114,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 ConsumerGroup = EXCLUDED.ConsumerGroup,
                 TransportId = EXCLUDED.TransportId,
                 OrderingMode = EXCLUDED.OrderingMode,
+                Priority = EXCLUDED.Priority,
                 MisfirePolicy = EXCLUDED.MisfirePolicy,
                 ConcurrencyPolicy = EXCLUDED.ConcurrencyPolicy,
                 MaxAttempts = EXCLUDED.MaxAttempts,
                 TimeoutSeconds = EXCLUDED.TimeoutSeconds,
+                ConcurrencyKey = EXCLUDED.ConcurrencyKey,
+                RetryPolicyJson = EXCLUDED.RetryPolicyJson,
+                ContinuationJson = EXCLUDED.ContinuationJson,
+                CompensationJson = EXCLUDED.CompensationJson,
                 Enabled = EXCLUDED.Enabled,
                 NextFireAt = EXCLUDED.NextFireAt,
                 ClaimToken = NULL,
@@ -115,6 +148,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 ConcurrencyPolicy = (int)schedule.ConcurrencyPolicy,
                 schedule.MaxAttempts,
                 schedule.TimeoutSeconds,
+                schedule.ConcurrencyKey,
+                RetryPolicyJson = retryPolicyJson,
+                ContinuationJson = continuationJson,
+                CompensationJson = compensationJson,
                 schedule.Enabled,
                 NextFireAt = schedule.NextFireAt.ToUniversalTime(),
                 LastFireAt = schedule.LastFireAt?.ToUniversalTime()
@@ -333,13 +370,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     (Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode,
                      Priority, Phase, AvailableAt,
                      CreatedAt, AttemptCount, MaxAttempts, TimeoutSeconds,
-                     IdempotencyKey, ScheduleId, ScheduledFor,
+                     RetryPolicyJson, ContinuationJson, CompensationJson,
+                     IdempotencyKey, ConcurrencyKey, ScheduleId, ScheduledFor,
                      CancelRequested, Version)
                 VALUES
                     (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode,
                      @Priority,
                      @Pending, @Now, @Now, 0, @MaxAttempts, @TimeoutSeconds,
-                     @IdempotencyKey, @ScheduleId, @ScheduledFor, FALSE, 0)
+                     CAST(@RetryPolicyJson AS jsonb), CAST(@ContinuationJson AS jsonb),
+                     CAST(@CompensationJson AS jsonb),
+                     @IdempotencyKey, @ConcurrencyKey, @ScheduleId, @ScheduledFor, FALSE, 0)
                 ON CONFLICT (ScheduleId, ScheduledFor)
                     WHERE ScheduleId IS NOT NULL AND ScheduledFor IS NOT NULL
                 DO NOTHING;",
@@ -359,7 +399,17 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     Now = databaseNow,
                     schedule.MaxAttempts,
                     schedule.TimeoutSeconds,
+                    RetryPolicyJson = schedule.RetryPolicy is null
+                        ? null
+                        : JsonSerializer.Serialize(schedule.RetryPolicy, SerializerOptions),
+                    ContinuationJson = schedule.Continuation is null
+                        ? null
+                        : JsonSerializer.Serialize(schedule.Continuation, SerializerOptions),
+                    CompensationJson = schedule.Compensation is null
+                        ? null
+                        : JsonSerializer.Serialize(schedule.Compensation, SerializerOptions),
                     command.IdempotencyKey,
+                    schedule.ConcurrencyKey,
                     ScheduleId = schedule.Id,
                     ScheduledFor = command.ScheduledFor.ToUniversalTime()
                 },

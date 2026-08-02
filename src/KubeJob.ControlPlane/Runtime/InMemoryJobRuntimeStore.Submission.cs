@@ -27,6 +27,7 @@ public sealed partial class InMemoryJobRuntimeStore
         var results = new SubmitJobResult[commands.Count];
         lock (_gate)
         {
+            ValidateBatchCommands(commands);
             for (var index = 0; index < commands.Count; index++)
             {
                 results[index] = SubmitCore(commands[index]);
@@ -34,6 +35,38 @@ public sealed partial class InMemoryJobRuntimeStore
         }
 
         return ValueTask.FromResult<IReadOnlyList<SubmitJobResult>>(results);
+    }
+
+    private void ValidateBatchCommands(IReadOnlyList<SubmitJobCommand> commands)
+    {
+        var newKeys = new Dictionary<string, SubmitJobCommand>(StringComparer.Ordinal);
+        foreach (var command in commands)
+        {
+            var target = command.DeliveryTarget
+                ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null, "default");
+            target.Validate();
+
+            if (string.IsNullOrWhiteSpace(command.IdempotencyKey))
+            {
+                continue;
+            }
+
+            if (_idempotency.TryGetValue(command.IdempotencyKey, out var existingId)
+                && _runs.TryGetValue(existingId, out var existing))
+            {
+                JobSubmissionIdentity.EnsureCompatible(existing, command);
+                continue;
+            }
+
+            if (newKeys.TryGetValue(command.IdempotencyKey, out var earlier))
+            {
+                JobSubmissionIdentity.EnsureCompatible(earlier, command);
+            }
+            else
+            {
+                newKeys.Add(command.IdempotencyKey, command);
+            }
+        }
     }
 
     private SubmitJobResult SubmitCore(SubmitJobCommand command)
@@ -142,7 +175,9 @@ public sealed partial class InMemoryJobRuntimeStore
                 run.CompletedAt = DateTimeOffset.UtcNow;
             }
 
-            if (!string.IsNullOrWhiteSpace(consumerGroup))
+            if (run.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch
+                && string.Equals(consumerGroup, run.ConsumerGroup, StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(consumerGroup))
             {
                 var message = new OutboxMessageRecord
                 {

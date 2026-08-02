@@ -276,15 +276,17 @@ public sealed class WorkerControlPlane
             _options.MaxClaimBatchSize,
             cancellationToken);
 
-        var admittedByRunId = jobs.ToDictionary(job => job.RunId, StringComparer.Ordinal);
-        var unclaimedIndexes = validIndexes
-            .Where(index => !admittedByRunId.ContainsKey(request.RunIds[index]))
-            .ToArray();
+        // A broker can redeliver the same Run more than once in one micro-batch.
+        // Only the first envelope may own the newly created Attempt; subsequent
+        // copies must be classified from durable state instead of becoming null
+        // response slots or scheduling the same attempt twice.
+        var firstIndexByRunId = validIndexes
+            .GroupBy(index => request.RunIds[index], StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
         foreach (var job in jobs)
         {
-            var index = Array.IndexOf(request.RunIds.ToArray(), job.RunId);
-            if (index >= 0)
+            if (firstIndexByRunId.TryGetValue(job.RunId, out var index))
             {
                 results[index] = new AdmitExecutionResult(
                     job.RunId,
@@ -292,6 +294,10 @@ public sealed class WorkerControlPlane
                     job);
             }
         }
+
+        var unclaimedIndexes = validIndexes
+            .Where(index => results[index] is null)
+            .ToArray();
 
         if (unclaimedIndexes.Length > 0)
         {

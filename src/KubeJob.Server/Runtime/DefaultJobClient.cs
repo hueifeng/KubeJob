@@ -68,6 +68,7 @@ public sealed class DefaultJobClient : IJobClient
         if (batch.Count == 0) return Array.Empty<JobHandle>();
         if (job.IsEmpty)
             throw new ArgumentException("The job key must be initialized.", nameof(job));
+        _controlPlane.ValidateSubmissionBatchSize(batch.Count);
 
         var requests = new EnqueueJobRequest[batch.Count];
         for (var i = 0; i < batch.Count; i++)

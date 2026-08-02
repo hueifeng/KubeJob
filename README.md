@@ -3,9 +3,10 @@
 [中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [本地开发环境](./docs/v2/local-development.zh-CN.md) · [Local Development](./docs/v2/local-development.md) · [Architecture](./docs/v2/architecture.md) · [Hardening Review](./docs/v2/hardening-review.md)
 
 KubeJob is a typed, embeddable, distributed background-job runtime for .NET.
-It uses logical Runs, physical Attempts, pull-based workers, expiring leases,
-worker-session fencing, PostgreSQL transactions, an Outbox, and independent
-cron Schedule resources.
+It uses logical Runs, physical Attempts, Pull or BrokerDispatch workers,
+expiring leases, worker-session fencing, PostgreSQL transactions, an Outbox,
+and independent cron Schedule resources. `BrokerDispatch` is the default
+delivery profile; a deployment can pin an individual logical Queue to `Pull`.
 
 KubeJob provides **at-least-once execution**. It does not claim exactly-once
 external side effects.
@@ -51,8 +52,9 @@ public sealed class SendEmailJob : IKubeJob<SendEmail>
 ```
 
 The source generator creates a strongly typed key such as `Jobs.SendEmail`.
-`JobExecutionContext` is read-only and does not expose a service locator,
-repository, lease token, or fencing token.
+Business dependencies use constructor injection. `JobExecutionContext` exposes
+a scoped `IServiceProvider` for middleware and runtime resolution, but does not
+expose a repository, lease token, or fencing token.
 
 ## Register and enqueue
 
@@ -81,6 +83,15 @@ The control plane and worker can share one process without localhost HTTP:
 
 ```csharp
 builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+builder.Services.ConfigureKubeJobQueueRouting(routing =>
+{
+    // This minimal in-process sample does not register RabbitMQ, so keep its
+    // logical queue on the database Pull profile explicitly.
+    routing.Queues["mail"] = new QueueDefinition
+    {
+        Profile = ExecutionDeliveryProfile.Pull
+    };
+});
 builder.Services.AddKubeJob(
     configureServer: server => server.UsePostgreSql(connectionString),
     configureWorker: worker =>
@@ -234,9 +245,15 @@ Kj2_JobSchedules
 Kj2_Outbox
 ```
 
-PostgreSQL is the source of truth. Optional MQ integration publishes only
-queue-specific wake-up hints from the transactional Outbox; duplicate or
-missing notifications cannot grant ownership.
+PostgreSQL is the source of truth. For `BrokerDispatch` queues, the
+transactional Outbox publishes a full `ExecutionEnvelope` for targeted worker
+admission. For `Pull` queues, workers discover claimable Runs from PostgreSQL;
+optional MQ notification adapters publish only wake-up hints. Duplicate or
+missing messages cannot grant execution ownership in either profile.
+
+Authorization policies are optional for backward compatibility. Production
+deployments should configure separate client, worker, and Dashboard policies;
+without them the corresponding endpoints may be anonymous.
 
 ## License
 

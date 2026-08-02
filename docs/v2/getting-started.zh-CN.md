@@ -88,9 +88,10 @@ var handle = await jobs.EnqueueAsync(
 var status = await jobs.GetStatusAsync(handle.JobId, cancellationToken);
 ```
 
-相同幂等键只有在 JobKey、JSON Payload 语义以及执行身份（Queue、Priority、ConcurrencyKey、
-MaxAttempts、TimeoutSeconds）都相同时才会返回原 Run。相同键用于不同执行身份、不同任务
-或不同 Payload 时，会抛出 `IdempotencyConflictException`，HTTP API 返回 409。
+相同幂等键只有在 JobKey、JSON Payload 语义、执行身份（Queue、Priority、ConcurrencyKey、
+MaxAttempts、TimeoutSeconds）、RetryPolicy、Continuation 和 Compensation 都相同时才会返回原
+Run。后续动作中的 Payload 也按 JSON 语义比较。相同键用于任何不同执行行为、不同任务或不同
+Payload 时，会抛出 `IdempotencyConflictException`，HTTP API 返回 409。
 
 取消采用协作式语义：
 
@@ -100,6 +101,25 @@ await jobs.CancelAsync(
     "用户取消了导出",
     cancellationToken);
 ```
+
+如果要提交多个相互独立的 Run，可以使用 `IJobClient.EnqueueBatchAsync`。它会经过一次有界的
+控制面批量提交，并按输入顺序返回每个 Run 的 `JobHandle`：
+
+```csharp
+var handles = await jobs.EnqueueBatchAsync(
+    Jobs.SendEmail,
+    new[]
+    {
+        (new SendEmail("a@example.com", "Welcome", "Hello"),
+            (JobEnqueueOptions?)new JobEnqueueOptions { IdempotencyKey = "welcome:a" }),
+        (new SendEmail("b@example.com", "Welcome", "Hello"),
+            (JobEnqueueOptions?)new JobEnqueueOptions { IdempotencyKey = "welcome:b" })
+    },
+    cancellationToken);
+```
+
+这只是事务化 admission 和吞吐优化，不是带有组级生命周期或 `MaxParallelism` 的持久化
+`JobBatch`。默认每批最多 256 条，可通过 `JobRuntimeOptions.MaxSubmissionBatchSize` 调整。
 
 ## 4. 分布式控制面和 Worker
 
@@ -131,7 +151,7 @@ Attempt 重新计算容量，不单独信任 Worker 自报。PostgreSQL 使用
 ## 5. 状态何时变化
 
 ```text
-提交事务：插入 Run(Pending) + Outbox
+提交事务：BrokerDispatch 插入 Run(Pending) + Outbox；Pull 只插入 Run(Pending)
 Claim 事务：创建 Attempt/Lease，Run -> Running
 成功事务：Attempt/Run -> Succeeded
 可重试失败：关闭 Attempt，Run -> Pending，并写下一条 Outbox
@@ -157,12 +177,20 @@ await schedules.UpsertCronAsync(
         MisfirePolicy = MisfirePolicy.FireOnce,
         ConcurrencyPolicy = ScheduleConcurrencyPolicy.SkipIfRunning,
         MaxAttempts = 3,
-        Timeout = TimeSpan.FromMinutes(30)
+        Timeout = TimeSpan.FromMinutes(30),
+        // 目标 Queue 是 KeyOrdered 时必须提供。
+        ConcurrencyKey = "report:daily",
+        RetryPolicy = new RetryPolicy(
+            BackoffStrategy.Exponential,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMinutes(2))
     });
 ```
 
 多个控制面通过可过期的 Schedule Claim 和版本号协调。推进 `NextFireAt`、创建 occurrence
-Run、写入 Outbox 在同一事务中完成。
+Run、写入 Outbox 在同一事务中完成。Occurrence 会继承 Schedule 的
+`ConcurrencyKey`、重试策略和终态动作；如果目标 Queue 是 `KeyOrdered` 而没有提供 key，
+控制面会拒绝该 Schedule。
 
 ## 7. Dashboard
 
@@ -201,7 +229,7 @@ Dashboard 默认只读，Payload 默认隐藏。只有在路由已被严格保�
 `ShowPayloads`；只有允许运维人员取消 Run、启停 Schedule 时，才开启
 `AllowMutatingActions`。页面永远不会显示 LeaseToken 或 fencing credential。
 
-## 8. RabbitMQ 通知加速
+## 8. RabbitMQ 执行分发与通知加速
 
 控制面：
 
@@ -212,10 +240,20 @@ builder.Services.UseRabbitMqKubeJobNotifications(options =>
 });
 ```
 
-远程 Worker 可使用 `AddRabbitMqKubeJobWorkerNotifications`。RabbitMQ 消息只表示“某个
-Queue 可能有工作”，Worker 收到后仍然执行数据库 Claim。重复消息只会多一次 Claim，消息
-丢失则由周期性 Pull 兜底。同一 `ConsumerGroup` 中的 Worker 竞争消费提示，避免每个
-Worker 都被同时唤醒并请求数据库。
+默认 `BrokerDispatch` 还需要注册执行分发器：
+
+```csharp
+builder.Services.UseRabbitMqKubeJobExecutionDispatcher(options =>
+{
+    options.ConnectionString = "amqp://kubejob:secret@rabbitmq:5672/";
+    options.ConsumerGroup = "mailer";
+});
+```
+
+远程 Worker 可使用 `AddRabbitMqKubeJobWorkerNotifications`。通知消息只表示“某个 Queue
+可能有工作”；执行 envelope 仍然经过 PostgreSQL 的 durable admission 和统一
+Lease/Complete 路径。重复或丢失的消息都不能创建有效 Attempt。没有 Broker 的 Host 必须
+显式把对应 Queue 配置为 `Pull`。
 
 ## 9. 交付保证
 

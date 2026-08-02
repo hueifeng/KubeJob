@@ -144,6 +144,44 @@ public sealed class BatchAdmissionTests
     }
 
     [Fact]
+    public async Task AdmitBatch_classifies_duplicate_envelopes_without_scheduling_one_attempt_twice()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        using var provider = services.BuildServiceProvider();
+
+        var jobs = provider.GetRequiredService<JobControlPlane>();
+        var workers = provider.GetRequiredService<WorkerControlPlane>();
+        var registration = await workers.RegisterAsync(
+            new RegisterWorkerSessionRequest(
+                "worker-duplicate", "session-duplicate", null, "localhost", 2,
+                new[] { "default" },
+                new[] { "test.echo" },
+                new Dictionary<string, string>()),
+            CancellationToken.None);
+        var receipt = await SubmitAsync(jobs, "duplicate-envelope");
+
+        var response = await workers.AdmitBatchAsync(
+            new AdmitExecutionBatchRequest(
+                registration.WorkerId,
+                registration.SessionId,
+                registration.SessionEpoch,
+                2,
+                new[] { receipt.Handle.JobId, receipt.Handle.JobId },
+                new[] { "default" },
+                new[] { "test.echo" }),
+            CancellationToken.None);
+
+        response.Results.Should().HaveCount(2);
+        response.Results[0].Status.Should().Be(ExecutionAdmissionStatus.Admitted);
+        response.Results[0].Job.Should().NotBeNull();
+        response.Results[1].Status.Should().Be(ExecutionAdmissionStatus.Retry);
+        response.Results[1].Reason.Should().Be("run_already_running");
+        response.Results[1].Job.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Batch_envelopes_are_admitted_and_executed_by_the_worker()
     {
         var services = new ServiceCollection();

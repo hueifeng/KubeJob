@@ -25,6 +25,13 @@ public sealed class JobRuntimeOptions
 
     public int MaxClaimBatchSize { get; set; } = 32;
 
+    /// <summary>
+    /// Maximum number of logical Runs accepted by one submission transaction.
+    /// This bounds validation work, outbox rows, transaction duration, and
+    /// rollback cost without introducing a durable JobBatch aggregate.
+    /// </summary>
+    public int MaxSubmissionBatchSize { get; set; } = 256;
+
     public int LeaseReaperBatchSize { get; set; } = 256;
 
     public int OutboxBatchSize { get; set; } = 256;
@@ -75,13 +82,14 @@ public sealed class JobRuntimeOptions
     /// </summary>
     public TimeSpan OrderingBacklogRefreshInterval { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>
     /// Flag for broker-accelerated cancellation of BrokerDispatch runs.
-    /// Submission always writes <c>work-available</c> outbox rows; the
-    /// <c>OutboxPublisherService</c> converts them to an
+    /// BrokerDispatch submission writes a <c>work-available</c> outbox row; the
+    /// <c>OutboxPublisherService</c> converts it to an
     /// <see cref="KubeJob.Core.Runtime.ExecutionEnvelope"/> at publish time for
     /// queues whose delivery profile is
     /// <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>,
-    /// so this flag does not change submission outbox shape.
+    /// while Pull submission discovers work directly from the store.
     /// When this flag is <c>true</c>, cancelling a BrokerDispatch-profile Run
     /// also writes a <c>cancel</c> outbox row so a registered
     /// <c>ICancelPublisher</c> can fan out a low-latency cancel signal to
@@ -91,8 +99,8 @@ public sealed class JobRuntimeOptions
     /// and an <c>ICancelPublisher</c> implementation for the cancel path to
     /// function; hosts that stay on <c>Pull</c> and skip the RabbitMQ execution
     /// extensions can set this back to <c>false</c>. Default is <c>true</c>,
-    /// matching <see cref="KubeJob.Server.Runtime.QueueDeliveryOptions.DefaultProfile"/>
-    /// defaulting to <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>.
+    /// matching <c>QueueDeliveryOptions.Defaults.Profile</c> defaulting to
+    /// <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>.
     /// </summary>
     public bool BrokerCancelPropagationEnabled { get; set; } = true;
 
@@ -143,6 +151,11 @@ public sealed class JobRuntimeOptions
         if (MaxClaimBatchSize is < 1 or > 1024)
         {
             throw new InvalidOperationException("MaxClaimBatchSize must be between 1 and 1024.");
+        }
+
+        if (MaxSubmissionBatchSize is < 1 or > 10_000)
+        {
+            throw new InvalidOperationException("MaxSubmissionBatchSize must be between 1 and 10000.");
         }
 
         if (LeaseReaperBatchSize is < 1 or > 10_000)

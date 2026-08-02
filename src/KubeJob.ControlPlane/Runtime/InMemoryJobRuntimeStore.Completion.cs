@@ -144,12 +144,14 @@ public sealed partial class InMemoryJobRuntimeStore
                 }
                 else if (run.AttemptCount < run.MaxAttempts)
                 {
-                    Requeue(run, now.Add(retryPolicy.ComputeDelay(run.AttemptCount)), attempt.FailureCode, attempt.FailureMessage);
+                    var effectivePolicy = run.RetryPolicy ?? retryPolicy;
+                    Requeue(run, now.Add(effectivePolicy.ComputeDelay(run.AttemptCount)), attempt.FailureCode, attempt.FailureMessage);
                     AddWorkAvailableOutbox(run, now);
                 }
                 else
                 {
                     MakeTerminal(run, JobPhase.Dead, now, attempt.FailureCode, attempt.FailureMessage);
+                    FireContinuation(run, JobAttemptOutcome.RetryableFailure, now);
                 }
 
                 changed++;
@@ -179,7 +181,8 @@ public sealed partial class InMemoryJobRuntimeStore
             run.MaxAttempts,
             run.TimeoutSeconds,
             run.OrderingMode,
-            run.ConcurrencyKey);
+            run.ConcurrencyKey,
+            run.Id);
 
         // Check for continuation.
         if (run.Continuation is { } continuation
@@ -231,6 +234,8 @@ public sealed partial class InMemoryJobRuntimeStore
             TimeoutSeconds = spec.TimeoutSeconds,
             OrderingMode = spec.OrderingMode,
             ConcurrencyKey = spec.ConcurrencyKey,
+            ParentRunId = spec.ParentRunId ?? parent.Id,
+            RelationKind = spec.RelationKind,
             OrderingSequence = Interlocked.Increment(ref _nextOrderingSequence),
             Metadata = lineageKey == "_compensationOf"
                 ? new Dictionary<string, string?>

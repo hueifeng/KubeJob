@@ -39,6 +39,7 @@ public sealed class KubeJobWorkerOptions
 
     public Dictionary<string, string> Labels { get; set; } = new();
 
+    /// <summary>
     /// Queues this worker is allowed to claim from. A worker must declare its
     /// business queues explicitly; there is no implicit catch-all queue.
     /// </summary>

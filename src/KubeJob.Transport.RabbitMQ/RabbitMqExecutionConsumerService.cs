@@ -260,7 +260,19 @@ public sealed class RabbitMqExecutionConsumerService : BackgroundService
 
         try
         {
-            await pendingWriter.WriteAsync(delivery, cancellationToken);
+            // RabbitMQ.Client's Body memory is backed by a receive buffer and
+            // is only valid during the ReceivedAsync callback. The batch loop
+            // runs after this callback returns, so retain an owned copy instead
+            // of enqueueing the broker-owned memory.
+            var buffered = new BasicDeliverEventArgs(
+                delivery.ConsumerTag,
+                delivery.DeliveryTag,
+                delivery.Redelivered,
+                delivery.Exchange,
+                delivery.RoutingKey,
+                delivery.BasicProperties,
+                delivery.Body.ToArray());
+            await pendingWriter.WriteAsync(buffered, cancellationToken);
         }
         catch (ChannelClosedException)
         {

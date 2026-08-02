@@ -45,6 +45,38 @@ public sealed class JobsApiController : ControllerBase
         }
     }
 
+    [HttpPost("batch")]
+    public async Task<ActionResult<IReadOnlyList<JobHandle>>> EnqueueBatch(
+        [FromBody] IReadOnlyList<EnqueueJobRequest> requests,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var receipts = await _controlPlane.SubmitBatchAsync(requests, cancellationToken);
+            var handles = receipts.Select(receipt => receipt.Handle).ToArray();
+            return receipts.Any(receipt => !receipt.Existing)
+                ? Accepted(handles)
+                : Ok(handles);
+        }
+        catch (ControlPlaneValidationException validation)
+        {
+            return BadRequest(new
+            {
+                code = validation.Code,
+                message = validation.Message
+            });
+        }
+        catch (IdempotencyConflictException conflict)
+        {
+            return Conflict(new
+            {
+                code = "idempotency_conflict",
+                conflict.IdempotencyKey,
+                conflict.ExistingJobId
+            });
+        }
+    }
+
     [HttpGet("{runId}")]
     public async Task<ActionResult<JobStatusSnapshot>> GetStatus(
         string runId,

@@ -151,6 +151,66 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Lease_reaper_fires_terminal_actions_when_retry_budget_is_exhausted()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var run = (await store.SubmitAsync(
+            NewCommand(
+                maxAttempts: 1,
+                continuation: new Continuation
+                {
+                    JobKey = "mail.followup",
+                    Trigger = ContinuationTrigger.OnAnyTerminal
+                },
+                compensation: new Compensation
+                {
+                    JobKey = "mail.compensate"
+                }),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "reaper-worker", "reaper-session");
+        (await store.ClaimAsync(
+            NewClaim(worker),
+            TimeSpan.FromSeconds(-1),
+            1,
+            CancellationToken.None)).Should().ContainSingle();
+
+        var reconciled = await store.RequeueExpiredLeasesAsync(
+            DateTimeOffset.UtcNow,
+            TestRetryPolicy,
+            10,
+            CancellationToken.None);
+
+        reconciled.Should().Be(1);
+        (await store.GetRunAsync(run.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Dead);
+
+        var followUpWorker = await RegisterAsync(
+            store,
+            "reaper-followup-worker",
+            "reaper-followup-session",
+            maxConcurrency: 2,
+            capabilities: new[] { "mail.followup", "mail.compensate" });
+        var followUps = await store.ClaimAsync(
+            NewClaim(followUpWorker) with
+            {
+                Capabilities = new[] { "mail.followup", "mail.compensate" },
+                AvailableSlots = 2
+            },
+            TimeSpan.FromSeconds(30),
+            2,
+            CancellationToken.None);
+
+        followUps.Select(job => job.JobKey)
+            .Should().BeEquivalentTo(new[] { "mail.followup", "mail.compensate" });
+        var followUpRuns = await Task.WhenAll(
+            followUps.Select(job => store.GetRunAsync(job.RunId, CancellationToken.None).AsTask()));
+        followUpRuns.All(candidate => candidate is not null).Should().BeTrue();
+        followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Continuation)!
+            .ParentRunId.Should().Be(run.Id);
+        followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Compensation)!
+            .ParentRunId.Should().Be(run.Id);
+    }
+
+    [Fact]
     public async Task Completion_from_expired_attempt_is_rejected_after_reassignment()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -237,6 +297,52 @@ public sealed class InMemoryJobRuntimeStoreTests
         accepted.Requested.Should().BeTrue();
         claimed.Should().BeEmpty();
         snapshot!.Phase.Should().Be(JobPhase.Canceled);
+    }
+
+    [Fact]
+    public async Task Canceling_running_run_does_not_fire_terminal_actions()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var run = (await store.SubmitAsync(
+            NewCommand(
+                continuation: new Continuation
+                {
+                    JobKey = "mail.followup",
+                    Trigger = ContinuationTrigger.OnAnyTerminal
+                },
+                compensation: new Compensation
+                {
+                    JobKey = "mail.compensate"
+                }),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(
+            store,
+            "cancel-worker",
+            "cancel-session",
+            maxConcurrency: 1,
+            capabilities: new[] { "mail.send" });
+        var claim = (await store.ClaimAsync(
+            NewClaim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+
+        (await store.RequestCancelAsync(
+            run.Id,
+            "operator canceled",
+            null,
+            CancellationToken.None)).Requested.Should().BeTrue();
+        var completion = await store.CompleteAsync(
+            NewCompletion(worker, claim, JobAttemptOutcome.Canceled),
+            TestRetryPolicy,
+            CancellationToken.None);
+        var runs = await store.GetRunsAsync(
+            new DashboardRunQuery(PageSize: 100),
+            CancellationToken.None);
+
+        completion.Phase.Should().Be(JobPhase.Canceled);
+        runs.TotalCount.Should().Be(1);
+        runs.Items.Should().ContainSingle(item => item.Id == run.Id);
     }
 
     [Fact]
@@ -387,6 +493,28 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Batch_submission_does_not_leave_rows_when_a_later_idempotency_conflicts()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(
+            NewCommand(idempotencyKey: "already-exists"),
+            CancellationToken.None);
+
+        var invalid = async () => await store.SubmitBatchAsync(new[]
+        {
+            NewCommand(idempotencyKey: "new-row"),
+            NewCommand(idempotencyKey: "already-exists") with
+            {
+                PayloadJson = "{\"to\":\"different\"}"
+            }
+        }, CancellationToken.None);
+
+        await invalid.Should().ThrowAsync<IdempotencyConflictException>();
+        (await store.GetByIdempotencyKeyAsync("new-row", CancellationToken.None))
+            .Should().BeNull();
+    }
+
+    [Fact]
     public async Task Outbox_dispatch_respects_batch_size()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -480,7 +608,10 @@ public sealed class InMemoryJobRuntimeStoreTests
     private static SubmitJobCommand NewCommand(
         string? idempotencyKey = null,
         int maxAttempts = 1,
-        string? concurrencyKey = null) => new(
+        string? concurrencyKey = null,
+        RetryPolicy? retryPolicy = null,
+        Continuation? continuation = null,
+        Compensation? compensation = null) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         "default",
@@ -489,20 +620,25 @@ public sealed class InMemoryJobRuntimeStoreTests
         idempotencyKey,
         concurrencyKey,
         maxAttempts,
-        300);
+        300,
+        RetryPolicy: retryPolicy,
+        Continuation: continuation,
+        Compensation: compensation);
 
     private static async Task<WorkerSessionRecord> RegisterAsync(
         InMemoryJobRuntimeStore store,
         string workerId,
-        string sessionId) => await store.RegisterAsync(
+        string sessionId,
+        int maxConcurrency = 1,
+        IReadOnlyList<string>? capabilities = null) => await store.RegisterAsync(
         new RegisterWorkerSessionRequest(
             workerId,
             sessionId,
             "test",
             "localhost",
-            1,
+            maxConcurrency,
             new[] { "default" },
-            new[] { "mail.send" },
+            capabilities ?? new[] { "mail.send" },
             new Dictionary<string, string>()),
         CancellationToken.None);
 

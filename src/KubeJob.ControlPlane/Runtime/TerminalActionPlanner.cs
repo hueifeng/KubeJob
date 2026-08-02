@@ -4,8 +4,9 @@ namespace KubeJob.Server.Runtime;
 
 /// <summary>
 /// Fully-resolved follow-up job to create when a parent run reaches a terminal
-/// state. Stores apply this spec to their own persistence model; lineage
-/// metadata (e.g. <c>_continuationOf</c>) is store-specific.
+/// state. Stores apply this spec to their own persistence model. Parent
+/// relation fields are part of the spec so every adapter persists the same
+/// lineage contract.
 /// </summary>
 public sealed record FollowUpRunSpec(
     string JobKey,
@@ -19,7 +20,11 @@ public sealed record FollowUpRunSpec(
     int MaxAttempts,
     int TimeoutSeconds,
     ExecutionOrderingMode OrderingMode,
-    string? ConcurrencyKey);
+    string? ConcurrencyKey)
+{
+    public string? ParentRunId { get; init; }
+    public RunRelationKind RelationKind { get; init; }
+}
 
 /// <summary>
 /// Execution context a follow-up job inherits from its parent run.
@@ -34,7 +39,8 @@ public sealed record FollowUpInheritance(
     int MaxAttempts,
     int TimeoutSeconds,
     ExecutionOrderingMode OrderingMode,
-    string? ConcurrencyKey);
+    string? ConcurrencyKey,
+    string? ParentRunId = null);
 
 /// <summary>
 /// Shared decision logic for per-run continuation and compensation jobs.
@@ -46,8 +52,9 @@ public static class TerminalActionPlanner
     /// <summary>
     /// Whether a continuation configured with <paramref name="trigger"/> should
     /// fire for <paramref name="outcome"/>. <see cref="ContinuationTrigger.OnAnyTerminal"/>
-    /// covers every outcome that lands in a terminal phase, including retry
-    /// exhaustion (which completes with a retryable outcome but ends in Dead).
+    /// covers action-eligible terminal outcomes, including retry exhaustion
+    /// (which completes with a retryable outcome but ends in Dead). Cancellation
+    /// is terminal but deliberately does not trigger terminal actions.
     /// </summary>
     public static bool ShouldFireContinuation(
         ContinuationTrigger trigger,
@@ -67,10 +74,19 @@ public static class TerminalActionPlanner
 
     /// <summary>
     /// Whether a compensation action should fire for <paramref name="outcome"/>.
+    /// <see cref="JobAttemptOutcome.RetryableFailure"/> is terminal here only
+    /// after the retry budget is exhausted; requeued retries do not call this
+    /// method.
     /// </summary>
     public static bool ShouldFireCompensation(JobAttemptOutcome outcome)
     {
-        return outcome is JobAttemptOutcome.PermanentFailure or JobAttemptOutcome.TimedOut;
+        // RetryableFailure reaches this planner only after the retry budget is
+        // exhausted. A requeued retry never calls the planner, so treating it
+        // as a terminal failure here also covers the Dead phase consistently
+        // for direct completion and lease-reaper paths.
+        return outcome is JobAttemptOutcome.PermanentFailure
+            or JobAttemptOutcome.RetryableFailure
+            or JobAttemptOutcome.TimedOut;
     }
 
     /// <summary>
@@ -103,7 +119,11 @@ public static class TerminalActionPlanner
             parent.MaxAttempts,
             parent.TimeoutSeconds,
             parent.OrderingMode,
-            parent.ConcurrencyKey);
+            parent.ConcurrencyKey)
+        {
+            ParentRunId = parent.ParentRunId,
+            RelationKind = RunRelationKind.Continuation
+        };
     }
 
     /// <summary>
@@ -132,6 +152,10 @@ public static class TerminalActionPlanner
             parent.MaxAttempts,
             parent.TimeoutSeconds,
             parent.OrderingMode,
-            parent.ConcurrencyKey);
+            parent.ConcurrencyKey)
+        {
+            ParentRunId = parent.ParentRunId,
+            RelationKind = RunRelationKind.Compensation
+        };
     }
 }

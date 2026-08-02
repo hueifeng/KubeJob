@@ -1,6 +1,8 @@
+using System.Text.Json.Serialization;
 using KubeJob.Core.Jobs;
 
 using KubeJob.Core.Queues;
+using KubeJob.Core.Runtime;
 
 namespace KubeJob.Core.Scheduling;
 
@@ -29,6 +31,10 @@ public sealed class CronScheduleOptions
     public int MaxAttempts { get; init; } = 1;
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
     public bool Enabled { get; init; } = true;
+    public string? ConcurrencyKey { get; init; }
+    public RetryPolicy? RetryPolicy { get; init; }
+    public Continuation? Continuation { get; init; }
+    public Compensation? Compensation { get; init; }
 
     public void Validate()
     {
@@ -57,6 +63,13 @@ public sealed class CronScheduleOptions
         {
             throw new ArgumentOutOfRangeException(nameof(ConcurrencyPolicy));
         }
+
+        if (ConcurrencyKey is { Length: > 500 })
+        {
+            throw new ArgumentOutOfRangeException(nameof(ConcurrencyKey));
+        }
+
+        RetryPolicy?.Validate();
     }
 
     public string ResolveQueue(string jobKey)
@@ -69,6 +82,7 @@ public sealed class CronScheduleOptions
 
 public sealed record JobScheduleHandle(string ScheduleId);
 
+[method: JsonConstructor]
 public sealed record JobScheduleSnapshot(
     string ScheduleId,
     string JobKey,
@@ -78,7 +92,39 @@ public sealed record JobScheduleSnapshot(
     DateTimeOffset NextFireAt,
     DateTimeOffset? LastFireAt,
     MisfirePolicy MisfirePolicy,
-    ScheduleConcurrencyPolicy ConcurrencyPolicy);
+    ScheduleConcurrencyPolicy ConcurrencyPolicy,
+    string? ConcurrencyKey = null,
+    RetryPolicy? RetryPolicy = null,
+    Continuation? Continuation = null,
+    Compensation? Compensation = null)
+{
+    public JobScheduleSnapshot(
+        string ScheduleId,
+        string JobKey,
+        string CronExpression,
+        string TimeZoneId,
+        bool Enabled,
+        DateTimeOffset NextFireAt,
+        DateTimeOffset? LastFireAt,
+        MisfirePolicy MisfirePolicy,
+        ScheduleConcurrencyPolicy ConcurrencyPolicy)
+        : this(
+            ScheduleId,
+            JobKey,
+            CronExpression,
+            TimeZoneId,
+            Enabled,
+            NextFireAt,
+            LastFireAt,
+            MisfirePolicy,
+            ConcurrencyPolicy,
+            null,
+            null,
+            null,
+            null)
+    {
+    }
+}
 
 public interface IJobScheduleClient
 {

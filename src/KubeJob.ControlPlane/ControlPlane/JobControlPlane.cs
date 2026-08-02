@@ -50,6 +50,7 @@ public sealed class JobControlPlane
 
         var route = _queueRouter.Resolve(request.Queue);
         ValidateOrdering(request, route.Target);
+        request = NormalizeAndValidateTerminalActions(request, route.Queue);
 
         var result = await _submissions.SubmitAsync(
             new SubmitJobCommand(
@@ -91,6 +92,7 @@ public sealed class JobControlPlane
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requests);
+        ValidateSubmissionBatchSize(requests.Count);
         if (requests.Count == 0)
         {
             return Array.Empty<JobSubmissionReceipt>();
@@ -100,9 +102,16 @@ public sealed class JobControlPlane
         for (var index = 0; index < requests.Count; index++)
         {
             var request = requests[index];
+            if (request is null)
+            {
+                throw new ControlPlaneValidationException(
+                    "invalid_job_submission",
+                    $"Submission batch item at index {index} cannot be null.");
+            }
             ValidateSubmission(request);
             var route = _queueRouter.Resolve(request.Queue);
             ValidateOrdering(request, route.Target);
+            request = NormalizeAndValidateTerminalActions(request, route.Queue);
             commands[index] = new SubmitJobCommand(
                 request.JobKey,
                 request.PayloadJson,
@@ -146,6 +155,22 @@ public sealed class JobControlPlane
         return receipts;
     }
 
+    /// <summary>
+    /// Applies the same batch boundary before an adapter allocates its
+    /// translated command array. Persistence remains the authoritative second
+    /// check in <see cref="SubmitBatchAsync"/>.
+    /// </summary>
+    public void ValidateSubmissionBatchSize(int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (count > _options.MaxSubmissionBatchSize)
+        {
+            throw new ControlPlaneValidationException(
+                "job_submission_batch_too_large",
+                $"A submission batch cannot contain more than {_options.MaxSubmissionBatchSize} jobs.");
+        }
+    }
+
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(
         string runId,
         CancellationToken cancellationToken = default)
@@ -167,11 +192,11 @@ public sealed class JobControlPlane
         {
             var run = await _queries.GetRunAsync(runId, cancellationToken);
             if (run is not null
-                && _queueRouter.Resolve(run.Queue).Target.Profile == ExecutionDeliveryProfile.BrokerDispatch)
+                && run.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch)
             {
                 // Use the group persisted on the Run at submission time. The
-                // routing config may have changed since; re-resolving here
-                // could fan the cancel marker out to the wrong group.
+                // routing config may have changed since submission; inspecting
+                // it here could fan the cancel marker out to the wrong group.
                 group = run.ConsumerGroup;
             }
         }
@@ -242,6 +267,38 @@ public sealed class JobControlPlane
                 "invalid_job_payload",
                 "PayloadJson must contain valid JSON.");
         }
+
+        if (request.RetryPolicy is { } retryPolicy)
+        {
+            try
+            {
+                retryPolicy.Validate();
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                throw new ControlPlaneValidationException(
+                    "invalid_job_retry_policy",
+                    exception.Message);
+            }
+        }
+    }
+
+    private EnqueueJobRequest NormalizeAndValidateTerminalActions(
+        EnqueueJobRequest request,
+        string canonicalQueue)
+    {
+        var normalized = TerminalActionValidator.NormalizeAndValidate(
+            request.Continuation,
+            request.Compensation,
+            canonicalQueue,
+            _options.MaxPayloadBytes,
+            "invalid_job_terminal_action",
+            "job_terminal_action_payload_too_large");
+        return request with
+        {
+            Continuation = normalized.Continuation,
+            Compensation = normalized.Compensation
+        };
     }
 
     private static void ValidateOrdering(EnqueueJobRequest request, DeliveryTarget target)
@@ -264,7 +321,9 @@ public sealed class JobControlPlane
         run.CompletedAt,
         run.CurrentWorkerId,
         run.FailureCode,
-        run.FailureMessage);
+        run.FailureMessage,
+        run.ParentRunId,
+        run.RelationKind);
 
     private static JobAttemptSnapshot ToSnapshot(JobAttemptRecord attempt) => new(
         attempt.Id,

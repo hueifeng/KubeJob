@@ -77,7 +77,7 @@ public sealed class ExceptionMappingMiddleware : Core.Execution.IJobExecutionMid
             }
         }
 
-        mapping = default;
+        mapping = default!;
         return false;
     }
 }

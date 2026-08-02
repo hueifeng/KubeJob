@@ -135,6 +135,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                        SELECT 1
                        FROM Kj2_JobRuns predecessor
                        WHERE predecessor.Queue = r.Queue
+                         AND predecessor.ExecutionLane = r.ExecutionLane
                          AND predecessor.ConcurrencyKey = r.ConcurrencyKey
                          AND predecessor.OrderingMode = @KeyOrdered
                          AND predecessor.Phase IN (@Pending, @Running)
@@ -144,6 +145,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                        SELECT 1
                        FROM Kj2_JobRuns predecessor
                        WHERE predecessor.Queue = r.Queue
+                         AND predecessor.ExecutionLane = r.ExecutionLane
                          AND predecessor.OrderingMode = @StrictFifo
                          AND predecessor.Phase IN (@Pending, @Running)
                          AND predecessor.OrderingSequence < r.OrderingSequence))
@@ -179,24 +181,31 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken))).ToArray();
 
-        var candidateConcurrencyKeys = candidates
-            .Select(r => r.ConcurrencyKey)
-            .Where(k => !string.IsNullOrWhiteSpace(k))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        var runningConcurrencyKeys = candidateConcurrencyKeys.Length == 0
-            ? new HashSet<string>(StringComparer.Ordinal)
-            : (await connection.QueryAsync<string>(new CommandDefinition(@"
-                SELECT DISTINCT ConcurrencyKey
+        var candidateConcurrencyScopes = candidates
+            .Where(run => !string.IsNullOrWhiteSpace(run.ConcurrencyKey))
+            .Select(run => new ConcurrencyScope(run.ExecutionLane, run.ConcurrencyKey!))
+            .ToHashSet();
+        var runningConcurrencyScopes = candidateConcurrencyScopes.Count == 0
+            ? new HashSet<ConcurrencyScope>()
+            : (await connection.QueryAsync<ConcurrencyScopeRow>(new CommandDefinition(@"
+                SELECT DISTINCT ExecutionLane, ConcurrencyKey
                 FROM Kj2_JobRuns
                 WHERE Phase = @Running
-                  AND ConcurrencyKey = ANY(@Keys);",
-                new { Running = (int)JobPhase.Running, Keys = candidateConcurrencyKeys },
+                  AND ExecutionLane = ANY(@ExecutionLanes)
+                  AND ConcurrencyKey = ANY(@ConcurrencyKeys);",
+                new
+                {
+                    Running = (int)JobPhase.Running,
+                    ExecutionLanes = candidateConcurrencyScopes.Select(scope => scope.ExecutionLane).Distinct().ToArray(),
+                    ConcurrencyKeys = candidateConcurrencyScopes.Select(scope => scope.Key).Distinct().ToArray()
+                },
                 transaction,
-                cancellationToken: cancellationToken))).ToHashSet(StringComparer.Ordinal);
+                cancellationToken: cancellationToken)))
+                .Select(row => new ConcurrencyScope(row.ExecutionLane, row.ConcurrencyKey))
+                .ToHashSet();
 
         var reserved = new List<JobRunRecord>(Math.Min(limit, candidates.Length));
-        var reservedConcurrencyKeys = new HashSet<string>(StringComparer.Ordinal);
+        var reservedConcurrencyScopes = new HashSet<ConcurrencyScope>();
         foreach (var run in candidates)
         {
             if (reserved.Count >= limit)
@@ -204,20 +213,23 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 break;
             }
 
-            if (!string.IsNullOrWhiteSpace(run.ConcurrencyKey)
-                && reservedConcurrencyKeys.Contains(run.ConcurrencyKey))
+            var scope = string.IsNullOrWhiteSpace(run.ConcurrencyKey)
+                ? default(ConcurrencyScope?)
+                : new ConcurrencyScope(run.ExecutionLane, run.ConcurrencyKey);
+            if (scope is { } reservedScope
+                && reservedConcurrencyScopes.Contains(reservedScope))
             {
                 continue;
             }
 
-            if (!await TryReserveConcurrencyKeyAsync(connection, transaction, run, runningConcurrencyKeys, cancellationToken))
+            if (!await TryReserveConcurrencyKeyAsync(connection, transaction, run, runningConcurrencyScopes, cancellationToken))
             {
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(run.ConcurrencyKey))
+            if (scope is { } acceptedScope)
             {
-                reservedConcurrencyKeys.Add(run.ConcurrencyKey);
+                reservedConcurrencyScopes.Add(acceptedScope);
             }
 
             reserved.Add(run);
@@ -472,7 +484,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         JobRunRecord run,
-        HashSet<string> runningConcurrencyKeys,
+        HashSet<ConcurrencyScope> runningConcurrencyScopes,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(run.ConcurrencyKey))
@@ -480,9 +492,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return true;
         }
 
+        var scope = new ConcurrencyScope(run.ExecutionLane, run.ConcurrencyKey);
         var locked = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
-            "SELECT pg_try_advisory_xact_lock(hashtext(@ConcurrencyKey));",
-            new { run.ConcurrencyKey },
+            "SELECT pg_try_advisory_xact_lock(hashtext(@ExecutionLane), hashtext(@ConcurrencyKey));",
+            new { run.ExecutionLane, run.ConcurrencyKey },
             transaction,
             cancellationToken: cancellationToken));
         if (!locked)
@@ -490,12 +503,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return false;
         }
 
-        if (runningConcurrencyKeys.Contains(run.ConcurrencyKey))
+        if (runningConcurrencyScopes.Contains(scope))
         {
             return false;
         }
 
-        // The runningConcurrencyKeys snapshot was taken before this lock was
+        // The runningConcurrencyScopes snapshot was taken before this lock was
         // acquired, so a concurrent claim of the same key may have committed
         // in between and released the advisory lock. Holding the lock now
         // guarantees no other claimant is in flight, so a committed Running
@@ -505,10 +518,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
             SELECT EXISTS (
                 SELECT 1
                 FROM Kj2_JobRuns
-                WHERE ConcurrencyKey = @ConcurrencyKey
+                WHERE ExecutionLane = @ExecutionLane
+                  AND ConcurrencyKey = @ConcurrencyKey
                   AND Phase = @Running);",
             new
             {
+                run.ExecutionLane,
                 run.ConcurrencyKey,
                 Running = (int)JobPhase.Running
             },
@@ -526,4 +541,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public string QueuesJson { get; set; } = "[]";
         public string CapabilitiesJson { get; set; } = "[]";
     }
+
+    private sealed class ConcurrencyScopeRow
+    {
+        public string ExecutionLane { get; set; } = string.Empty;
+        public string ConcurrencyKey { get; set; } = string.Empty;
+    }
+
+    private readonly record struct ConcurrencyScope(string ExecutionLane, string Key);
 }

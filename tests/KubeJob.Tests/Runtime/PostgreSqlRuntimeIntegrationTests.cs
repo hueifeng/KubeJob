@@ -327,6 +327,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .Should().Equal(new Dictionary<string, string?> { ["parent"] = "cont-on-success" });
         followUpRun.DeliveryProfile.Should().Be(parent.DeliveryProfile);
         followUpRun.MaxAttempts.Should().Be(parent.MaxAttempts);
+        followUpRun.ParentRunId.Should().Be(parent.Id);
+        followUpRun.RelationKind.Should().Be(RunRelationKind.Continuation);
 
         // Compensation must not fire on success.
         var compensationWorker = await store.RegisterAsync(
@@ -420,6 +422,9 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         JsonSerializer.Deserialize<Dictionary<string, string?>>(
             (await store.GetRunAsync(compensationClaim.RunId, CancellationToken.None))!.PayloadJson)!
             .Should().Equal(new Dictionary<string, string?> { ["parent"] = "comp-on-failure" });
+        var compensationRun = (await store.GetRunAsync(compensationClaim.RunId, CancellationToken.None))!;
+        compensationRun.ParentRunId.Should().Be(parent.Id);
+        compensationRun.RelationKind.Should().Be(RunRelationKind.Compensation);
 
         var continuationClaim = (await store.ClaimAsync(
             new ClaimJobsRequest(
@@ -433,6 +438,9 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             1,
             CancellationToken.None)).Single();
         continuationClaim.JobKey.Should().Be("mail.send.followup");
+        var continuationRun = (await store.GetRunAsync(continuationClaim.RunId, CancellationToken.None))!;
+        continuationRun.ParentRunId.Should().Be(parent.Id);
+        continuationRun.RelationKind.Should().Be(RunRelationKind.Continuation);
     }
 
     [Fact]
@@ -652,6 +660,72 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Completion_batch_fires_terminal_actions_for_each_terminal_run()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var succeededRun = (await store.SubmitAsync(
+            NewSubmission("batch-action:succeeded") with
+            {
+                Continuation = new Continuation
+                {
+                    JobKey = "mail.batch.followup",
+                    PayloadJson = "{\"source\":\"batch-success\"}",
+                    Trigger = ContinuationTrigger.OnSuccess
+                }
+            },
+            CancellationToken.None)).Run;
+        var failedRun = (await store.SubmitAsync(
+            NewSubmission("batch-action:failed") with
+            {
+                Compensation = new Compensation
+                {
+                    JobKey = "mail.batch.compensate",
+                    PayloadJson = "{\"source\":\"batch-failure\"}"
+                }
+            },
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "batch-action-worker", "batch-action-session", 2);
+        var claims = await store.ClaimAsync(
+            Claim(worker) with { AvailableSlots = 2 },
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+        claims.Should().HaveCount(2);
+        var claimsByRunId = claims.ToDictionary(job => job.RunId);
+
+        var completions = await store.CompleteBatchAsync(
+            new[]
+            {
+                Completion(worker, claimsByRunId[succeededRun.Id], JobAttemptOutcome.Succeeded),
+                Completion(worker, claimsByRunId[failedRun.Id], JobAttemptOutcome.PermanentFailure)
+            },
+            TestRetryPolicy,
+            CancellationToken.None);
+
+        completions.Should().OnlyContain(result => result.Accepted);
+        var followUpWorker = await RegisterAsync(
+            store,
+            "batch-action-followup-worker",
+            "batch-action-followup-session",
+            2,
+            capabilities: new[] { "mail.batch.followup", "mail.batch.compensate" });
+        var followUps = await store.ClaimAsync(
+            Claim(followUpWorker) with
+            {
+                Capabilities = new[] { "mail.batch.followup", "mail.batch.compensate" },
+                AvailableSlots = 2
+            },
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+
+        followUps.Select(job => job.JobKey)
+            .Should().BeEquivalentTo(new[] { "mail.batch.followup", "mail.batch.compensate" });
+    }
+
+    [Fact]
     public async Task Completion_batch_honors_cancel_requested_before_success()
     {
         if (!Enabled) return;
@@ -779,6 +853,61 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Lease_reaper_fires_terminal_actions_when_a_run_becomes_dead()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var deadRun = (await store.SubmitAsync(
+            NewSubmission("lease-action:dead", maxAttempts: 1) with
+            {
+                Continuation = new Continuation
+                {
+                    JobKey = "mail.lease.followup",
+                    Trigger = ContinuationTrigger.OnAnyTerminal
+                },
+                Compensation = new Compensation
+                {
+                    JobKey = "mail.lease.compensate"
+                }
+            },
+            CancellationToken.None)).Run;
+
+        var worker = await RegisterAsync(store, "lease-action-worker", "lease-action-session");
+        (await store.ClaimAsync(
+            Claim(worker),
+            TimeSpan.FromMilliseconds(50),
+            1,
+            CancellationToken.None)).Should().ContainSingle();
+        await Task.Delay(150);
+
+        (await store.RequeueExpiredLeasesAsync(
+            DateTimeOffset.UtcNow,
+            TestRetryPolicy,
+            10,
+            CancellationToken.None)).Should().Be(1);
+        (await store.GetRunAsync(deadRun.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Dead);
+
+        var followUpWorker = await RegisterAsync(
+            store,
+            "lease-action-followup-worker",
+            "lease-action-followup-session",
+            2,
+            capabilities: new[] { "mail.lease.followup", "mail.lease.compensate" });
+        var followUps = await store.ClaimAsync(
+            Claim(followUpWorker) with
+            {
+                Capabilities = new[] { "mail.lease.followup", "mail.lease.compensate" },
+                AvailableSlots = 2
+            },
+            TimeSpan.FromMinutes(1),
+            2,
+            CancellationToken.None);
+
+        followUps.Select(job => job.JobKey)
+            .Should().BeEquivalentTo(new[] { "mail.lease.followup", "mail.lease.compensate" });
+    }
+
+    [Fact]
     public async Task Schedule_fire_advances_cursor_and_writes_run_and_outbox_atomically()
     {
         if (!Enabled) return;
@@ -811,6 +940,10 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None);
 
         run.Should().NotBeNull();
+        run!.ConcurrencyKey.Should().Be("schedule:postgres:42");
+        run.RetryPolicy.Should().BeEquivalentTo(schedule!.RetryPolicy);
+        run.Continuation.Should().BeEquivalentTo(schedule.Continuation);
+        run.Compensation.Should().BeEquivalentTo(schedule.Compensation);
         schedule!.NextFireAt.Should().BeCloseTo(next, TimeSpan.FromMicroseconds(1));
         schedule.LastFireAt.Should().NotBeNull();
         schedule.LastFireAt!.Value.Should().BeCloseTo(due, TimeSpan.FromMicroseconds(1));
@@ -947,6 +1080,45 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
 
         submissions.Select(result => result.Run.Id).Distinct().Should().ContainSingle();
         submissions.Count(result => result.Existing).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Idempotency_conflicts_when_persisted_retry_or_terminal_action_changes()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var first = await store.SubmitAsync(
+            NewSubmission("idempotency-behavior") with
+            {
+                RetryPolicy = new RetryPolicy(
+                    BackoffStrategy.Fixed,
+                    TimeSpan.FromSeconds(1),
+                    TimeSpan.FromSeconds(1)),
+                Continuation = new Continuation
+                {
+                    JobKey = "mail.idempotency.followup",
+                    PayloadJson = "{\"version\":1}"
+                }
+            },
+            CancellationToken.None);
+
+        var action = async () => await store.SubmitAsync(
+            NewSubmission("idempotency-behavior") with
+            {
+                RetryPolicy = new RetryPolicy(
+                    BackoffStrategy.Fixed,
+                    TimeSpan.FromSeconds(2),
+                    TimeSpan.FromSeconds(2)),
+                Continuation = new Continuation
+                {
+                    JobKey = "mail.idempotency.followup",
+                    PayloadJson = "{\"version\":2}"
+                }
+            },
+            CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<IdempotencyConflictException>();
+        exception.Which.ExistingJobId.Should().Be(first.Run.Id);
     }
 
     [Fact]
@@ -1200,6 +1372,43 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task KeyOrdered_runs_on_different_execution_lanes_do_not_block_each_other()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        const string key = "order:postgres:lanes";
+        var laneA = new DeliveryTarget(
+            ExecutionDeliveryProfile.Pull,
+            "lane-a",
+            null,
+            "default",
+            ExecutionOrderingMode.KeyOrdered);
+        var laneB = laneA with { ExecutionLane = "lane-b" };
+        var first = (await store.SubmitAsync(
+            NewSubmission("ordered-lane-a", concurrencyKey: key, deliveryTarget: laneA),
+            CancellationToken.None)).Run;
+        var second = (await store.SubmitAsync(
+            NewSubmission("ordered-lane-b", concurrencyKey: key, deliveryTarget: laneB),
+            CancellationToken.None)).Run;
+
+        var workerA = await RegisterAsync(store, "ordered-lane-worker-a", "ordered-lane-session-a", executionLane: "lane-a");
+        var workerB = await RegisterAsync(store, "ordered-lane-worker-b", "ordered-lane-session-b", executionLane: "lane-b");
+        var firstClaim = await store.ClaimAsync(
+            Claim(workerA) with { RunIds = new[] { first.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+        var secondClaim = await store.ClaimAsync(
+            Claim(workerB) with { RunIds = new[] { second.Id } },
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None);
+
+        firstClaim.Should().ContainSingle(job => job.RunId == first.Id);
+        secondClaim.Should().ContainSingle(job => job.RunId == second.Id);
+    }
+
+    [Fact]
     public async Task Batch_claim_excludes_a_pending_run_whose_concurrency_key_is_already_running()
     {
         if (!Enabled) return;
@@ -1315,6 +1524,21 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         ConcurrencyPolicy = ScheduleConcurrencyPolicy.Allow,
         MaxAttempts = 3,
         TimeoutSeconds = 60,
+        ConcurrencyKey = "schedule:postgres:42",
+        RetryPolicy = new RetryPolicy(
+            BackoffStrategy.Fixed,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1)),
+        Continuation = new Continuation
+        {
+            JobKey = "mail.scheduled.followup",
+            PayloadJson = "{}"
+        },
+        Compensation = new Compensation
+        {
+            JobKey = "mail.scheduled.compensate",
+            PayloadJson = "{}"
+        },
         Enabled = true,
         NextFireAt = nextFireAt,
         CreatedAt = DateTimeOffset.UtcNow,
@@ -1325,7 +1549,10 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         PostgreSqlJobRuntimeStore store,
         string workerId,
         string sessionId,
-        int maxConcurrency = 1) => store.RegisterAsync(
+        int maxConcurrency = 1,
+        IReadOnlyList<string>? capabilities = null,
+        string consumerGroup = "default",
+        string executionLane = "default") => store.RegisterAsync(
         new RegisterWorkerSessionRequest(
             workerId,
             sessionId,
@@ -1333,8 +1560,10 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             "localhost",
             maxConcurrency,
             new[] { "default" },
-            new[] { "mail.send" },
-            new Dictionary<string, string>()),
+            capabilities ?? new[] { "mail.send" },
+            new Dictionary<string, string>(),
+            consumerGroup,
+            executionLane),
         CancellationToken.None);
 
     [Fact]
@@ -1387,7 +1616,9 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         session.Epoch,
         1,
         new[] { "default" },
-        new[] { "mail.send" });
+        new[] { "mail.send" },
+        ConsumerGroup: session.ConsumerGroup,
+        ExecutionLane: session.ExecutionLane);
 
     private static CompleteAttemptRequest Completion(
         WorkerSessionRecord session,

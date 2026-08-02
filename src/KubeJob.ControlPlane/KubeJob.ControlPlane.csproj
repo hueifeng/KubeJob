@@ -8,28 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\KubeJob.Server\ControlPlane\**\*.cs" LinkBase="ControlPlane" />
-    <!--
-      Keep the public source namespaces stable while making the assembly seam
-      explicit. Only durable runtime rules, storage contracts, and hosted
-      reconciliation belong to the control plane. HTTP/typed-client and
-      in-process worker adapters stay in KubeJob.Server.
-    -->
-    <Compile Include="..\KubeJob.Server\Runtime\CronScheduleCalculator.cs" Link="Runtime\CronScheduleCalculator.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\IJobRuntimeStores.cs" Link="Runtime\IJobRuntimeStores.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\InMemoryJobRuntimeStore*.cs" LinkBase="Runtime" />
-    <Compile Include="..\KubeJob.Server\Runtime\JobRuntimeDashboardModels.cs" Link="Runtime\JobRuntimeDashboardModels.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\JobRuntimeHostedServices.cs" Link="Runtime\JobRuntimeHostedServices.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\JobRuntimeOptions.cs" Link="Runtime\JobRuntimeOptions.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\JobSubmissionIdentity.cs" Link="Runtime\JobSubmissionIdentity.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\OutboxPublisherSignal.cs" Link="Runtime\OutboxPublisherSignal.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\QueueRouting.cs" Link="Runtime\QueueRouting.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\TerminalActionPlanner.cs" Link="Runtime\TerminalActionPlanner.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\ScheduleReconciliationPlanner.cs" Link="Runtime\ScheduleReconciliationPlanner.cs" />
-    <Compile Include="..\KubeJob.Server\Runtime\ScheduleReconcilerService.cs" Link="Runtime\ScheduleReconcilerService.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Cronos" Version="0.11.1" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.Abstractions" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.0" />

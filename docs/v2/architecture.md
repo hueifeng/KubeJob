@@ -58,6 +58,25 @@ interfaces. Storage behavior is the real varying seam and already has in-memory
 and PostgreSQL adapters. This keeps one implementation behind multiple callers
 without introducing pass-through abstractions.
 
+## Submission batch boundary
+
+`IJobClient.EnqueueBatchAsync` is a bounded admission operation for independent
+Runs. The control plane validates every request before calling
+`IJobSubmissionStore.SubmitBatchAsync`; the store then persists the new Runs and
+their Outbox rows in one transaction, preserving input order and per-item
+idempotency. `JobRuntimeOptions.MaxSubmissionBatchSize` defaults to 256 and
+protects adapter allocation, validation cost, transaction duration, and rollback
+size. Typed and broker-ingress adapters apply the same boundary before creating
+translated command arrays; the control plane repeats it as the authoritative
+check.
+
+The in-process client and HTTP client use the same contract. HTTP callers use
+`POST /api/kubejob/jobs/batch`, so the remote adapter does not silently degrade
+the operation into unbounded concurrent single-row requests. This is still not
+a durable `JobBatch` aggregate: there is no batch lifecycle, group status,
+`MaxParallelism`, sharding, or broadcast policy. Those remain the separate
+roadmap feature described in [roadmap.md](./roadmap.md).
+
 ## Durable model
 
 ```text
@@ -81,13 +100,14 @@ PostgreSQL is the authoritative state source. A submission transaction inserts:
 
 ```text
 Kj2_JobRuns
-Kj2_Outbox   (BrokerDispatch-profile queues only)
+Kj2_Outbox   (work-available delivery hint)
 ```
 
-The outbox row is written only for `BrokerDispatch`-profile queues; `Pull`
-submissions skip it because workers discover claimable runs directly via the
-control plane (the default profile is `BrokerDispatch`, so the common path
-does write the row).
+Every submission writes a `work-available` Outbox row. For `Pull` queues the
+publisher invokes `IWorkAvailableNotifier` (the default is a no-op because
+workers periodically poll); for `BrokerDispatch` queues it publishes through
+the selected transport adapter. In both cases the notification is only a hint:
+PostgreSQL remains the execution-state authority.
 
 The Outbox publisher invokes `IWorkAvailableNotifier`. The default implementation
 is a no-op because workers periodically pull. MQ adapters may wake workers sooner,
@@ -118,12 +138,23 @@ Queues default to `Parallel`. A deployment may set a queue's
 `QueueDeliveryOptions.Queues[queue].OrderingMode` to `KeyOrdered`; every submission to that queue
 must then provide `ConcurrencyKey`. PostgreSQL assigns each Run an immutable
 `OrderingSequence` when it is persisted. A claim may execute a key-ordered Run
-only when no non-terminal earlier Run with the same queue and key exists.
+only when no non-terminal earlier Run with the same queue, execution lane, and
+key exists.
 
-This is a durable ordering gate: broker prefetch, redelivery, retry delay, and
-worker failover cannot allow a later Run to overtake its predecessor. Different
-keys remain fully parallel. A retry therefore blocks only its own key, rather
-than the whole logical queue.
+This is a durable ordering gate over committed-visible Runs: broker prefetch,
+redelivery, retry delay, and worker failover cannot allow a later committed Run
+to overtake a visible predecessor. Concurrent submissions that have not yet
+committed are outside the database visibility contract, so a commit gap can
+still produce an inverted sequence. Different keys and execution lanes remain
+parallel. A retry therefore blocks only its own key within its lane, rather than
+the whole logical queue.
+
+Schedules use the same Run policy boundary. `CronScheduleOptions.ConcurrencyKey`
+is copied to every occurrence Run; a Schedule targeting a `KeyOrdered` queue
+must provide a non-empty key or the control plane rejects the Schedule. The
+Schedule also persists its per-run `RetryPolicy`, `Continuation`, and
+`Compensation`, so an occurrence does not silently fall back to a different
+submission contract.
 
 ## Completion fencing
 
@@ -159,6 +190,15 @@ The lease reconciler closes expired Attempts as `LeaseLost`, then either:
 - cancels a cancel-requested Run;
 - requeues the Run and writes another Outbox event;
 - or marks it `Dead` after the configured attempt limit.
+
+When a Run reaches a terminal state, configured Continuation and Compensation
+actions are created in the same durable transaction. A terminal Run reached by
+retry exhaustion is eligible for `OnAnyTerminal` continuation and compensation;
+a cancel does not fire either action. The current contract rejects cross-Queue
+terminal actions until their separate Queue delivery target can be resolved and
+persisted. Each child Run records `ParentRunId` and `RelationKind`; lineage is
+therefore a storage contract shared by the in-memory reference adapter and
+PostgreSQL, not an adapter-specific metadata convention.
 
 ## Schedule reconciliation
 

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KubeJob.Client;
 using KubeJob.Core.Jobs;
+using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Server.Extensions;
 using Microsoft.AspNetCore.Builder;
@@ -33,7 +34,22 @@ public sealed class HttpJobScheduleClientEndToEndTests
                 MisfirePolicy = MisfirePolicy.FireOnce,
                 ConcurrencyPolicy = ScheduleConcurrencyPolicy.SkipIfRunning,
                 MaxAttempts = 3,
-                Timeout = TimeSpan.FromMinutes(30)
+                Timeout = TimeSpan.FromMinutes(30),
+                ConcurrencyKey = "report:daily",
+                RetryPolicy = new RetryPolicy(
+                    BackoffStrategy.Fixed,
+                    TimeSpan.FromSeconds(1),
+                    TimeSpan.FromSeconds(1)),
+                Continuation = new Continuation
+                {
+                    JobKey = "report.followup",
+                    PayloadJson = "{}"
+                },
+                Compensation = new Compensation
+                {
+                    JobKey = "report.compensate",
+                    PayloadJson = "{}"
+                }
             });
         var created = await client.GetAsync(handle.ScheduleId);
         var disabled = await client.SetEnabledAsync(handle.ScheduleId, false);
@@ -46,6 +62,10 @@ public sealed class HttpJobScheduleClientEndToEndTests
         created.TimeZoneId.Should().Be("Asia/Tokyo");
         created.MisfirePolicy.Should().Be(MisfirePolicy.FireOnce);
         created.ConcurrencyPolicy.Should().Be(ScheduleConcurrencyPolicy.SkipIfRunning);
+        created.ConcurrencyKey.Should().Be("report:daily");
+        created.RetryPolicy.Should().NotBeNull();
+        created.Continuation!.JobKey.Should().Be("report.followup");
+        created.Compensation!.JobKey.Should().Be("report.compensate");
         disabled.Should().BeTrue();
         afterDisable!.Enabled.Should().BeFalse();
         deleted.Should().BeTrue();

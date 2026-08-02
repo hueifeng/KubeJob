@@ -85,6 +85,8 @@ public sealed class DashboardRunDetails
     public long OrderingSequence { get; init; }
     public string? ScheduleId { get; init; }
     public DateTimeOffset? ScheduledFor { get; init; }
+    public string? ParentRunId { get; init; }
+    public RunRelationKind RelationKind { get; init; } = RunRelationKind.None;
     public string? CurrentWorkerId { get; init; }
     public bool CancelRequested { get; init; }
     public string? FailureCode { get; init; }

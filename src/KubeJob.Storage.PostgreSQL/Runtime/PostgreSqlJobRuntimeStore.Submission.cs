@@ -107,22 +107,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return new SubmitJobResult(existing, Existing: true);
         }
 
-        // Pull mode: workers discover claimable runs via the control plane directly;
-        // skip the outbox row to avoid wasted OutboxPublisher cycles.
-        var isDirect = target.Profile == ExecutionDeliveryProfile.BrokerDispatch;
-        if (isDirect)
-        {
-            await AddOutboxAsync(
-                connection,
-                transaction,
-                inserted.Queue,
-                OutboxEventTypes.WorkAvailable,
-                JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
-                inserted.AvailableAt,
-                cancellationToken,
-                target,
-                partitionKey: inserted.ConcurrencyKey);
-        }
+        await AddOutboxAsync(
+            connection,
+            transaction,
+            inserted.Queue,
+            OutboxEventTypes.WorkAvailable,
+            JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
+            inserted.AvailableAt,
+            cancellationToken,
+            target,
+            partitionKey: inserted.ConcurrencyKey);
 
         await transaction.CommitAsync(cancellationToken);
         return new SubmitJobResult(inserted, Existing: false);
@@ -287,23 +281,18 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var results = new SubmitJobResult[count];
-        var brokerOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
+        var outboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
         for (var index = 0; index < count; index++)
         {
             if (inserted.TryGetValue(ids[index], out var run))
             {
                 results[index] = new SubmitJobResult(run, Existing: false);
-                // Only write outbox rows for BrokerDispatch; Pull workers discover
-                // claimable runs directly via the control plane.
-                if (targets[index].Profile == ExecutionDeliveryProfile.BrokerDispatch)
-                {
-                    brokerOutboxItems.Add((
-                        run.Queue,
-                        JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
-                        run.AvailableAt,
-                        targets[index],
-                        run.ConcurrencyKey));
-                }
+                outboxItems.Add((
+                    run.Queue,
+                    JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
+                    run.AvailableAt,
+                    targets[index],
+                    run.ConcurrencyKey));
             }
             else
             {
@@ -321,12 +310,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        if (brokerOutboxItems.Count > 0)
+        if (outboxItems.Count > 0)
         {
             await AddOutboxBatchAsync(
                 connection,
                 transaction,
-                brokerOutboxItems,
+                outboxItems,
                 OutboxEventTypes.WorkAvailable,
                 cancellationToken);
         }
@@ -412,6 +401,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var state = await connection.QuerySingleOrDefaultAsync<RunCancelState>(new CommandDefinition(@"
             SELECT Id AS RunId,
                    Queue,
+                   DeliveryProfile,
+                   ConsumerGroup,
                    Phase,
                    CancelRequested
             FROM Kj2_JobRuns
@@ -463,6 +454,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken: cancellationToken));
 
         if (!string.IsNullOrWhiteSpace(consumerGroup)
+            && state.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch
+            && string.Equals(consumerGroup, state.ConsumerGroup, StringComparison.Ordinal)
             && !string.IsNullOrWhiteSpace(state.Queue))
         {
             await AddCancelOutboxAsync(
@@ -537,6 +530,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         public string RunId { get; set; } = string.Empty;
         public string Queue { get; set; } = string.Empty;
+        public ExecutionDeliveryProfile DeliveryProfile { get; set; } = ExecutionDeliveryProfile.Pull;
+        public string ConsumerGroup { get; set; } = "default";
         public int Phase { get; set; }
         public bool CancelRequested { get; set; }
     }

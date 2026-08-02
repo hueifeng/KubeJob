@@ -1,7 +1,9 @@
+using System.Text;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Server.Runtime;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.ControlPlane;
 
@@ -17,11 +19,17 @@ public sealed class ScheduleControlPlane
 {
     private readonly IJobScheduleStore _store;
     private readonly QueueCatalog _queueCatalog;
+    private readonly int _maxPayloadBytes;
 
-    public ScheduleControlPlane(IJobScheduleStore store, QueueCatalog queueCatalog)
+    public ScheduleControlPlane(
+        IJobScheduleStore store,
+        QueueCatalog queueCatalog,
+        IOptions<JobRuntimeOptions>? options = null)
     {
         _store = store;
         _queueCatalog = queueCatalog;
+        _maxPayloadBytes = options?.Value.MaxPayloadBytes
+            ?? new JobRuntimeOptions().MaxPayloadBytes;
     }
 
     public async ValueTask<JobScheduleSnapshot> UpsertCronAsync(
@@ -33,6 +41,7 @@ public sealed class ScheduleControlPlane
 
         var now = DateTimeOffset.UtcNow;
         var target = _queueCatalog.Resolve(request.Queue);
+        request = NormalizeAndValidatePolicy(request, target);
         var schedule = await _store.UpsertAsync(
             CreateRecord(scheduleId, request, target, now),
             cancellationToken);
@@ -49,6 +58,7 @@ public sealed class ScheduleControlPlane
 
         var now = DateTimeOffset.UtcNow;
         var target = _queueCatalog.Resolve(request.Queue);
+        request = NormalizeAndValidatePolicy(request, target);
         var schedule = await _store.CreateIfAbsentAsync(
             CreateRecord(scheduleId, request, target, now),
             cancellationToken);
@@ -158,6 +168,24 @@ public sealed class ScheduleControlPlane
                 "Schedule id, job key, valid payload JSON, cron, time zone, queue, and positive limits are required.");
         }
 
+        var overlongField = scheduleId.Length > 200
+            ? "ScheduleId"
+            : request.JobKey.Length > 300
+                ? "JobKey"
+                : request.Queue.Length > 100
+                    ? "Queue"
+                    : request.CronExpression.Length > 200
+                        ? "CronExpression"
+                        : request.TimeZoneId.Length > 200
+                            ? "TimeZoneId"
+                            : null;
+        if (overlongField is not null)
+        {
+            throw new ControlPlaneValidationException(
+                "schedule_field_too_long",
+                $"{overlongField} exceeds the maximum storage length.");
+        }
+
         try
         {
             using var payload = JsonDocument.Parse(request.PayloadJson);
@@ -171,6 +199,60 @@ public sealed class ScheduleControlPlane
                 "invalid_schedule",
                 exception.Message);
         }
+    }
+
+    private UpsertCronScheduleRequest NormalizeAndValidatePolicy(
+        UpsertCronScheduleRequest request,
+        QueueRoute route)
+    {
+        if (Encoding.UTF8.GetByteCount(request.PayloadJson) > _maxPayloadBytes)
+        {
+            throw new ControlPlaneValidationException(
+                "schedule_payload_too_large",
+                $"PayloadJson exceeds the configured maximum of {_maxPayloadBytes} UTF-8 bytes.");
+        }
+
+        if (request.ConcurrencyKey is { Length: > 500 })
+        {
+            throw new ControlPlaneValidationException(
+                "schedule_field_too_long",
+                "ConcurrencyKey exceeds the maximum storage length.");
+        }
+
+        if (request.RetryPolicy is { } retryPolicy)
+        {
+            try
+            {
+                retryPolicy.Validate();
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                throw new ControlPlaneValidationException(
+                    "invalid_schedule_retry_policy",
+                    exception.Message);
+            }
+        }
+
+        if (route.Target.OrderingMode == ExecutionOrderingMode.KeyOrdered
+            && string.IsNullOrWhiteSpace(request.ConcurrencyKey))
+        {
+            throw new ControlPlaneValidationException(
+                "ordering_key_required",
+                "KeyOrdered schedules require a non-empty ConcurrencyKey as the partition key.");
+        }
+
+        var normalized = TerminalActionValidator.NormalizeAndValidate(
+            request.Continuation,
+            request.Compensation,
+            route.Queue,
+            _maxPayloadBytes,
+            "invalid_schedule_terminal_action",
+            "schedule_terminal_action_payload_too_large");
+        return request with
+        {
+            Continuation = normalized.Continuation,
+            Compensation = normalized.Compensation
+        };
     }
 
     private static JobScheduleRecord CreateRecord(
@@ -195,6 +277,10 @@ public sealed class ScheduleControlPlane
         ConcurrencyPolicy = request.ConcurrencyPolicy,
         MaxAttempts = request.MaxAttempts,
         TimeoutSeconds = request.TimeoutSeconds,
+        ConcurrencyKey = request.ConcurrencyKey,
+        RetryPolicy = request.RetryPolicy,
+        Continuation = request.Continuation,
+        Compensation = request.Compensation,
         Enabled = request.Enabled,
         NextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
             request.CronExpression,
@@ -213,5 +299,9 @@ public sealed class ScheduleControlPlane
         schedule.NextFireAt,
         schedule.LastFireAt,
         schedule.MisfirePolicy,
-        schedule.ConcurrencyPolicy);
+        schedule.ConcurrencyPolicy,
+        schedule.ConcurrencyKey,
+        schedule.RetryPolicy,
+        schedule.Continuation,
+        schedule.Compensation);
 }

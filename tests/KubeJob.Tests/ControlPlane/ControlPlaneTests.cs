@@ -57,6 +57,98 @@ public sealed class ControlPlaneTests
     }
 
     [Fact]
+    public async Task Cancel_uses_the_run_persisted_delivery_profile_after_routing_changes()
+    {
+        var options = new QueueDeliveryOptions
+        {
+            Defaults =
+            {
+                Profile = ExecutionDeliveryProfile.BrokerDispatch,
+                ConsumerGroup = "orders-workers",
+                TransportId = "rabbitmq"
+            }
+        };
+        var store = new InMemoryJobRuntimeStore();
+        var controlPlane = new JobControlPlane(
+            store,
+            store,
+            new ConfigurationQueueRouter(Options.Create(options)),
+            Options.Create(new JobRuntimeOptions()),
+            new OutboxPublisherSignal());
+
+        var receipt = await controlPlane.SubmitAsync(
+            new EnqueueJobRequest("sample.data", "{}"));
+
+        options.Defaults.Profile = ExecutionDeliveryProfile.Pull;
+        options.Defaults.TransportId = null;
+
+        (await controlPlane.RequestCancelAsync(receipt.Handle.JobId, "route changed"))
+            .Should().BeTrue();
+
+        var outbox = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromMinutes(1),
+            10,
+            CancellationToken.None);
+        outbox.Should().Contain(message =>
+            message.EventType == OutboxEventTypes.Cancel
+            && message.Queue == "orders-workers"
+            && message.PayloadJson.Contains(receipt.Handle.JobId, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Job_submission_rejects_invalid_retry_and_terminal_action_configuration()
+    {
+        using var provider = CreateProvider();
+        var controlPlane = provider.GetRequiredService<JobControlPlane>();
+
+        var invalidRetry = async () => await controlPlane.SubmitAsync(
+            new EnqueueJobRequest(
+                "sample.data",
+                "{}",
+                RetryPolicy: new RetryPolicy(
+                    BackoffStrategy.Fixed,
+                    TimeSpan.Zero,
+                    TimeSpan.Zero)));
+        var retryException = await invalidRetry.Should().ThrowAsync<ControlPlaneValidationException>();
+        retryException.Which.Code.Should().Be("invalid_job_retry_policy");
+
+        var invalidAction = async () => await controlPlane.SubmitAsync(
+            new EnqueueJobRequest(
+                "sample.data",
+                "{}",
+                Continuation: new Continuation
+                {
+                    JobKey = "sample.followup",
+                    PayloadJson = "not-json",
+                    Trigger = ContinuationTrigger.OnSuccess
+                }));
+        var actionException = await invalidAction.Should().ThrowAsync<ControlPlaneValidationException>();
+        actionException.Which.Code.Should().Be("invalid_job_terminal_action");
+    }
+
+    [Fact]
+    public async Task Job_submission_rejects_cross_queue_terminal_actions_until_their_route_is_resolved()
+    {
+        using var provider = CreateProvider();
+        var controlPlane = provider.GetRequiredService<JobControlPlane>();
+
+        var invalid = async () => await controlPlane.SubmitAsync(
+            new EnqueueJobRequest(
+                "sample.data",
+                "{}",
+                Queue: "orders.push",
+                Continuation: new Continuation
+                {
+                    JobKey = "sample.followup",
+                    Queue = "billing.push"
+                }));
+
+        var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
+        exception.Which.Code.Should().Be("cross_queue_terminal_action_not_supported");
+    }
+
+    [Fact]
     public async Task Message_ingress_uses_source_and_message_id_for_redelivery_idempotency()
     {
         using var provider = CreateProvider();
@@ -123,6 +215,26 @@ public sealed class ControlPlaneTests
 
         var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
         exception.Which.Code.Should().Be("job_payload_too_large");
+    }
+
+    [Fact]
+    public async Task Job_submission_batch_is_bounded_before_store_mutation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        services.Configure<JobRuntimeOptions>(options => options.MaxSubmissionBatchSize = 1);
+        using var provider = services.BuildServiceProvider();
+        var controlPlane = provider.GetRequiredService<JobControlPlane>();
+
+        var invalid = async () => await controlPlane.SubmitBatchAsync(new[]
+        {
+            new EnqueueJobRequest("sample.data", "{}"),
+            new EnqueueJobRequest("sample.data", "{}")
+        });
+
+        var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
+        exception.Which.Code.Should().Be("job_submission_batch_too_large");
     }
 
     [Fact]
