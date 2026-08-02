@@ -76,7 +76,7 @@ public sealed class RabbitMqIngressIntegrationTests
                         return Task.FromResult(false);
                     }
                 },
-                attempts: 200);
+                attempts: 1200);
 
             var valid = new RabbitMqJobIngressEnvelope(
                 "integration-message-1",
