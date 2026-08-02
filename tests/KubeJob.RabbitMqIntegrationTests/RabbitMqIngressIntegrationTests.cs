@@ -8,6 +8,7 @@ using KubeJob.Transport.RabbitMQ;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace KubeJob.RabbitMqIntegrationTests;
 
@@ -60,8 +61,21 @@ public sealed class RabbitMqIngressIntegrationTests
             channel.ExchangeDeclare(deadLetterExchange, ExchangeType.Direct, true, false);
             channel.QueueDeclare(deadLetterQueue, true, false, false);
             channel.QueueBind(deadLetterQueue, deadLetterExchange, "dead");
+            // The ingress service declares the queue asynchronously on its own
+            // connection; until then a passive declare (ConsumerCount) raises
+            // NOT_FOUND. Treat it as "not ready yet" instead of failing.
             await EventuallyAsync(
-                () => Task.FromResult(channel.ConsumerCount(queue) == 1),
+                () =>
+                {
+                    try
+                    {
+                        return Task.FromResult(channel.ConsumerCount(queue) == 1);
+                    }
+                    catch (OperationInterruptedException)
+                    {
+                        return Task.FromResult(false);
+                    }
+                },
                 attempts: 200);
 
             var valid = new RabbitMqJobIngressEnvelope(

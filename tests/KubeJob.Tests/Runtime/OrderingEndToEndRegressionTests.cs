@@ -157,7 +157,10 @@ public sealed class OrderingEndToEndRegressionTests : IAsyncLifetime
             };
             var results = await ingress.SubmitBatchAsync(messages);
 
-            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            // Generous budget: the GitHub-hosted 2-vCPU runner executes the whole
+            // suite in parallel with these tests, so the durable submit -> outbox
+            // -> broker -> admission pipeline can take far longer than locally.
+            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var s1 = await jobs.WaitForCompletionAsync(results[0].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
             var s2 = await jobs.WaitForCompletionAsync(results[1].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
             var s3 = await jobs.WaitForCompletionAsync(results[2].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
@@ -238,7 +241,10 @@ public sealed class OrderingEndToEndRegressionTests : IAsyncLifetime
             };
             var results = await ingress.SubmitBatchAsync(messages);
 
-            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            // Generous budget: the GitHub-hosted 2-vCPU runner executes the whole
+            // suite in parallel with these tests, so the durable submit -> outbox
+            // -> broker -> admission pipeline can take far longer than locally.
+            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             foreach (var result in results)
             {
                 var status = await jobs.WaitForCompletionAsync(result.JobId, TimeSpan.FromMilliseconds(100), complete.Token);
@@ -318,7 +324,10 @@ public sealed class OrderingEndToEndRegressionTests : IAsyncLifetime
             });
             PublishDuplicateEnvelope(rabbit, run1);
 
-            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            // Generous budget: the GitHub-hosted 2-vCPU runner executes the whole
+            // suite in parallel with these tests, so the durable submit -> outbox
+            // -> broker -> admission pipeline can take far longer than locally.
+            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var s1 = await jobs.WaitForCompletionAsync(results[0].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
             var s2 = await jobs.WaitForCompletionAsync(results[1].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
             var s3 = await jobs.WaitForCompletionAsync(results[2].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
@@ -413,7 +422,10 @@ public sealed class OrderingEndToEndRegressionTests : IAsyncLifetime
             await hostB.StartAsync();
             hostBStarted = true;
 
-            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            // Generous budget: the GitHub-hosted 2-vCPU runner executes the whole
+            // suite in parallel with these tests, so the durable submit -> outbox
+            // -> broker -> admission pipeline can take far longer than locally.
+            using var complete = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var s1 = await jobs.WaitForCompletionAsync(results[0].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
             var s2 = await jobs.WaitForCompletionAsync(results[1].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
             var s3 = await jobs.WaitForCompletionAsync(results[2].JobId, TimeSpan.FromMilliseconds(100), complete.Token);
