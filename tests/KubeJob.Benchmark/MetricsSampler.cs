@@ -41,6 +41,13 @@ public sealed class MetricsSampler : IAsyncDisposable
     private double _processMemorySum;
     private int _processMemorySamples;
     private readonly long _processStartMemoryBytes;
+    private readonly long _allocatedBaseline;
+    private readonly int _gen0Baseline;
+    private readonly int _gen1Baseline;
+    private readonly int _gen2Baseline;
+    private int _maxProcessThreads;
+    private int _maxThreadPoolThreads;
+    private long _maxWorkingSetBytes;
 
     public MetricsSampler(
         string benchDbConnStr,
@@ -70,6 +77,10 @@ public sealed class MetricsSampler : IAsyncDisposable
         // open and block DROP DATABASE.
         _dataSource = NpgsqlDataSource.Create(dbConnStrWithAppName);
         _processStartMemoryBytes = GC.GetTotalMemory(forceFullCollection: false);
+        _allocatedBaseline = GC.GetTotalAllocatedBytes(precise: false);
+        _gen0Baseline = GC.CollectionCount(0);
+        _gen1Baseline = GC.CollectionCount(1);
+        _gen2Baseline = GC.CollectionCount(2);
         _loop = Task.Run(SampleLoopAsync);
     }
 
@@ -91,13 +102,22 @@ public sealed class MetricsSampler : IAsyncDisposable
 
     private async Task SampleOnceAsync()
     {
+        // Process-local sampling first: it cannot fail and must not be skipped
+        // when an external probe (DB/broker) throws.
+        SampleProcessMemory();
+        SampleThreads();
         await SampleDbConnectionsAsync();
         await SampleRabbitQueuesAsync();
-        SampleProcessMemory();
         if (_containerName is not null)
         {
             SampleCpu();
         }
+    }
+
+    private void SampleThreads()
+    {
+        UpdateMax(ref _maxProcessThreads, Process.GetCurrentProcess().Threads.Count);
+        UpdateMax(ref _maxThreadPoolThreads, ThreadPool.ThreadCount);
     }
 
     private async Task SampleDbConnectionsAsync()
@@ -107,7 +127,7 @@ public sealed class MetricsSampler : IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText =
             "SELECT count(*) FROM pg_stat_activity " +
-            "WHERE datname = @db AND applicationname <> @app";
+            "WHERE datname = @db AND application_name <> @app";
         cmd.Parameters.AddWithValue("db", _dbName);
         cmd.Parameters.AddWithValue("app", "kubejob-bench-metrics");
         var count = (long)(await cmd.ExecuteScalarAsync(_cts.Token) ?? 0);
@@ -158,6 +178,8 @@ public sealed class MetricsSampler : IAsyncDisposable
     /// </summary>
     private void SampleProcessMemory()
     {
+        // Two memory views: managed heap (GC.GetTotalMemory) and the full
+        // process working set (native + managed, the number top/ps reports).
         var bytes = GC.GetTotalMemory(forceFullCollection: false);
         // Track max.
         long currentMax;
@@ -168,6 +190,14 @@ public sealed class MetricsSampler : IAsyncDisposable
         } while (Interlocked.CompareExchange(ref _maxProcessMemoryBytes, bytes, currentMax) != currentMax);
         AddAtomic(ref _processMemorySum, (double)bytes);
         Interlocked.Increment(ref _processMemorySamples);
+
+        var workingSet = Process.GetCurrentProcess().WorkingSet64;
+        long currentWs;
+        do
+        {
+            currentWs = _maxWorkingSetBytes;
+            if (workingSet <= currentWs) break;
+        } while (Interlocked.CompareExchange(ref _maxWorkingSetBytes, workingSet, currentWs) != currentWs);
     }
 
     /// <summary>
@@ -225,15 +255,26 @@ public sealed class MetricsSampler : IAsyncDisposable
         } while (Interlocked.CompareExchange(ref target, current + add, current) != current);
     }
 
-    public MetricSamples Snapshot() => new(
-        _maxConnections,
-        _maxReady,
-        _maxUnacked,
-        _cpuSamples == 0 ? 0 : _cpuSum / _cpuSamples,
-        _sampleCount,
-        _maxProcessMemoryBytes,
-        _processMemorySamples == 0 ? 0 : (_processMemorySum / _processMemorySamples),
-        _processStartMemoryBytes);
+    public MetricSamples Snapshot()
+    {
+        var allocated = GC.GetTotalAllocatedBytes(precise: false) - _allocatedBaseline;
+        return new MetricSamples(
+            _maxConnections,
+            _maxReady,
+            _maxUnacked,
+            _cpuSamples == 0 ? 0 : _cpuSum / _cpuSamples,
+            _sampleCount,
+            _maxProcessMemoryBytes,
+            _processMemorySamples == 0 ? 0 : (_processMemorySum / _processMemorySamples),
+            _processStartMemoryBytes,
+            allocated,
+            GC.CollectionCount(0) - _gen0Baseline,
+            GC.CollectionCount(1) - _gen1Baseline,
+            GC.CollectionCount(2) - _gen2Baseline,
+            _maxProcessThreads,
+            _maxThreadPoolThreads,
+            _maxWorkingSetBytes);
+    }
 
     public async ValueTask DisposeAsync()
     {

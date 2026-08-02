@@ -16,9 +16,16 @@ public sealed record MetricSamples(
     int SampleCount,
     long MaxProcessMemoryBytes,
     double AvgProcessMemoryBytes,
-    long ProcessStartMemoryBytes)
+    long ProcessStartMemoryBytes,
+    long AllocatedBytes,
+    int Gen0Collections,
+    int Gen1Collections,
+    int Gen2Collections,
+    int MaxProcessThreads,
+    int MaxThreadPoolThreads,
+    long MaxWorkingSetBytes)
 {
-    public static MetricSamples Empty { get; } = new(0, 0, 0, 0, 0, 0, 0, 0);
+    public static MetricSamples Empty { get; } = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 public sealed record ScenarioResult(
@@ -95,11 +102,17 @@ public static class ResultTable
             r.IngestTps, r.E2eTps, r.WallClockE2eTps);
         Console.WriteLine("  Latency (ms): P50={0:F2}  P95={1:F2}  P99={2:F2}  max={3:F2}  (n={4})",
             r.Latency.P50Ms, r.Latency.P95Ms, r.Latency.P99Ms, r.Latency.MaxMs, r.Latency.Samples);
-        Console.WriteLine("  Metrics:     db-conn-max={0}  rabbit-ready-max={1}  rabbit-unacked-max={2}  cpu-avg={3:F1}%  mem-max={4:F1}MB  mem-avg={5:F1}MB  (samples={6})",
+        Console.WriteLine("  Metrics:     db-conn-max={0}  rabbit-ready-max={1}  rabbit-unacked-max={2}  cpu-avg={3:F1}%  heap-max={4:F1}MB  heap-avg={5:F1}MB  rss-max={6:F1}MB  (samples={7})",
             r.Metrics.MaxDbConnections, r.Metrics.MaxReady, r.Metrics.MaxUnacked, r.Metrics.AvgCpuPct,
             r.Metrics.MaxProcessMemoryBytes / (1024.0 * 1024.0),
             r.Metrics.AvgProcessMemoryBytes / (1024.0 * 1024.0),
+            r.Metrics.MaxWorkingSetBytes / (1024.0 * 1024.0),
             r.Metrics.SampleCount);
+        Console.WriteLine("  Allocated:   {0:F1}MB total ({1:F0}KB/job)  Gen0={2} Gen1={3} Gen2={4}  threads(proc)={5} threads(pool)={6}",
+            r.Metrics.AllocatedBytes / (1024.0 * 1024.0),
+            r.JobCount == 0 ? 0 : r.Metrics.AllocatedBytes / (1024.0 * r.JobCount),
+            r.Metrics.Gen0Collections, r.Metrics.Gen1Collections, r.Metrics.Gen2Collections,
+            r.Metrics.MaxProcessThreads, r.Metrics.MaxThreadPoolThreads);
         Console.WriteLine($"  duration={r.Duration.TotalSeconds:F1}s");
         Console.WriteLine();
     }
@@ -116,8 +129,8 @@ public static class ResultTable
         sb.AppendLine($"- lane-sweep: [{string.Join(",", opts.LaneCountSweep)}]");
         sb.AppendLine($"- poll-ms: {opts.PollIntervalMs} | status-parallelism: {opts.StatusPollParallelism} | metrics-ms: {opts.MetricsIntervalMs} | cpu: {(opts.CpuSamplingEnabled ? "on" : "off")} | delivery: {opts.DeliveryProfile}");
         sb.AppendLine();
-        sb.AppendLine("| Scenario | Mode | Lanes | Jobs | Succeeded | Ingest TPS | E2E TPS (server) | E2E TPS (wall) | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Mem max MB | Duration s |");
-        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        sb.AppendLine("| Scenario | Mode | Lanes | Jobs | Succeeded | Ingest TPS | E2E TPS (server) | E2E TPS (wall) | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Heap max MB | RSS max MB | Alloc MB | Alloc KB/job | Gen0 | Gen1 | Gen2 | Thr(proc) | Thr(pool) | Duration s |");
+        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         foreach (var r in results)
         {
             sb.Append("| ").Append(r.Scenario.Label())
@@ -136,6 +149,14 @@ public static class ResultTable
               .Append(" | ").Append(r.Metrics.MaxUnacked)
               .Append(" | ").Append(r.Metrics.AvgCpuPct.ToString("F1", CultureInfo.InvariantCulture))
               .Append(" | ").Append((r.Metrics.MaxProcessMemoryBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append((r.Metrics.MaxWorkingSetBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append((r.Metrics.AllocatedBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append((r.JobCount == 0 ? 0 : r.Metrics.AllocatedBytes / (1024.0 * r.JobCount)).ToString("F0", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(r.Metrics.Gen0Collections)
+              .Append(" | ").Append(r.Metrics.Gen1Collections)
+              .Append(" | ").Append(r.Metrics.Gen2Collections)
+              .Append(" | ").Append(r.Metrics.MaxProcessThreads)
+              .Append(" | ").Append(r.Metrics.MaxThreadPoolThreads)
               .Append(" | ").Append(r.Duration.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture))
               .AppendLine(" |");
         }

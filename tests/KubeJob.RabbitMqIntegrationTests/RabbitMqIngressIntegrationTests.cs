@@ -64,19 +64,10 @@ public sealed class RabbitMqIngressIntegrationTests
             channel.QueueBind(deadLetterQueue, deadLetterExchange, "dead");
             // The ingress service declares the queue asynchronously on its own
             // connection; until then a passive declare (ConsumerCount) raises
-            // NOT_FOUND. Treat it as "not ready yet" instead of failing.
+            // NOT_FOUND and closes that probe channel. Use a fresh probe channel
+            // for every attempt instead of reusing a channel that may be closed.
             await EventuallyAsync(
-                () =>
-                {
-                    try
-                    {
-                        return Task.FromResult(channel.ConsumerCount(queue) == 1);
-                    }
-                    catch (OperationInterruptedException)
-                    {
-                        return Task.FromResult(false);
-                    }
-                },
+                () => HasConsumerAsync(connectionString, queue),
                 attempts: 1200);
 
             var valid = new RabbitMqJobIngressEnvelope(
@@ -109,10 +100,10 @@ public sealed class RabbitMqIngressIntegrationTests
                 basicProperties: invalidProperties,
                 body: invalidBody);
 
-            await EventuallyAsync(() =>
-                Task.FromResult(channel.MessageCount(deadLetterQueue) == 1),
+            await EventuallyAsync(
+                () => HasMessageCountAsync(connectionString, deadLetterQueue, 1),
                 attempts: 200);
-            channel.MessageCount(queue).Should().Be(0);
+            (await GetMessageCountAsync(connectionString, queue)).Should().Be(0);
         }
         finally
         {
@@ -175,6 +166,48 @@ public sealed class RabbitMqIngressIntegrationTests
         {
             Uri = new Uri(connectionString, UriKind.Absolute)
         }.CreateConnection("KubeJob.Tests.RabbitMqIngress");
+
+    private static async Task<bool> HasConsumerAsync(
+        string connectionString,
+        string queue)
+    {
+        try
+        {
+            using var connection = CreateConnection(connectionString);
+            using var channel = connection.CreateModel();
+            return channel.ConsumerCount(queue) == 1;
+        }
+        catch (OperationInterruptedException)
+        {
+            await Task.CompletedTask;
+            return false;
+        }
+    }
+
+    private static async Task<bool> HasMessageCountAsync(
+        string connectionString,
+        string queue,
+        uint expected)
+    {
+        return await GetMessageCountAsync(connectionString, queue) == expected;
+    }
+
+    private static async Task<uint> GetMessageCountAsync(
+        string connectionString,
+        string queue)
+    {
+        try
+        {
+            using var connection = CreateConnection(connectionString);
+            using var channel = connection.CreateModel();
+            return channel.MessageCount(queue);
+        }
+        catch (OperationInterruptedException)
+        {
+            await Task.CompletedTask;
+            return 0;
+        }
+    }
 
     private static void Publish(
         IModel channel,
