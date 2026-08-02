@@ -41,9 +41,10 @@ requeued.
 ## Adapter seam
 
 The control plane publishes a strongly typed `WorkAvailableSignal` through
-`IWorkAvailableNotifier`. The signal contains only a schema version, Outbox
-event ID, Queue, and Run ID. It never carries a Job payload, lease token, or
-authority to execute.
+`IWorkAvailableNotifier`. The signal carries a schema version, Outbox event ID,
+Queue, Run ID, and the run's `ExecutionLane`, `ConsumerGroup`, and
+`PartitionKey` (so transport adapters can co-locate same-key runs on one lane).
+It never carries a Job payload, lease token, or authority to execute.
 
 Transport packages select their publisher with:
 
@@ -52,7 +53,7 @@ services.UseKubeJobWorkAvailableNotifier<MyTransportPublisher>();
 ```
 
 For high-throughput execution, the platform has a separate
-`IExecutionDispatcher` seam. Its `ExecutionEnvelope` carries the accepted
+`IExecutionTransport` seam. Its `ExecutionEnvelope` carries the accepted
 logical `RunId`, Queue, and EventId, but not a lease or execution authority.
 `QueueDeliveryOptions.Defaults.Profile` defaults to
 `ExecutionDeliveryProfile.BrokerDispatch` (see [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)),
@@ -74,7 +75,7 @@ services.UseRabbitMqKubeJobExecutionDispatcher(options =>
 This publisher is only the durable, confirmed hand-off. It publishes each
 `ExecutionEnvelope` to the per-group direct exchange
 `{ConsumerQueuePrefix}.{ConsumerGroup}` (default `kubejob.execution.{group}`)
-with the logical queue as routing key; `RabbitMqDispatchTopology` declares one
+with the logical queue as routing key; `RabbitMqTopologyProvisioner` declares one
 physical execution queue per logical queue by default, for example
 `kubejob.execution.{group}.mail.send.queue`. The
 RabbitMQ Worker Consumer performs targeted Admission for the envelope's RunId,
@@ -190,7 +191,7 @@ Per-message header conventions:
 
 - Dispatch envelopes set `properties.Type = "execution-envelope"` and `MessageId = EventId`. Consumers dispatch on type, not on body parsing.
 - Cancel markers set `properties.Type = "cancel"` and `X-KubeJob-Event-Type = "cancel"`. Each worker-session cancel consumer calls the in-flight attempt cancellation hook and ACKs the marker.
-- Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the group TTL retry queue and the original delivery is ACKed only after retry publication is confirmed; direct `Nack(requeue=true)` is reserved for retry-publication failure or shutdown fallback.
+- Quorum queues track `x-delivery-count` authoritatively across consumer restarts. KubeJob Retry and transient exceptions are republished to the group TTL retry queue and the original delivery is ACKed only after retry publication is confirmed. A retry-publication failure is a `Reject` (requeue=false), routing the envelope through the group DLX rather than NACKing it back to the head of the queue (which would loop indefinitely); `Nack(requeue=true)` is reserved for cancel-marker transient failures, and shutdown leaves deliveries unacked so the broker requeues them on connection close.
 
 Retry ownership: KubeJob's `MaxAttempts` (enforced by the completion store)
 remains the authoritative terminal-state driver. The group TTL retry queue owns

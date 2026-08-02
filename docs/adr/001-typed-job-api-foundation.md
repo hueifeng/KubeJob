@@ -15,13 +15,16 @@ Add an additive typed API foundation:
 
 - `JobKey<TPayload>` provides a stable job identity tied to a payload contract.
 - `IKubeJob<TPayload>` receives the payload explicitly.
-- `JobExecutionContext` is read-only and does not expose `IServiceProvider`.
+- `JobExecutionContext` exposes a scoped `IServiceProvider` for middleware
+  and handler dependency resolution, but never a storage connection,
+  repository, lease token, or fencing token.
 - `WorkerExecutionInfo` identifies the exact worker session and build handling an attempt.
 - `IJobClient` defines typed enqueue, status, and cancellation operations without exposing storage or transport.
 - `JobHandle` identifies the submitted logical run.
 - `JobStatusSnapshot` represents latest-known user-facing state.
 
-The existing `IKubeJob` and `KubeJobContext` remain available during migration.
+The legacy untyped `IKubeJob` and `KubeJobContext` are not retained: the
+V2 runtime is the only runtime (see `docs/v2/README.md`).
 
 ## Consequences
 
@@ -37,7 +40,8 @@ The existing `IKubeJob` and `KubeJobContext` remain available during migration.
 
 - Two handler contracts temporarily coexist.
 - The new interfaces are contracts only until adapters and runtime implementations are added.
-- Source generation for strongly typed `Jobs.*` keys is deferred to a later phase.
+- Source generation for strongly typed `Jobs.*` keys is shipped in the
+  `KubeJob.Generators` analyzer (KJGEN diagnostics; see `eng/pack-v2.sh`).
 
 ## Follow-up
 

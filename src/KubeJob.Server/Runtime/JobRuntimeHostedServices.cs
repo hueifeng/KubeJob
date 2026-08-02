@@ -29,7 +29,7 @@ public sealed class NoopWorkAvailableNotifier : IWorkAvailableNotifier
 /// packages replace the default no-op with a fanout publisher; the outbox
 /// publisher calls into this interface instead of an MQ client so the
 /// transport seam is consistent with <see cref="IWorkAvailableNotifier"/> and
-/// <see cref="IExecutionDispatcher"/>.
+/// <see cref="IExecutionTransport"/>.
 /// </summary>
 public interface ICancelPublisher
 {

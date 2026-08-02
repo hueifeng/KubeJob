@@ -113,7 +113,7 @@ app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancell
             new DashboardDemoPayload("success", DelayMilliseconds: 250),
             new JobEnqueueOptions
             {
-                Queue = "samples",
+                Queue = "sample.dashboard-demo",
                 MaxAttempts = 1,
                 Timeout = TimeSpan.FromSeconds(10),
                 IdempotencyKey = $"dashboard-demo:{batchId}:success"
@@ -124,7 +124,7 @@ app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancell
             new DashboardDemoPayload("retry-then-success", DelayMilliseconds: 250, FailUntilAttempt: 1),
             new JobEnqueueOptions
             {
-                Queue = "samples",
+                Queue = "sample.dashboard-demo",
                 MaxAttempts = 3,
                 Timeout = TimeSpan.FromSeconds(10),
                 IdempotencyKey = $"dashboard-demo:{batchId}:retry-success"
@@ -135,7 +135,7 @@ app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancell
             new DashboardDemoPayload("always-fail"),
             new JobEnqueueOptions
             {
-                Queue = "samples",
+                Queue = "sample.dashboard-demo",
                 MaxAttempts = 2,
                 Timeout = TimeSpan.FromSeconds(10),
                 IdempotencyKey = $"dashboard-demo:{batchId}:dead"
@@ -146,7 +146,7 @@ app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancell
             new DashboardDemoPayload("permanent-failure"),
             new JobEnqueueOptions
             {
-                Queue = "samples",
+                Queue = "sample.dashboard-demo",
                 MaxAttempts = 3,
                 Timeout = TimeSpan.FromSeconds(10),
                 IdempotencyKey = $"dashboard-demo:{batchId}:permanent"
@@ -157,7 +157,7 @@ app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancell
             new DashboardDemoPayload("timeout", DelayMilliseconds: 5_000),
             new JobEnqueueOptions
             {
-                Queue = "samples",
+                Queue = "sample.dashboard-demo",
                 MaxAttempts = 2,
                 Timeout = TimeSpan.FromSeconds(1),
                 IdempotencyKey = $"dashboard-demo:{batchId}:timeout"
@@ -168,7 +168,7 @@ app.MapPost("/demo/scenarios", async (IJobClient jobs, CancellationToken cancell
             new DashboardDemoPayload("long-running", DelayMilliseconds: 60_000),
             new JobEnqueueOptions
             {
-                Queue = "samples",
+                Queue = "sample.dashboard-demo",
                 MaxAttempts = 1,
                 Timeout = TimeSpan.FromSeconds(90),
                 IdempotencyKey = $"dashboard-demo:{batchId}:cancel"

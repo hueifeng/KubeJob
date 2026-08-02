@@ -67,10 +67,15 @@ KubeJob's guarantees without the record.
 
 ### 2. Terminal history is optional and bounded by per-job retention
 
-Add a `TerminalRecordReaper` hosted service with the same shape as
-`LeaseReaper` and `OutboxPublisher`: periodically call
-`IJobRuntimeStores.DeleteTerminalAsync(olderThan, batchSize)` to delete
-terminal Run + cascaded Attempts older than a per-job retention window.
+The initial scope landed as `RuntimeRetentionService` (a hosted service with
+the same shape as `LeaseReaper` and `OutboxPublisher`) calling
+`IJobRuntimeStores.DeleteUnkeyedTerminalRunsAsync(olderThan, batchSize)` plus
+`DeletePublishedOutboxAsync`, driven by `JobRuntimeOptions.PublishedOutboxRetention`
+/ `UnkeyedTerminalRetention`. The full direction below (per-`JobKey` overrides,
+tiered retention, aggregate projection) remains future work; the ADR's
+proposed names (`TerminalRecordReaper`, `DeleteTerminalAsync`, `Kj2_JobMetrics`)
+do not yet exist in the code.
+
 Retention is a global default with per-`JobKey` overrides:
 
 - **Scheduled jobs** — low volume, high audit value ("did the 09:00 reconciliation

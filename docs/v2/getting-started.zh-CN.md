@@ -32,8 +32,9 @@ public sealed class SendEmailJob : IKubeJob<SendEmail>
 Jobs.SendEmail // JobKey<SendEmail>，值为 mail.send
 ```
 
-`[KubeJob]` 只声明稳定 JobKey。业务依赖使用构造函数注入；执行上下文不会暴露
-`IServiceProvider`、数据库连接、Repository、LeaseToken 或 fencing token。
+`[KubeJob]` 只声明稳定 JobKey。业务依赖使用构造函数注入；执行上下文暴露一个
+scoped 的 `IServiceProvider` 供中间件与 Handler 解析依赖，但不会暴露数据库连接、
+Repository、LeaseToken 或 fencing token。
 
 ## 2. 一体化部署
 

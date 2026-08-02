@@ -91,17 +91,21 @@ export ConnectionStrings__KubeJob="$(bash scripts/dev-stack.sh connection-string
 dotnet run --project path/to/your-app.csproj
 ```
 
-RabbitMQ 仍然是可选加速层。统一示例通过 `ConnectionStrings__RabbitMQ` 启用
-`default` 与 `samples` 队列的 BrokerDispatch，并启动 RabbitMQ Execution Consumer：
+RabbitMQ 仍然是可选加速层。统一示例服务 `sample.data` 与
+`sample.dashboard-demo` 两个队列，设置 `ConnectionStrings__RabbitMQ` 后
+启动 RabbitMQ Execution Consumer：
 
 ```bash
 export ConnectionStrings__RabbitMQ='amqp://kubejob:kubejob-dev@localhost:5672/'
 bash scripts/run-unified-sample.sh
 ```
 
-启动后，RabbitMQ 管理页面会出现 `kubejob.execution` exchange，以及按
-`unified-sample` Consumer Group 和逻辑队列创建的持久化队列。未配置该连接串时，
-统一示例仍使用默认 Pull 模式，不依赖 RabbitMQ。
+启动后，RabbitMQ 管理页面会出现按组命名的 `kubejob.execution.unified-sample`
+exchange，以及按 `unified-sample` Consumer Group 和逻辑队列创建的持久化队列。
+未配置该连接串时示例仍可运行、Worker 照常从数据库领取任务，但默认投递档已是
+`BrokerDispatch`：没有注册 `rabbitmq` transport 时 outbox 行无法发布、会持续重试
+（`UnconfiguredExecutionTransport`）。把 `ConnectionStrings__RabbitMQ` 指向开发 broker
+才是受支持的配置。
 
 ## 常用操作
 

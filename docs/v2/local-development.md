@@ -99,8 +99,8 @@ export ConnectionStrings__KubeJob="$(bash scripts/dev-stack.sh connection-string
 dotnet run --project path/to/your-app.csproj
 ```
 
-RabbitMQ remains optional. The unified sample enables BrokerDispatch for the
-`default` and `samples` queues, and starts the RabbitMQ Execution Consumer,
+RabbitMQ remains optional. The unified sample serves the `sample.data` and
+`sample.dashboard-demo` queues, and starts the RabbitMQ Execution Consumer
 when `ConnectionStrings__RabbitMQ` is set:
 
 ```bash
@@ -108,10 +108,14 @@ export ConnectionStrings__RabbitMQ='amqp://kubejob:kubejob-dev@localhost:5672/'
 bash scripts/run-unified-sample.sh
 ```
 
-After startup, the RabbitMQ management page shows the durable
-`kubejob.execution` exchange and one durable queue per logical queue served by
-the `unified-sample` consumer group. Without the connection string, the
-unified sample keeps the default Pull profile and does not require RabbitMQ.
+After startup, the RabbitMQ management page shows the durable per-group
+`kubejob.execution.unified-sample` exchange and one durable queue per logical
+queue served by the `unified-sample` consumer group. Without the connection
+string, the sample still runs and workers claim from the database, but the
+default delivery profile is `BrokerDispatch`: with no `rabbitmq` transport
+registered, outbox rows cannot be published and retry until a transport is
+registered (`UnconfiguredExecutionTransport`). Pointing `ConnectionStrings__RabbitMQ`
+at the dev broker is the supported configuration.
 
 ## Operations
 

@@ -18,7 +18,7 @@ number of empty poll round-trips PostgreSQL absorbs under load. PostgreSQL
 ends up serving as state-store, queue, and lock manager at once.
 
 `ExecutionDeliveryProfile.BrokerDispatch` already exists as a more complete
-profile: the Outbox publishes a full `ExecutionEnvelope` to a per-execution-
+profile: the Outbox publishes a full `ExecutionEnvelope` to a per-consumer-
 group RabbitMQ topology, and delivery calls `WorkerControlPlane.AdmitAsync`,
 which invokes the same `ClaimAsync` used by `Pull` but scoped to one `RunId`
 instead of an unscoped periodic scan. PostgreSQL remains the sole fencing,
@@ -30,7 +30,7 @@ Direct Dispatch aspiration of hiding physical delivery behind a stable logical
 `Queue`.
 
 The blocker to promoting `BrokerDispatch` from opt-in to default was not code
-coupling — flipping `QueueDeliveryOptions.DefaultProfile` is mechanically a
+coupling — flipping `QueueDeliveryOptions.Defaults.Profile` is mechanically a
 one-line default change. The blocker was that `BrokerDispatch` had zero
 automated test coverage against a real broker end-to-end (submit → outbox →
 execution exchange → consumer → `AdmitAsync` → complete → ACK). The only
@@ -44,8 +44,8 @@ follow-up polish.
 1. Added `RabbitMqExecutionDispatchIntegrationTests` (happy path, broker-level
    retry-then-succeed, and malformed-envelope reject-to-DLQ) exercising the
    full `BrokerDispatch` path against a real broker, closing the coverage gap.
-2. Changed `QueueDeliveryOptions.DefaultProfile` to
-   `ExecutionDeliveryProfile.BrokerDispatch` with `DefaultTransportId =
+2. Changed `QueueDeliveryOptions.Defaults.Profile` to
+   `ExecutionDeliveryProfile.BrokerDispatch` with `Defaults.TransportId =
    "rabbitmq"`. This is a config default only: per-queue `QueueProfiles`
    overrides and `ConfigurationQueueRouter.Resolve`'s fallback logic are
    unchanged, so an operator can still pin any individual queue back to `Pull`.
@@ -76,7 +76,7 @@ follow-up polish.
   `Pull`.
 - A host that omits the RabbitMQ execution extensions now fails fast via
   `UnconfiguredExecutionTransport` instead of silently running `BrokerDispatch`
-  against nothing; such hosts must explicitly set `DefaultProfile = Pull` (or
+  against nothing; such hosts must explicitly set `Defaults.Profile = Pull` (or
   register the extensions).
 - Cancellation of `BrokerDispatch` Runs is now low-latency by default; hosts
   without an `ICancelPublisher` must explicitly disable

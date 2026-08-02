@@ -26,4 +26,5 @@ message are one transaction.
   code.
 - Every occurrence is traceable by ScheduleId and ScheduledFor.
 - Misfire and overlap semantics are explicit.
-- Legacy attribute cron remains only for migration compatibility.
+- The legacy attribute-based cron no longer exists: `KubeJobAttribute`
+  carries only the stable `Key`.

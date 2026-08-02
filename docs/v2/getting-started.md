@@ -38,8 +38,9 @@ Jobs.SendEmail // JobKey<SendEmail>, value "mail.send"
 ```
 
 `[KubeJob]` declares only the stable handler key. Handler dependencies use
-constructor injection. `JobExecutionContext` does not expose a service locator,
-storage connection, repository, lease token, or fencing token.
+constructor injection. `JobExecutionContext` exposes a scoped `IServiceProvider`
+for middleware and handler resolution, but never a storage connection,
+repository, lease token, or fencing token.
 
 ## 2. Unified application
 

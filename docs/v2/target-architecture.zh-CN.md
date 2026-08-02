@@ -215,7 +215,7 @@ Side Effect：业务幂等键 / 应用 Outbox
 RabbitMQ 或 Kafka；业务提交接口也没有增加执行模式字段：
 
 ```text
-IExecutionDispatcher.DispatchAsync(ExecutionEnvelope)
+IExecutionTransport.PublishAsync(ExecutionEnvelope, CancellationToken)
 ```
 
 内部由 `IQueueRouter` 根据部署级策略决定调用哪个 Adapter：
@@ -228,10 +228,11 @@ QueueRouter / Delivery Profile
         └── BrokerExecutionAdapter
 ```
 
-当前默认策略仍是 `Pull`。平台可以在服务启动配置中把某个逻辑 Queue
-映射到 `BrokerDispatch`，但这个配置不进入 `EnqueueJobRequest`，业务方不能
+当前默认策略是 `BrokerDispatch`（见 [ADR 014](../adr/014-promote-brokerdispatch-to-default-delivery-profile.md)）。
+平台可以在服务启动配置中把某个逻辑 Queue 映射回 `Pull`（或调整
+ConsumerGroup / lane / 排序模式），但这个配置不进入 `EnqueueJobRequest`，业务方不能
 按单次 Run 覆盖。Outbox Publisher 会根据路由把消息交给唤醒通知器或
-`IExecutionDispatcher`；如果 Broker Dispatcher 没有注册，发布会失败并由
+`IExecutionTransport`；如果 Broker Dispatcher 没有注册，发布会失败并由
 Outbox 重试，不会静默丢任务。
 
 当前已实现平台路由和 RabbitMQ 的 Execution Envelope 发布 Adapter：

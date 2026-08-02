@@ -23,9 +23,12 @@ produce an external side effect after a lease takeover.
 KubeJob will have one authoritative control-plane state machine and two
 execution adapters:
 
-1. **Pull execution adapter** — the current default. Workers claim eligible
-   Runs from the control plane using database transactions and leases.
-2. **MQ dispatch execution adapter** — an optional high-throughput path. A
+1. **Pull execution adapter** — workers claim eligible Runs from the control
+   plane using database transactions and leases. (This was the default at the
+   time of this ADR; [ADR 014](014-promote-brokerdispatch-to-default-delivery-profile.md)
+   promoted BrokerDispatch to the default, making Pull the opt-in per-queue
+   profile.)
+2. **MQ dispatch execution adapter** — the default since ADR 014. A
    dispatcher publishes an Execution Envelope to a broker Consumer Group.
    The Worker must still pass the control-plane admission/fencing check before
    executing and must persist completion before acknowledging the broker

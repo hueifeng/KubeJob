@@ -19,11 +19,12 @@ weaken the reviewability or correctness of the state machine:
    - Broadcast target Session snapshot and offline policy.
 
 3. **Retention, archive, and performance gates**
-   - Active/history separation.
+   - Retention of published outbox rows and unkeyed terminal runs is implemented
+     (`RuntimeRetentionService`); active/history separation and archive are not.
    - Partial-index query plans with `EXPLAIN (ANALYZE, BUFFERS)`.
-   - 100k-job load tests and BenchmarkDotNet baselines.
-   - Dashboard oldest-ready-age and throughput views after metrics semantics are
-     defined and tested.
+   - 100k-job load tests (the benchmark harness in `tests/KubeJob.Benchmark/`
+     tops out around 5k jobs per run) and BenchmarkDotNet baselines.
+   - Dashboard oldest-ready-age is implemented; throughput views remain.
 
 4. **Optional workflows**
    - Separate `KubeJob.Workflows` package.

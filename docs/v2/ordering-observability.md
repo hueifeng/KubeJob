@@ -7,8 +7,9 @@ page describes the metrics that make the ordering backlog and wait observable.
 
 ## Metrics
 
-All metrics are emitted by the `KubeJob.ControlPlane` meter and tagged with
-`kubejob.queue`.
+All metrics are emitted by the `KubeJob.ControlPlane` meter. The per-queue
+gauges are tagged with `kubejob.queue`; `lane_blocked_runs` is additionally
+tagged with `kubejob.lane_id`.
 
 | Metric | Kind | Unit | Meaning |
 |---|---|---|---|
@@ -16,10 +17,13 @@ All metrics are emitted by the `KubeJob.ControlPlane` meter and tagged with
 | `kubejob.control_plane.ordering.blocked_runs` | observable gauge | `{run}` | KeyOrdered Pending Runs currently blocked behind a non-terminal same-key predecessor, per queue. |
 | `kubejob.control_plane.ordering.oldest_blocked_age` | observable gauge | `s` | Age of the oldest blocked KeyOrdered Run per queue. |
 | `kubejob.control_plane.ordering.active_keys` | observable gauge | `{key}` | Distinct `ConcurrencyKey`s with at least one non-terminal KeyOrdered Run per queue (the in-flight "hot" keys). |
+| `kubejob.control_plane.ordering.strictfifo_blocked_runs` | observable gauge | `{run}` | StrictFifo Pending Runs blocked because a prior Run on the same queue is still inflight, per queue. |
+| `kubejob.control_plane.ordering.retry_blocked_runs` | observable gauge | `{run}` | Blocked Runs whose predecessor is retrying (attempt > 1), per queue. Rising values flag retry-storm stalls. |
+| `kubejob.control_plane.ordering.lane_blocked_runs` | observable gauge | `{run}` | Per-lane blocked Run count within a queue, tagged with `kubejob.lane_id`. |
 
 ### No full-table-scan on scrape
 
-The three gauges are **observable** instruments backed by a cached snapshot.
+The gauges are **observable** instruments backed by a cached snapshot.
 A background `OrderingMetricsRefreshService` (hosted) refreshes the cache every
 `JobRuntimeOptions.OrderingBacklogRefreshInterval` (default 5s) by calling
 `IJobRuntimeDashboardStore.GetOrderingBacklogAsync`. A metrics scrape returns
@@ -44,6 +48,10 @@ the cached value and never runs a database query.
   few active keys with many blocked runs ⇒ a single slow key is the bottleneck
   (consider splitting the key or raising predecessor throughput); many active
   keys with few blocked runs ⇒ healthy fan-out.
+* `strictfifo_blocked_runs` rising on a StrictFifo queue ⇒ the lane gate is
+  serializing, as designed; sustained growth means the lane head is stuck.
+* `retry_blocked_runs` rising while `active_keys` stays flat ⇒ predecessors
+  are burning retries (a retry storm) rather than making progress.
 
 ## Dashboard
 
@@ -54,7 +62,7 @@ exposes `ConcurrencyKey`.
 
 ## Per-lane backlog
 
-Per-lane queue depth is a transport-level metric (RabbitMQ ready/unacked per
-lane queue) and is tracked with the execution-lane feature (see
-`docs/v2/message-ordering-research.zh-CN.md`). It is intentionally separate
-from the control-plane ordering gauges above, which report per logical queue.
+Lane-level contention inside a queue is observable from the control plane via
+`lane_blocked_runs` (above). Transport-level queue depth (RabbitMQ
+ready/unacked per lane queue) remains a broker-side metric, tracked with the
+execution-lane feature (see `docs/v2/message-ordering-research.zh-CN.md`).
