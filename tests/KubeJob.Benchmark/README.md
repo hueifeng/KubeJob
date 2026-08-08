@@ -3,14 +3,15 @@
 This on-demand console harness measures the current PostgresManaged runtime:
 
 ```text
-submit → transactional work-available outbox → PostgreSQL claim/lease
+submit → optional transactional work-available wake outbox → PostgreSQL claim/lease
       → handler → durable completion
 ```
 
 `TypedClient` submits through `IJobClient`. The optional `Ingress` mode sends
 business messages through RabbitMQ's ingress adapter before they enter the
 same managed runtime. BrokerNative execution is exercised by the dedicated
-RabbitMQ integration project, not by this managed-pipeline benchmark.
+RabbitMQ integration project; this harness intentionally reports a managed
+baseline rather than pretending ingress traffic is BrokerNative execution.
 
 ## What it measures
 
@@ -19,6 +20,12 @@ P50/P95/P99 latency, PostgreSQL connection peaks, process memory/allocation,
 thread counts, and optional best-effort CPU samples. RabbitMQ queue metrics are
 reported when ingress mode is enabled.
 
+PostgreSQL `synchronous_commit` is **on by default**. That keeps the benchmark
+aligned with normal durable production semantics. `--synchronous-commit off`
+is available only for an explicitly labeled throughput experiment; results from
+that mode must not be compared with durable production results as if the
+semantics were equivalent.
+
 ## Scenarios
 
 - `Parallel` — no `ConcurrencyKey` and parallel queue ordering.
@@ -26,9 +33,10 @@ reported when ingress mode is enabled.
 - `KeyOrderedHotKey` — a small key space (four keys by default).
 - `StrictFifo` — one logical queue ordered globally.
 
-Each scenario uses a separate logical queue. `--lanes` sweeps the managed
-execution-lane policy label for comparative runs; it does not create physical
-broker queues.
+Each scenario uses a separate logical queue. The harness uses one explicit
+managed `ExecutionLane` only as a worker-eligibility label. There is no
+`--lanes` sweep because V3 does not map `ConcurrencyKey` values onto a hidden
+set of physical lanes or broker queues.
 
 ## Running
 
@@ -68,7 +76,7 @@ override environment values.
 | `--scenarios` | all | Comma-separated scenario names |
 | `--hotkey-count` | 4 | Hot-key cardinality |
 | `--uniform-keys` | 0 | Uniform key cardinality; zero means distinct |
-| `--lanes` | `1` | Comma-separated managed lane counts |
+| `--synchronous-commit` | `on` | PostgreSQL durable commit; set `off` only for explicitly labeled throughput experiments |
 | `--metrics-ms` | 1000 | Metrics sampling interval |
 | `--cpu` | on | Set to `0` to disable Podman CPU sampling |
 | `--container` | `kubejob-dev-postgres-1` | Container name for CPU sampling |
@@ -79,7 +87,8 @@ override environment values.
 
 Ingress-specific environment variables are
 `KUBEJOB_BENCH_INGRESS_BATCH`, `KUBEJOB_BENCH_INGRESS_WAIT_MS`, and
-`KUBEJOB_BENCH_INGRESS_PREFETCH`.
+`KUBEJOB_BENCH_INGRESS_PREFETCH`. PostgreSQL durability can also be set with
+`KUBEJOB_BENCH_SYNCHRONOUS_COMMIT=on|off`.
 
 The harness uses one unified host and the production in-process worker
 transport, so it measures managed pipeline behavior without localhost HTTP
