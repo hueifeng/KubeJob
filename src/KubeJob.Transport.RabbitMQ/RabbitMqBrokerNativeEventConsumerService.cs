@@ -38,7 +38,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
         _processor = processor;
         _logger = logger;
         _options.Validate();
-        _worker.Validate(requireJobQueues: false);
+        _worker.ValidateEventWorker();
 
         _groups = subscriptions
             .GroupBy(
