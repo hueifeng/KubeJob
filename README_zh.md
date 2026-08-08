@@ -20,6 +20,10 @@ PostgreSQL 是任务执行权和状态事实源，负责：
 
 Worker 只在有空闲并发槽位时从 PostgreSQL Claim 任务。
 
+为了降低提交热路径写放大，**立即可执行的新 Run 不再每条写一条 `Kj2_Outbox` WorkAvailable 记录**。控制面先提交 Run，再通过进程内的 `ManagedWorkAvailableDispatcher` 按逻辑 Queue 合并并异步发送 best-effort wake。即使 wake 丢失，Worker 仍会通过 PostgreSQL polling 发现任务，因此不会丢 Job。
+
+未来 `NotBefore` 任务，以及显式 Retry/Requeue 等恢复场景，目前仍保留 durable WorkAvailable outbox；这是兼容/延迟唤醒路径，不是执行权。
+
 ### BrokerNative
 
 消息中间件是任务交付和重试事实源：
