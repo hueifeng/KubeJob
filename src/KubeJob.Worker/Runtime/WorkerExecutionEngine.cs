@@ -160,6 +160,13 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
             RecordHandlerDuration(handlerStartedAt, "succeeded");
             return new WorkerExecutionResult(JobAttemptOutcome.Succeeded);
         }
+        catch (OperationCanceledException) when (request.WorkerStoppingToken.IsCancellationRequested)
+        {
+            // Worker shutdown/drain is not a handler outcome. Give it priority
+            // even when an attempt token was canceled at the same time so the
+            // runtime coordinator/broker can recover ownership cleanly.
+            throw;
+        }
         catch (OperationCanceledException) when (request.AttemptCancellationToken.IsCancellationRequested)
         {
             RecordHandlerDuration(handlerStartedAt, "canceled");
@@ -167,13 +174,6 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                 JobAttemptOutcome.Canceled,
                 "canceled",
                 "Execution was canceled by the control plane or attempt cancellation token.");
-        }
-        catch (OperationCanceledException) when (request.WorkerStoppingToken.IsCancellationRequested)
-        {
-            // Worker shutdown/drain is not a handler outcome. Runtime
-            // coordinators must preserve/recover delivery ownership instead of
-            // persisting or ACKing an artificial cancellation result.
-            throw;
         }
         catch (OperationCanceledException) when (timeoutToken.IsCancellationRequested)
         {
