@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>RabbitMQ ingress, work-available notifications, and execution dispatch adapters for KubeJob.</Description>
+    <Description>RabbitMQ BrokerNative Job/Event transport, business ingress, and optional PostgresManaged wake notifications for KubeJob.</Description>
   </PropertyGroup>
 
   <ItemGroup>
