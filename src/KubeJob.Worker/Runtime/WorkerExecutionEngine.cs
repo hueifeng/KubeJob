@@ -105,9 +105,14 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
             // execution mechanics out of WorkerRuntimeService.
             context.Items["_JobKey"] = request.JobKey;
 
+            // A normal per-job log at Information becomes a dominant allocation
+            // and I/O cost for BrokerNative/no-op handlers at high TPS. Keep
+            // task-level detail available for diagnostics without putting it on
+            // the production information hot path; aggregate throughput and
+            // latency belong in Metrics/Trace.
             if (request.ConsumerIndex is int consumerIndex)
             {
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Consumer {ConsumerIndex} executing job {RunId} attempt {AttemptNumber} ({JobKey})",
                     consumerIndex,
                     request.RunId,
@@ -116,7 +121,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
             }
             else
             {
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Executing job {RunId} attempt {AttemptNumber} ({JobKey})",
                     request.RunId,
                     request.AttemptNumber,
