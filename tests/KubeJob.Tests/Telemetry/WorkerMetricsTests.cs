@@ -40,7 +40,7 @@ public sealed class WorkerMetricsTests
         measurements.Select(measurement => measurement.Value).Should().Equal(1, -1);
         measurements[0].Tags.Should().Equal(measurements[1].Tags);
         measurements[0].Tags.Should().ContainSingle(tag =>
-            tag.Key == "kubejob.execution.kind" && (string?)tag.Value == "pull");
+            tag.Key == "kubejob.execution.kind" && (string?)tag.Value == "postgres_managed");
     }
 
     [Fact]
