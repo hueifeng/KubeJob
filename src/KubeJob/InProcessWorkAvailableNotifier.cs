@@ -4,12 +4,12 @@ using KubeJob.Worker.Runtime;
 namespace KubeJob;
 
 /// <summary>
-/// Bridges the transactional Outbox's work-available signal directly to the
-/// in-process Worker claim loop for unified hosts. Unified deployments run
-/// the control plane and Worker in the same process, so the Outbox publisher
-/// and <see cref="IWorkerClaimTriggerSource"/> already share a container;
-/// this notifier pulses that trigger instead of leaving Pull-mode Workers to
-/// discover new work only on their next polling interval.
+/// Bridges PostgresManaged work-available hints directly to the in-process
+/// Worker claim loop for unified hosts. Immediate submissions reach this
+/// notifier through <see cref="ControlPlane.Runtime.ManagedWorkAvailableDispatcher"/>;
+/// delayed/recovery rows may still reach it through the durable outbox
+/// publisher. In both cases the signal only pulses claim discovery and never
+/// grants execution ownership.
 /// </summary>
 public sealed class InProcessWorkAvailableNotifier : IWorkAvailableNotifier
 {
