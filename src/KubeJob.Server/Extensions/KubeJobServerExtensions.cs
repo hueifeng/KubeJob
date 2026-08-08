@@ -1,6 +1,7 @@
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
+using KubeJob.Core.Transport;
 using KubeJob.Server.ControlPlane;
 using KubeJob.ControlPlane.Telemetry;
 using KubeJob.ControlPlane.Data;
@@ -59,11 +60,21 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<ScheduleControlPlane>();
         services.TryAddSingleton<IWorkAvailableNotifier, NoopWorkAvailableNotifier>();
         services.TryAddSingleton<ICancelPublisher, NoopCancelPublisher>();
+
+        // V2 delivery routing remains available to PostgresManaged queues.
         services.AddOptions<QueueDeliveryOptions>();
         services.TryAddSingleton<QueueCatalog>();
         services.TryAddSingleton<IQueueRouter, ConfigurationQueueRouter>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, UnconfiguredExecutionTransport>());
         services.TryAddSingleton<IExecutionTransportRegistry, ExecutionTransportRegistry>();
+
+        // V3 runtime routing is local deployment configuration. BrokerNative
+        // publish must never require a database lookup just to decide which
+        // transport owns the Queue.
+        services.AddOptions<QueueRuntimeOptions>();
+        services.TryAddSingleton<IQueueRuntimeResolver, ConfigurationQueueRuntimeResolver>();
+        services.TryAddSingleton<IMessageTransportRegistry, MessageTransportRegistry>();
+
         services.TryAddSingleton<QueueInventoryService>();
         services.TryAddSingleton<IJobClient, DefaultJobClient>();
         services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
@@ -109,9 +120,8 @@ public static class KubeJobServerExtensions
     }
 
     /// <summary>
-    /// Configures deployment-level Queue routing. This is intentionally kept
-    /// outside EnqueueJobRequest so business callers cannot select a physical
-    /// execution mechanism for one Run.
+    /// Configures V2 PostgresManaged delivery routing. This remains separate
+    /// from V3 QueueRuntimeOptions while compatibility code is being retired.
     /// </summary>
     public static IServiceCollection ConfigureKubeJobQueueRouting(
         this IServiceCollection services,
@@ -123,8 +133,21 @@ public static class KubeJobServerExtensions
     }
 
     /// <summary>
-    /// Registers one named transport adapter. Multiple adapters may coexist;
-    /// persisted delivery targets select the adapter by transport ID.
+    /// Configures the execution authority of each logical Queue. BrokerNative
+    /// queues require a registered message transport; PostgresManaged queues
+    /// retain strong Run/Attempt/Lease semantics.
+    /// </summary>
+    public static IServiceCollection ConfigureKubeJobQueueRuntimes(
+        this IServiceCollection services,
+        Action<QueueRuntimeOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        services.Configure(configure);
+        return services;
+    }
+
+    /// <summary>
+    /// Registers one legacy V2 execution-envelope transport adapter.
     /// </summary>
     public static IServiceCollection AddKubeJobExecutionTransport<TTransport>(
         this IServiceCollection services)
@@ -135,9 +158,8 @@ public static class KubeJobServerExtensions
     }
 
     /// <summary>
-    /// Registers the broker-specific cancel publisher used by Direct Dispatch
-    /// Mode to fanout per-group cancel signals to in-flight workers. MQ
-    /// transport packages supply their own implementation.
+    /// Registers the broker-specific cancel publisher used by legacy Direct
+    /// Dispatch Mode to fanout per-group cancel signals to in-flight workers.
     /// </summary>
     public static IServiceCollection UseKubeJobCancelPublisher<TCancelPublisher>(
         this IServiceCollection services)
