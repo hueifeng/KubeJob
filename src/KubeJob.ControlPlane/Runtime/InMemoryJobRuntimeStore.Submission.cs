@@ -113,7 +113,14 @@ public sealed partial class InMemoryJobRuntimeStore
             _idempotency.Add(command.IdempotencyKey, run.Id);
         }
 
-        AddWorkAvailableOutbox(run, now);
+        // Immediate submissions are signalled after commit through the
+        // coalescing ManagedWorkAvailableDispatcher. Keep the compatibility
+        // durable wake only for future-dated work.
+        if (run.AvailableAt > now)
+        {
+            AddWorkAvailableOutbox(run, now);
+        }
+
         return new SubmitJobResult(run, Existing: false);
     }
 
