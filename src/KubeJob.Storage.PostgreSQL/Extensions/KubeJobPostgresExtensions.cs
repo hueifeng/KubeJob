@@ -51,11 +51,14 @@ public static class KubeJobPostgresExtensions
         {
             var runtimeOptions = sp.GetRequiredService<IOptions<JobRuntimeOptions>>().Value;
             storageOptions.ValidateCapacity(runtimeOptions.OutboxPublishConcurrency);
+            var emitWorkAvailableOutbox =
+                sp.GetRequiredService<IWorkAvailableNotifier>() is not NoopWorkAvailableNotifier;
             return new PostgreSqlJobRuntimeStore(
                 sp.GetRequiredKeyedService<NpgsqlDataSource>(PostgreSqlDataSourceKind.Business),
                 sp.GetRequiredKeyedService<NpgsqlDataSource>(PostgreSqlDataSourceKind.Background),
                 storageOptions,
-                sp.GetService<KubeJobPostgreSqlMetrics>());
+                sp.GetService<KubeJobPostgreSqlMetrics>(),
+                emitWorkAvailableOutbox);
         });
         services.AddSingleton<IJobSubmissionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
         services.AddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
