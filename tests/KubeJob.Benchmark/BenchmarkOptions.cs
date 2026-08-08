@@ -1,5 +1,4 @@
 using System.Globalization;
-using KubeJob.Core.Runtime;
 
 namespace KubeJob.Benchmark;
 
@@ -21,6 +20,14 @@ public sealed class BenchmarkOptions
     public string RabbitMqManagementUri { get; set; } = "http://localhost:15672";
     public string RabbitMqUser { get; set; } = "kubejob";
     public string RabbitMqPassword { get; set; } = "kubejob-dev";
+
+    // --- PostgreSQL durability ---
+    /// <summary>
+    /// Keeps PostgreSQL's normal durable commit semantics by default. Turning
+    /// this off is an explicit throughput experiment and must not be presented
+    /// as a production-durability result.
+    /// </summary>
+    public bool SynchronousCommitEnabled { get; set; } = true;
 
     // --- Best-effort metrics sources ---
     /// <summary>Podman container name for <c>podman stats</c> CPU sampling. Empty disables CPU.</summary>
@@ -63,15 +70,6 @@ public sealed class BenchmarkOptions
     /// <summary>Uniform key space size. Zero means a distinct key per Run.</summary>
     public int UniformKeyCardinality { get; set; } = 0;
 
-    // --- Lane sweep (Item 1+5: fixed-N MQ lanes) ---
-    /// <summary>
-    /// Sweep N across <see cref="ExecutionLaneCount"/> values. Each combination
-    /// (scenario × N) produces one result row. Default: [1].
-    /// </summary>
-    public IReadOnlyList<int> LaneCountSweep { get; set; } = new[] { 1 };
-    /// <summary>Convenience: the first (or only) lane count for non-sweeping callers.</summary>
-    public int ExecutionLaneCount => LaneCountSweep.Count > 0 ? LaneCountSweep[0] : 1;
-
     // --- Metrics sampling ---
     public int MetricsIntervalMs { get; set; } = 1000;
 
@@ -96,6 +94,10 @@ public sealed class BenchmarkOptions
             opts.RabbitMqManagementUri);
         opts.RabbitMqUser = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_USER", opts.RabbitMqUser);
         opts.RabbitMqPassword = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_PASSWORD", opts.RabbitMqPassword);
+        opts.SynchronousCommitEnabled = EnvBool(
+            env,
+            "KUBEJOB_BENCH_SYNCHRONOUS_COMMIT",
+            opts.SynchronousCommitEnabled);
         opts.PostgresContainerName = Env(env, "KUBEJOB_BENCH_POSTGRES_CONTAINER",
             opts.PostgresContainerName);
         opts.CpuSamplingEnabled = EnvBool(env, "KUBEJOB_BENCH_CPU", opts.CpuSamplingEnabled);
@@ -128,12 +130,6 @@ public sealed class BenchmarkOptions
         opts.HotKeyCardinality = EnvInt(env, "KUBEJOB_BENCH_HOTKEY_COUNT", opts.HotKeyCardinality);
         opts.UniformKeyCardinality = EnvInt(env, "KUBEJOB_BENCH_UNIFORM_KEYS", opts.UniformKeyCardinality);
         opts.MetricsIntervalMs = EnvInt(env, "KUBEJOB_BENCH_METRICS_MS", opts.MetricsIntervalMs);
-
-        var laneSweepEnv = Env(env, "KUBEJOB_BENCH_LANES", string.Empty);
-        if (!string.IsNullOrWhiteSpace(laneSweepEnv))
-        {
-            opts.LaneCountSweep = ParseIntCsv(laneSweepEnv);
-        }
 
         var scenarioEnv = Env(env, "KUBEJOB_BENCH_SCENARIOS", string.Empty);
         if (!string.IsNullOrWhiteSpace(scenarioEnv))
@@ -168,12 +164,6 @@ public sealed class BenchmarkOptions
             .Select(s => Enum.Parse<BenchScenario>(s, ignoreCase: true))
             .ToArray();
 
-    private static IReadOnlyList<int> ParseIntCsv(string csv) =>
-        csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(s => int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
-            .Select(int.Parse)
-            .ToArray();
-
     private static void ApplyArgs(BenchmarkOptions opts, string[] args)
     {
         for (var i = 0; i < args.Length; i++)
@@ -200,7 +190,6 @@ public sealed class BenchmarkOptions
                 case "scenarios": opts.Scenarios = ParseScenarios(value); break;
                 case "hotkey-count": opts.HotKeyCardinality = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "uniform-keys": opts.UniformKeyCardinality = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "lanes": opts.LaneCountSweep = ParseIntCsv(value); break;
                 case "metrics-ms": opts.MetricsIntervalMs = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "postgres": opts.PostgresConnectionString = value; break;
                 case "rabbitmq": opts.RabbitMqConnectionString = value; break;
@@ -208,12 +197,19 @@ public sealed class BenchmarkOptions
                 case "out": opts.OutputFile = value; break;
                 case "cpu": opts.CpuSamplingEnabled = !value.Equals("0", StringComparison.Ordinal); break;
                 case "container": opts.PostgresContainerName = value; break;
+                case "synchronous-commit": opts.SynchronousCommitEnabled = ParseOnOff(value); break;
                 default:
                     // Unknown flags are ignored so callers can pass profiling hints.
                     break;
             }
         }
     }
+
+    private static bool ParseOnOff(string value) =>
+        !(value.Equals("0", StringComparison.Ordinal)
+          || value.Equals("false", StringComparison.OrdinalIgnoreCase)
+          || value.Equals("no", StringComparison.OrdinalIgnoreCase)
+          || value.Equals("off", StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>
