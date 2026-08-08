@@ -58,6 +58,19 @@ public interface IMessageTransportPublisher
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Optional high-throughput extension for transports that can amortize durable
+/// publish acknowledgement across multiple messages. Implementing this
+/// interface does not make a batch atomic: a broker/network failure may leave a
+/// confirmed prefix published. The benefit is fewer transport round trips.
+/// </summary>
+public interface IMessageTransportBatchPublisher : IMessageTransportPublisher
+{
+    ValueTask PublishBatchAsync(
+        IReadOnlyList<TransportPublishRequest> requests,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IMessageTransportRegistry
 {
     IMessageTransportPublisher GetRequiredPublisher(string transportId);

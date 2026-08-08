@@ -27,6 +27,11 @@ public sealed class EventPublishOptions
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Reserved for a future Subscription Inbox/deduplication feature. The
+    /// current Event runtime rejects non-empty values rather than implying that
+    /// carrying a key in the broker envelope suppresses duplicate delivery.
+    /// </summary>
     public string? IdempotencyKey { get; init; }
 
     public string? PartitionKey { get; init; }
@@ -45,6 +50,14 @@ public sealed class EventPublishOptions
             throw new ArgumentOutOfRangeException(
                 nameof(Timeout),
                 "Timeout must be positive and no more than one day.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(IdempotencyKey))
+        {
+            throw new NotSupportedException(
+                "Event IdempotencyKey requires a Subscription Inbox/deduplication store, " +
+                "which is not implemented yet. The value is rejected rather than implying " +
+                "duplicate suppression that the transport cannot guarantee.");
         }
     }
 }
