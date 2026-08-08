@@ -180,17 +180,24 @@ public sealed class RabbitMqNotificationTests
             .Should().NotBe(options.GetEventRetryQueueName("order", "audit"));
     }
 
-    [Fact]
-    public void Event_topology_boundary_is_reserved_from_queue_prefix()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Event_topology_boundary_is_reserved_from_job_physical_names(bool useQueuePrefix)
     {
-        var options = new RabbitMqBrokerNativeOptions
+        var options = new RabbitMqBrokerNativeOptions();
+        if (useQueuePrefix)
         {
-            QueuePrefix = "company~jobs"
-        };
+            options.QueuePrefix = "company~jobs";
+        }
+        else
+        {
+            options.ExchangeName = "company~jobs";
+        }
 
         options.Invoking(x => x.Validate())
             .Should().Throw<InvalidOperationException>()
-            .WithMessage("*reserved for physical topology boundaries*");
+            .WithMessage("*reserved for Event physical topology boundaries*");
     }
 
     [Fact]
