@@ -63,6 +63,8 @@ Both runtimes converge on `WorkerExecutionEngine` for:
 
 Storage/broker coordination remains outside the engine.
 
+Worker shutdown/drain is not persisted as an artificial Job cancellation. It is propagated back to the runtime coordinator so PostgresManaged lease recovery or broker redelivery can recover ownership. A handler-thrown `OperationCanceledException` is only classified as a KubeJob timeout when the runtime timeout token actually fired.
+
 ## Job Queue semantics
 
 A Job Queue is a competing-consumer pool:
@@ -96,6 +98,56 @@ Each Subscription receives its own copy. Replicas inside one Subscription compet
 
 Retry and DLQ are Subscription-scoped. A failure in `business` returns only to the `business` delivery path; it must not republish to the Topic and replay already-successful subscriptions.
 
+### Durable subscription provisioning
+
+RabbitMQ exchanges do not retain events by themselves. A durable Subscription queue must exist **before** an event is published if the deployment expects the event to accumulate while handler workers are offline.
+
+Normal Event workers register `AddKubeJobEventHandler(...)` and `AddRabbitMqKubeJobEventConsumer(...)`; the consumer registration provisions all durable Subscription/Retry/DLQ topology before starting consumption.
+
+For deployment-time provisioning without a handler worker, register topology-only subscriptions and the RabbitMQ provisioner:
+
+```csharp
+services.AddKubeJobEventSubscription(
+    EventKey<OrderCreated>.Create("order.events", "order.created"),
+    "audit");
+
+services.AddRabbitMqKubeJobEventTopologyProvisioner(options =>
+{
+    options.ConnectionString = rabbitMqConnectionString;
+});
+```
+
+This is the supported way to create durable Subscription queues before publishers are enabled. Publishing to a Topic that has never had its intended Subscription queue provisioned follows normal broker pub/sub semantics: there is no queue in which that subscriber's copy can be retained.
+
+### RabbitMQ physical namespace isolation
+
+Job and Event physical topology must never alias. Job Queue names remain backward-compatible (`kubejob.<logical-queue>` by default). Event exchanges/queues use a reserved `~` structural boundary, for example:
+
+```text
+kubejob.eventx~order.events
+kubejob.eventsub~order.events~audit
+kubejob.eventretryq~order.events~audit
+kubejob.eventdlq~order.events~audit
+```
+
+Logical KubeJob names do not permit `~`, and RabbitMQ `QueuePrefix`/`ExchangeName` also reject it. This prevents a Job Queue such as `order.audit` from colliding with Event Topic `order` / Subscription `audit`, and prevents a Topic such as `jobs` from colliding with the Job exchange.
+
+### Event topology migration note
+
+The post-merge V3 hardening release changes **Event physical names only** to enforce the namespace isolation above. Existing BrokerNative Job Queue names are unchanged.
+
+If an environment already created the earlier Event queues, upgrade deliberately:
+
+1. stop or quiesce Event publishers for the affected Topics;
+2. provision the new Event topology with the target Subscription definitions;
+3. inspect old Subscription/Retry/DLQ queues for pending messages;
+4. drain, replay, or explicitly discard those messages according to business semantics;
+5. start consumers on the new topology;
+6. resume publishers;
+7. delete old Event topology only after confirming it is no longer needed.
+
+KubeJob does not automatically move messages between old and new RabbitMQ queues because doing so would silently choose replay/duplication semantics on behalf of the application.
+
 ## RabbitMQ retry handoff
 
 For a retryable BrokerNative Job failure, the RabbitMQ adapter:
@@ -113,7 +165,11 @@ If transport infrastructure fails before that handoff completes, the original de
 - PostgresManaged uses one bounded database transaction.
 - BrokerNative is not atomic. A transport may batch several publishes behind one durability confirmation for throughput, but an error can be observed after a subset or all messages were accepted.
 
+The same configured `MaxSubmissionBatchSize` bounds both runtimes. For BrokerNative this bounds serialization memory, publisher-lock hold time, and one publisher-confirm window as well as protecting callers from accidentally creating extremely large application batches.
+
 Callers must treat a BrokerNative batch retry as at-least-once.
+
+RabbitMQ caches successful Job Queue/Event Topic declarations for the current publisher channel lifetime so normal publish does not pay a synchronous topology-declare RPC for every message. The cache is discarded when the channel/connection is rebuilt or an unroutable mandatory Job publish is observed.
 
 ## Scheduling
 
@@ -121,6 +177,8 @@ Schedule definitions remain durable control-plane resources.
 
 - PostgresManaged fire: create a durable Run.
 - BrokerNative fire: publish a self-contained transport message and advance the schedule cursor only after publish confirmation.
+
+BrokerNative occurrence MessageIds are deterministic for `(ScheduleId, ScheduledFor)`. A crash after broker confirmation but before cursor commit can therefore replay the same occurrence with the same MessageId rather than losing the occurrence by advancing the cursor first.
 
 Policies that require strong Run state remain PostgresManaged capabilities.
 
