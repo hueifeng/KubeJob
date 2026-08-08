@@ -9,7 +9,7 @@ namespace KubeJob.Tests.ControlPlane;
 public sealed class QueueRoutingTests
 {
     [Fact]
-    public void Unconfigured_logical_queue_uses_the_default_definition()
+    public void Unconfigured_logical_queue_uses_postgres_pull_by_default()
     {
         var options = Options.Create(new QueueDeliveryOptions());
         var router = new ConfigurationQueueRouter(options);
@@ -17,7 +17,8 @@ public sealed class QueueRoutingTests
         var route = router.Resolve("orders.push");
 
         route.Queue.Should().Be("orders.push");
-        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
+        route.Target.TransportId.Should().BeNull();
         route.Target.ConsumerGroup.Should().Be("default");
         route.Target.ExecutionLane.Should().Be("default");
     }
@@ -29,13 +30,14 @@ public sealed class QueueRoutingTests
         {
             Defaults =
             {
-                Profile = ExecutionDeliveryProfile.BrokerDispatch,
+                Profile = ExecutionDeliveryProfile.Pull,
                 OrderingMode = ExecutionOrderingMode.Parallel
             }
         };
         options.Queues["orders.push"] = new QueueDefinition
         {
-            Profile = ExecutionDeliveryProfile.Pull,
+            Profile = ExecutionDeliveryProfile.BrokerDispatch,
+            TransportId = "rabbitmq",
             ConsumerGroup = "region-b",
             OrderingMode = ExecutionOrderingMode.KeyOrdered
         };
@@ -43,7 +45,8 @@ public sealed class QueueRoutingTests
 
         var route = router.Resolve("orders.push");
 
-        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        route.Target.TransportId.Should().Be("rabbitmq");
         route.Target.ConsumerGroup.Should().Be("region-b");
         route.Target.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
     }
@@ -97,7 +100,7 @@ public sealed class QueueRoutingTests
     }
 
     [Fact]
-    public void Platform_queue_policy_can_route_a_logical_queue_to_broker_dispatch()
+    public void Legacy_platform_policy_can_explicitly_route_a_managed_queue_to_broker_dispatch()
     {
         var options = new QueueDeliveryOptions();
         options.Queues["orders.push"] = new QueueDefinition
@@ -114,7 +117,7 @@ public sealed class QueueRoutingTests
     }
 
     [Fact]
-    public void Execution_envelope_preserves_logical_run_identity()
+    public void Execution_envelope_preserves_logical_run_identity_for_legacy_dispatch()
     {
         var signal = new WorkAvailableSignal
         {
