@@ -47,17 +47,19 @@ public sealed class KubeJobWorkerOptions
     public IList<Type> ExecutionMiddleware { get; init; } = [];
 
     /// <summary>
-    /// Validates a Managed/Job worker and therefore requires at least one
-    /// logical Job Queue. Kept parameterless for source compatibility.
+    /// Validates a Managed or BrokerNative Job worker and therefore requires at
+    /// least one logical Job Queue. The public API remains parameterless so
+    /// existing method-group callers keep compiling.
     /// </summary>
-    public void Validate() => Validate(requireJobQueues: true);
+    public void Validate() => ValidateCore(requireJobQueues: true);
 
     /// <summary>
-    /// Validates shared worker settings. Event-only BrokerNative hosts pass
-    /// <paramref name="requireJobQueues"/> as false instead of inventing a Job
-    /// Queue solely to satisfy legacy worker metadata.
+    /// Validates an Event-only BrokerNative worker without requiring a fake Job
+    /// Queue. Event subscriptions themselves define its delivery streams.
     /// </summary>
-    public void Validate(bool requireJobQueues)
+    public void ValidateEventWorker() => ValidateCore(requireJobQueues: false);
+
+    private void ValidateCore(bool requireJobQueues)
     {
         if (!Uri.TryCreate(ServerEndpoint, UriKind.Absolute, out var endpoint)
             || endpoint.Scheme is not ("http" or "https"))
