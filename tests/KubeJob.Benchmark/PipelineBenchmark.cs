@@ -33,24 +33,19 @@ public sealed class PipelineBenchmark
         _opts = opts ?? throw new ArgumentNullException(nameof(opts));
     }
 
-    public async Task<IReadOnlyList<ScenarioResult>> RunScenarioAsync(BenchScenario scenario)
-    {
-        var results = new List<ScenarioResult>(_opts.LaneCountSweep.Count);
-        foreach (var laneCount in _opts.LaneCountSweep)
-        {
-            results.Add(await RunScenarioSingleAsync(scenario, Math.Max(1, laneCount)));
-        }
+    public async Task<IReadOnlyList<ScenarioResult>> RunScenarioAsync(BenchScenario scenario) =>
+        new[] { await RunScenarioSingleAsync(scenario) };
 
-        return results;
-    }
-
-    private async Task<ScenarioResult> RunScenarioSingleAsync(BenchScenario scenario, int laneCount)
+    private async Task<ScenarioResult> RunScenarioSingleAsync(BenchScenario scenario)
     {
         var group = $"bench-{scenario.Label().ToLowerInvariant()}-{Guid.NewGuid():N}";
         var topology = BuildTopology(group);
         var scenarioSw = Stopwatch.StartNew();
         var (benchConnStr, dbName) = await CreateFreshDatabaseAsync();
-        await SetSynchronousCommitOffAsync(benchConnStr);
+        if (!_opts.SynchronousCommitEnabled)
+        {
+            await SetSynchronousCommitOffAsync(benchConnStr);
+        }
 
         IHost? host = null;
         MetricsSampler? sampler = null;
@@ -61,7 +56,6 @@ public sealed class PipelineBenchmark
                 benchConnStr + ";No Reset On Close=true",
                 scenario,
                 group,
-                laneCount,
                 topology);
             InitializeSchema(benchConnStr);
             await host.StartAsync();
@@ -116,7 +110,6 @@ public sealed class PipelineBenchmark
             var metrics = sampler.Snapshot();
             return BuildResult(
                 scenario,
-                laneCount,
                 completion,
                 submitSw,
                 e2eWallSw,
@@ -178,12 +171,11 @@ public sealed class PipelineBenchmark
         string connectionString,
         BenchScenario scenario,
         string group,
-        int laneCount,
         BenchTopology topology)
     {
         var queue = scenario.QueueName();
         var warmupQueue = WarmupQueue(queue);
-        var lane = $"bench-lane-{laneCount}";
+        const string lane = "bench";
         var workerPool = Math.Max(16, _opts.OutboxPublishConcurrency + 16);
         var businessPool = Math.Max(
             48,
@@ -519,7 +511,6 @@ public sealed class PipelineBenchmark
 
     private ScenarioResult BuildResult(
         BenchScenario scenario,
-        int laneCount,
         CompletionResult completion,
         Stopwatch submitSw,
         Stopwatch e2eWallSw,
@@ -555,8 +546,7 @@ public sealed class PipelineBenchmark
             metrics,
             scenarioSw.Elapsed)
         {
-            Mode = _opts.SubmissionMode.ToString(),
-            LaneCount = laneCount
+            Mode = _opts.SubmissionMode.ToString()
         };
     }
 
