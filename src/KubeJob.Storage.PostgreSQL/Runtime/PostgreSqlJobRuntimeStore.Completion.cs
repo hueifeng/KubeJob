@@ -620,14 +620,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
                             var state = stateByRunId[x.RunId];
                             return (
                                 Queue: state.Queue,
-                                Payload: JsonSerializer.Serialize(new { runId = x.RunId, queue = state.Queue }, SerializerOptions),
+                                PayloadJson: JsonSerializer.Serialize(new { runId = x.RunId, queue = state.Queue }, SerializerOptions),
                                 x.AvailableAt,
                                 Target: new DeliveryTarget(
-                                state.DeliveryProfile,
-                                state.ExecutionLane,
-                                state.TransportId,
-                                state.ConsumerGroup,
-                                state.OrderingMode),
+                                    state.DeliveryProfile,
+                                    state.ExecutionLane,
+                                    state.TransportId,
+                                    state.ConsumerGroup,
+                                    state.OrderingMode),
                                 PartitionKey: state.ConcurrencyKey);
                         })
                         .ToArray(),
@@ -913,7 +913,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 retryable
                     .Select(x => (
                         x.Queue,
-                        Payload: JsonSerializer.Serialize(new { runId = x.AttemptRunId, queue = x.Queue }, SerializerOptions),
+                        PayloadJson: JsonSerializer.Serialize(new { runId = x.AttemptRunId, queue = x.Queue }, SerializerOptions),
                         AvailableAt: availableAtByRunId[x.AttemptRunId],
                         Target: new DeliveryTarget(
                             x.DeliveryProfile,
@@ -1076,13 +1076,19 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken: cancellationToken));
     }
 
-    private static async ValueTask AddOutboxBatchAsync(
+    private async ValueTask AddOutboxBatchAsync(
         IDbConnection connection,
         IDbTransaction transaction,
         IReadOnlyList<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)> items,
         string eventType,
         CancellationToken cancellationToken)
     {
+        if (!_emitWorkAvailableOutbox
+            && string.Equals(eventType, OutboxEventTypes.WorkAvailable, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         if (items.Count == 0)
         {
             return;
