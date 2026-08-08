@@ -8,8 +8,9 @@ using Microsoft.Extensions.Options;
 namespace KubeJob.Tests.Runtime;
 
 /// <summary>
-/// Regression coverage for the managed outbox publisher. The publisher emits
-/// wake-up hints; workers still claim authoritative work from the runtime store.
+/// Regression coverage for the retained durable delayed/recovery outbox. The
+/// publisher emits wake hints; workers still claim authoritative work from the
+/// runtime store.
 /// </summary>
 public sealed class OutboxPublisherConcurrencyTests
 {
@@ -21,7 +22,7 @@ public sealed class OutboxPublisherConcurrencyTests
         await SubmitMessagesAsync(store, messageCount);
 
         var notifier = new RecordingNotifier();
-        await RunPublisherAsync(store, notifier, publishConcurrency: 1);
+        await RunPublisherAsync(store, notifier, messageCount, publishConcurrency: 1);
 
         notifier.Count.Should().Be(messageCount);
         var overview = await store.GetOverviewAsync(10, CancellationToken.None);
@@ -36,7 +37,7 @@ public sealed class OutboxPublisherConcurrencyTests
         await SubmitMessagesAsync(store, messageCount);
 
         var notifier = new RecordingNotifier();
-        await RunPublisherAsync(store, notifier, publishConcurrency: 4);
+        await RunPublisherAsync(store, notifier, messageCount, publishConcurrency: 4);
 
         notifier.Count.Should().Be(messageCount);
     }
@@ -63,10 +64,14 @@ public sealed class OutboxPublisherConcurrencyTests
                     DeliveryTarget: ManagedTarget),
                 CancellationToken.None);
             ids[index] = result.Run.Id;
+            (await store.RequeueWorkAvailableAsync(
+                result.Run.Id,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None)).Should().BeTrue();
         }
 
         var claimed = await store.ClaimPendingAsync(
-            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddMilliseconds(1),
             TimeSpan.FromSeconds(30),
             batchSize: messageCount,
             CancellationToken.None);
@@ -117,7 +122,7 @@ public sealed class OutboxPublisherConcurrencyTests
     {
         for (var index = 0; index < count; index++)
         {
-            await store.SubmitAsync(
+            var result = await store.SubmitAsync(
                 new SubmitJobCommand(
                     $"job-{index}",
                     $"{{\"i\":{index}}}",
@@ -130,19 +135,23 @@ public sealed class OutboxPublisherConcurrencyTests
                     TimeoutSeconds: 30,
                     DeliveryTarget: ManagedTarget),
                 CancellationToken.None);
+            (await store.RequeueWorkAvailableAsync(
+                result.Run.Id,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None)).Should().BeTrue();
         }
     }
 
     private static async Task RunPublisherAsync(
         InMemoryJobRuntimeStore store,
         RecordingNotifier notifier,
+        int expectedCount,
         int publishConcurrency)
     {
         using var cancellation = new CancellationTokenSource();
         var publisher = new OutboxPublisherService(
             store,
             notifier,
-            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(5),
@@ -154,12 +163,12 @@ public sealed class OutboxPublisherConcurrencyTests
 
         await publisher.StartAsync(cancellation.Token);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (notifier.Count < 32 && DateTimeOffset.UtcNow < deadline)
+        while (notifier.Count < expectedCount && DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(5, cancellation.Token);
         }
 
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
         await publisher.StopAsync(CancellationToken.None);
     }
 
