@@ -17,6 +17,8 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
     private readonly RabbitMqBrokerNativeOptions _options;
     private readonly object _gate = new();
+    private readonly HashSet<string> _declaredJobQueues = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _declaredEventTopics = new(StringComparer.Ordinal);
     private IConnection? _connection;
     private IModel? _channel;
     private bool _disposed;
@@ -67,8 +69,6 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
             var channel = _channel!;
             var returnedMessageIds = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
-            var declaredJobQueues = new HashSet<string>(StringComparer.Ordinal);
-            var declaredEventTopics = new HashSet<string>(StringComparer.Ordinal);
 
             EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
             {
@@ -89,11 +89,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                 foreach (var request in requests)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    PublishUnconfirmed(
-                        channel,
-                        request,
-                        declaredJobQueues,
-                        declaredEventTopics);
+                    PublishUnconfirmed(channel, request);
                 }
 
                 // RabbitMQ confirms are channel-ordered. Publishing the whole
@@ -150,9 +146,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
     private void PublishUnconfirmed(
         IModel channel,
-        TransportPublishRequest request,
-        HashSet<string> declaredJobQueues,
-        HashSet<string> declaredEventTopics)
+        TransportPublishRequest request)
     {
         switch (request.Kind)
         {
@@ -161,8 +155,12 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                 var logicalQueue = Core.Queues.LogicalQueueName.Normalize(
                     request.Destination,
                     nameof(request.Destination));
-                if (declaredJobQueues.Add(logicalQueue))
+                if (_declaredJobQueues.Add(logicalQueue))
                 {
+                    // Queue/exchange declaration is synchronous broker RPC.
+                    // Cache successful declarations for this channel lifetime
+                    // instead of paying that RTT on every message. The cache is
+                    // cleared whenever the channel/connection is rebuilt.
                     RabbitMqBrokerNativeTopology.Declare(
                         channel,
                         _options,
@@ -188,7 +186,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                     nameof(request.Destination));
                 ArgumentException.ThrowIfNullOrWhiteSpace(request.RoutingKey);
                 var exchange = _options.GetEventExchangeName(topic);
-                if (declaredEventTopics.Add(topic))
+                if (_declaredEventTopics.Add(topic))
                 {
                     // Publishers own only the Topic exchange. Subscription
                     // queues are declared by consumers. Zero subscribers is a
@@ -290,6 +288,8 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
         _channel = null;
         _connection = null;
+        _declaredJobQueues.Clear();
+        _declaredEventTopics.Clear();
     }
 
     private void ThrowIfDisposed()
