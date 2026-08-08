@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Threading.Channels;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Runtime;
@@ -20,14 +19,13 @@ public sealed class WorkerRuntimeService : BackgroundService
 {
     private const string TruncatedSuffix = "\n...[truncated]";
 
-    private readonly IServiceScopeFactory _scopeFactory;
     private readonly JobHandlerRegistry _registry;
     private readonly IWorkerRuntimeClient _runtimeClient;
     private readonly IWorkerClaimTrigger _claimTrigger;
     private readonly KubeJobWorkerOptions _options;
     private readonly KubeJobWorkerMetrics? _metrics;
     private readonly ILogger<WorkerRuntimeService> _logger;
-    private readonly JobExecutionPipelineBuilder? _pipelineBuilder;
+    private readonly IWorkerExecutionEngine _executionEngine;
     private Channel<ClaimedJob> _channel;
     private readonly ConcurrentDictionary<string, OwnedAttempt> _owned = new(StringComparer.Ordinal);
     private string _sessionId = Guid.NewGuid().ToString("N");
@@ -64,7 +62,6 @@ public sealed class WorkerRuntimeService : BackgroundService
         KubeJobWorkerMetrics? metrics = null,
         JobExecutionPipelineBuilder? pipelineBuilder = null)
     {
-        _scopeFactory = scopeFactory;
         _registry = registry;
         _runtimeClient = runtimeClient;
         _claimTrigger = claimTrigger;
@@ -72,7 +69,12 @@ public sealed class WorkerRuntimeService : BackgroundService
         _metrics = metrics;
         _logger = logger;
         _options.Validate();
-        _pipelineBuilder = pipelineBuilder;
+        _executionEngine = new WorkerExecutionEngine(
+            scopeFactory,
+            registry,
+            logger,
+            metrics,
+            pipelineBuilder);
 
         _channel = CreateExecutionChannel();
     }
@@ -731,140 +733,49 @@ public sealed class WorkerRuntimeService : BackgroundService
                 }
 
                 var completionReported = false;
-                var handlerStartedAt = 0L;
                 try
                 {
-                    if (!_registry.TryGet(job.JobKey, out var handler))
+                    WorkerExecutionResult execution;
+                    try
                     {
-                        completionReported = await ReportAsync(
-                            job,
-                            JobAttemptOutcome.PermanentFailure,
-                            "handler_not_registered",
-                            $"Worker does not contain a handler for '{job.JobKey}'.",
-                            stoppingToken);
-                        continue;
+                        execution = await _executionEngine.ExecuteAsync(
+                            new WorkerExecutionRequest(
+                                job.RunId,
+                                job.AttemptId,
+                                job.AttemptNumber,
+                                job.JobKey,
+                                job.PayloadJson,
+                                job.TimeoutSeconds,
+                                new WorkerExecutionInfo(
+                                    _options.WorkerId,
+                                    _sessionId,
+                                    Volatile.Read(ref _sessionEpoch),
+                                    _hostName,
+                                    _options.BuildId),
+                                owned.CancellationSource.Token,
+                                stoppingToken,
+                                consumerIndex));
+                    }
+                    catch (Exception ex)
+                    {
+                        // The execution engine normalizes handler failures. This
+                        // catch is a defensive boundary for engine/runtime bugs so
+                        // an owned attempt is still reported and released.
+                        _logger.LogError(
+                            ex,
+                            "KubeJob execution engine failed for attempt {AttemptId}",
+                            job.AttemptId);
+                        execution = new WorkerExecutionResult(
+                            JobAttemptOutcome.RetryableFailure,
+                            "execution_engine_exception",
+                            ex.ToString());
                     }
 
-                    using var scope = _scopeFactory.CreateScope();
-                    using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(job.TimeoutSeconds));
-                    using var executionSource = CancellationTokenSource.CreateLinkedTokenSource(
-                        stoppingToken,
-                        owned.CancellationSource.Token,
-                        timeoutSource.Token);
-
-                    var context = new JobExecutionContext
-                    {
-                        RunId = job.RunId,
-                        AttemptId = job.AttemptId,
-                        AttemptNumber = job.AttemptNumber,
-                        StartedAt = DateTimeOffset.UtcNow,
-                        CancellationToken = executionSource.Token,
-                        ServiceProvider = scope.ServiceProvider,
-                        Worker = new WorkerExecutionInfo(
-                            _options.WorkerId,
-                            _sessionId,
-                            Volatile.Read(ref _sessionEpoch),
-                            _hostName,
-                            _options.BuildId)
-                    };
-
-                    // Store job metadata in the context Items bag for middleware access.
-                    context.Items["_JobKey"] = job.JobKey;
-
-                    _logger.LogInformation(
-                        "Consumer {ConsumerIndex} executing job {RunId} attempt {AttemptNumber} ({JobKey})",
-                        consumerIndex,
-                        job.RunId,
-                        job.AttemptNumber,
-                        job.JobKey);
-
-                    // Build the execution pipeline: middleware₁ → middleware₂ → ... → handler.
-                    var handlerTerminal = new JobExecutionDelegate(async ctx =>
-                    {
-                        await handler.InvokeAsync(
-                            ctx.ServiceProvider,
-                            job.PayloadJson,
-                            ctx,
-                            ctx.CancellationToken);
-                    });
-
-                    var pipeline = _pipelineBuilder is not null
-                        ? _pipelineBuilder.Build(handlerTerminal)
-                        : handlerTerminal;
-
-                    handlerStartedAt = _metrics?.IsHandlerDurationEnabled == true
-                        ? Stopwatch.GetTimestamp()
-                        : 0L;
-                    await pipeline(context);
-
-                    // If middleware set an explicit outcome, use it; otherwise
-                    // report success.
-                    if (context.Outcome.HasValue)
-                    {
-                        RecordHandlerDuration(handlerStartedAt, context.Outcome.Value switch
-                        {
-                            JobAttemptOutcome.PermanentFailure => "payload_invalid",
-                            JobAttemptOutcome.TimedOut => "timed_out",
-                            JobAttemptOutcome.Canceled => "canceled",
-                            _ => "failed"
-                        });
-                        completionReported = await ReportAsync(
-                            job,
-                            context.Outcome.Value,
-                            context.FailureCode ?? "middleware_override",
-                            context.FailureMessage ?? "Outcome set by execution middleware.",
-                            stoppingToken);
-                    }
-                    else
-                    {
-                        RecordHandlerDuration(handlerStartedAt, "succeeded");
-                        completionReported = await ReportAsync(
-                            job,
-                            JobAttemptOutcome.Succeeded,
-                            null,
-                            null,
-                            stoppingToken);
-                    }
-                }
-                catch (OperationCanceledException) when (owned.CancellationSource.IsCancellationRequested)
-                {
-                    RecordHandlerDuration(handlerStartedAt, "canceled");
                     completionReported = await ReportAsync(
                         job,
-                        JobAttemptOutcome.Canceled,
-                        "canceled",
-                        "Execution was canceled by the control plane, worker drain, or session fencing.",
-                        stoppingToken);
-                }
-                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-                {
-                    RecordHandlerDuration(handlerStartedAt, "timed_out");
-                    completionReported = await ReportAsync(
-                        job,
-                        JobAttemptOutcome.TimedOut,
-                        "timeout",
-                        $"Execution exceeded its {job.TimeoutSeconds} second timeout.",
-                        stoppingToken);
-                }
-                catch (System.Text.Json.JsonException ex)
-                {
-                    RecordHandlerDuration(handlerStartedAt, "payload_invalid");
-                    completionReported = await ReportAsync(
-                        job,
-                        JobAttemptOutcome.PermanentFailure,
-                        "payload_invalid",
-                        ex.Message,
-                        stoppingToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "KubeJob attempt {AttemptId} failed", job.AttemptId);
-                    RecordHandlerDuration(handlerStartedAt, "failed");
-                    completionReported = await ReportAsync(
-                        job,
-                        JobAttemptOutcome.RetryableFailure,
-                        "handler_exception",
-                        ex.ToString(),
+                        execution.Outcome,
+                        execution.FailureCode,
+                        execution.FailureMessage,
                         stoppingToken);
                 }
                 finally
@@ -1053,14 +964,6 @@ public sealed class WorkerRuntimeService : BackgroundService
         catch (ObjectDisposedException)
         {
             // Completion already won the race with cancellation cleanup.
-        }
-    }
-
-    private void RecordHandlerDuration(long startedAt, string outcome)
-    {
-        if (startedAt != 0)
-        {
-            _metrics?.HandlerCompleted(Stopwatch.GetElapsedTime(startedAt), outcome);
         }
     }
 
