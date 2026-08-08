@@ -117,32 +117,6 @@ public sealed partial class InMemoryJobRuntimeStore
         return new SubmitJobResult(run, Existing: false);
     }
 
-    public ValueTask<bool> RequeueWorkAvailableAsync(
-        string runId,
-        DateTimeOffset availableAt,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        lock (_gate)
-        {
-            if (!_runs.TryGetValue(runId, out var run)
-                || run.Phase != JobPhase.Pending
-                || run.CancelRequested)
-            {
-                return ValueTask.FromResult(false);
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            run.AvailableAt = run.AvailableAt > availableAt
-                ? run.AvailableAt
-                : availableAt;
-            run.Version++;
-            AddWorkAvailableOutbox(run, now);
-            return ValueTask.FromResult(true);
-        }
-    }
-
     public ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,
