@@ -7,7 +7,7 @@ namespace KubeJob.Worker.Telemetry;
 
 public enum WorkerExecutionKind
 {
-    PostgresManaged,
+    Pull,
     BrokerNative
 }
 
@@ -79,7 +79,7 @@ public sealed class KubeJobWorkerMetrics : IDisposable
         {
             {
                 ExecutionKindTagName,
-                executionKind == WorkerExecutionKind.PostgresManaged
+                executionKind == WorkerExecutionKind.Pull
                     ? "postgres_managed"
                     : "broker_native"
             }
