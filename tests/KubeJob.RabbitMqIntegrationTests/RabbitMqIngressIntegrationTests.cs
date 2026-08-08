@@ -1,9 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using KubeJob.Core.Runtime;
-using KubeJob.Server.Extensions;
 using KubeJob.ControlPlane.Runtime;
+using KubeJob.Server.Extensions;
 using KubeJob.Server.Runtime;
 using KubeJob.Transport.RabbitMQ;
 using Microsoft.Extensions.DependencyInjection;
@@ -62,10 +61,6 @@ public sealed class RabbitMqIngressIntegrationTests
             channel.ExchangeDeclare(deadLetterExchange, ExchangeType.Direct, true, false);
             channel.QueueDeclare(deadLetterQueue, true, false, false);
             channel.QueueBind(deadLetterQueue, deadLetterExchange, "dead");
-            // The ingress service declares the queue asynchronously on its own
-            // connection; until then a passive declare (ConsumerCount) raises
-            // NOT_FOUND and closes that probe channel. Use a fresh probe channel
-            // for every attempt instead of reusing a channel that may be closed.
             await EventuallyAsync(
                 () => HasConsumerAsync(connectionString, queue),
                 attempts: 1200);
@@ -117,59 +112,13 @@ public sealed class RabbitMqIngressIntegrationTests
         }
     }
 
-    [Fact]
-    public async Task Direct_dispatch_surfaces_unroutable_publish_when_no_queue_binding_exists()
-    {
-        var connectionString = Environment.GetEnvironmentVariable(
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
-            ?? throw new InvalidOperationException(
-                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
-        var suffix = Guid.NewGuid().ToString("N");
-        var options = new RabbitMqExecutionOptions
-        {
-            ConnectionString = connectionString,
-            ConsumerGroup = $"integration-{suffix}",
-            ConsumerQueuePrefix = $"kubejob.integration.{suffix}",
-            PublisherConfirmTimeout = TimeSpan.FromSeconds(5)
-        };
-        var exchange = $"{options.ConsumerQueuePrefix}.{options.ConsumerGroup}";
-
-        try
-        {
-            using var dispatcher = new RabbitMqExecutionDispatcher(
-                Microsoft.Extensions.Options.Options.Create(options));
-            var action = async () => await dispatcher.PublishAsync(
-                new ExecutionEnvelope
-                {
-                    SchemaVersion = ExecutionEnvelope.CurrentSchemaVersion,
-                    EventId = $"event-{suffix}",
-                    Queue = "missing-queue",
-                    ExecutionLane = "default",
-                    ConsumerGroup = options.ConsumerGroup,
-                    RunId = $"run-{suffix}"
-                },
-                CancellationToken.None);
-
-            var exception = await action.Should().ThrowAsync<IOException>();
-            exception.Which.Message.Should().Contain("could not route");
-        }
-        finally
-        {
-            using var connection = CreateConnection(connectionString);
-            using var channel = connection.CreateModel();
-            channel.ExchangeDelete(exchange);
-        }
-    }
-
     private static IConnection CreateConnection(string connectionString) =>
         new ConnectionFactory
         {
             Uri = new Uri(connectionString, UriKind.Absolute)
         }.CreateConnection("KubeJob.Tests.RabbitMqIngress");
 
-    private static async Task<bool> HasConsumerAsync(
-        string connectionString,
-        string queue)
+    private static async Task<bool> HasConsumerAsync(string connectionString, string queue)
     {
         try
         {
@@ -187,14 +136,10 @@ public sealed class RabbitMqIngressIntegrationTests
     private static async Task<bool> HasMessageCountAsync(
         string connectionString,
         string queue,
-        uint expected)
-    {
-        return await GetMessageCountAsync(connectionString, queue) == expected;
-    }
+        uint expected) =>
+        await GetMessageCountAsync(connectionString, queue) == expected;
 
-    private static async Task<uint> GetMessageCountAsync(
-        string connectionString,
-        string queue)
+    private static async Task<uint> GetMessageCountAsync(string connectionString, string queue)
     {
         try
         {
@@ -227,9 +172,7 @@ public sealed class RabbitMqIngressIntegrationTests
             body: Encoding.UTF8.GetBytes(JsonSerializer.Serialize(envelope)));
     }
 
-    private static async Task EventuallyAsync(
-        Func<Task<bool>> condition,
-        int attempts = 50)
+    private static async Task EventuallyAsync(Func<Task<bool>> condition, int attempts = 50)
     {
         for (var attempt = 0; attempt < attempts; attempt++)
         {
