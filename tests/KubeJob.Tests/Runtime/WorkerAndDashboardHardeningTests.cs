@@ -89,10 +89,6 @@ public sealed class WorkerAndDashboardHardeningTests
 
         await worker.StartAsync(CancellationToken.None);
 
-        // The control plane rejects the session identity: the worker must NOT
-        // restart internally with a new SessionId (that would spin against the
-        // same rejection); it fails the hosted service so the supervisor
-        // restarts the process.
         var completed = await Task.WhenAny(
             worker.ExecuteTask!,
             Task.Delay(TimeSpan.FromSeconds(5)));
@@ -104,7 +100,6 @@ public sealed class WorkerAndDashboardHardeningTests
             .Should().BeOfType<InvalidOperationException>()
             .Which.Message.Should().Contain("fenced");
 
-        // StopAsync returns promptly even after the hosted service failed.
         await worker.StopAsync(CancellationToken.None);
     }
 
@@ -119,7 +114,7 @@ public sealed class WorkerAndDashboardHardeningTests
 
         var jobs = provider.GetRequiredService<JobControlPlane>();
         var inner = provider.GetRequiredService<IWorkerRuntimeClient>();
-        var run = await jobs.SubmitAsync(
+        await jobs.SubmitAsync(
             new EnqueueJobRequest(
                 "test.echo",
                 "{}",
@@ -154,8 +149,6 @@ public sealed class WorkerAndDashboardHardeningTests
 
         await worker.StartAsync(CancellationToken.None);
 
-        // A handler that ignores cancellation keeps the session from settling;
-        // the fence deadline must still fail the hosted service.
         var completed = await Task.WhenAny(
             worker.ExecuteTask!,
             Task.Delay(TimeSpan.FromSeconds(5)));
@@ -165,7 +158,6 @@ public sealed class WorkerAndDashboardHardeningTests
             .Should().BeOfType<InvalidOperationException>()
             .Which.Message.Should().Contain("fenced");
 
-        // Release the parked handler so the abandoned session work settles.
         parked.SetResult();
         await worker.StopAsync(CancellationToken.None);
     }
@@ -380,19 +372,6 @@ public sealed class WorkerAndDashboardHardeningTests
             CancellationToken cancellationToken) => ValueTask.FromResult(
             new ClaimJobsResponse(Array.Empty<ClaimedJob>()));
 
-        public ValueTask<AdmitExecutionResponse> AdmitAsync(
-            AdmitExecutionRequest request,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-            new AdmitExecutionResponse(ExecutionAdmissionStatus.Retry));
-
-        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-            AdmitExecutionBatchRequest request,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-            new AdmitExecutionBatchResponse(
-                request.RunIds.Select(runId => new AdmitExecutionResult(
-                    runId,
-                    ExecutionAdmissionStatus.Retry)).ToArray()));
-
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
             RenewLeasesRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(
@@ -408,10 +387,6 @@ public sealed class WorkerAndDashboardHardeningTests
             CancellationToken cancellationToken) => ValueTask.FromResult(false);
     }
 
-    /// <summary>
-    /// Delegates every call to a real in-process client but rejects heartbeats,
-    /// so a genuinely claimed attempt can run while the session gets fenced.
-    /// </summary>
     private sealed class RejectingHeartbeatDelegatingClient : IWorkerRuntimeClient
     {
         private readonly IWorkerRuntimeClient _inner;
@@ -439,16 +414,6 @@ public sealed class WorkerAndDashboardHardeningTests
             ClaimJobsRequest request,
             CancellationToken cancellationToken) =>
             _inner.ClaimAsync(request, cancellationToken);
-
-        public ValueTask<AdmitExecutionResponse> AdmitAsync(
-            AdmitExecutionRequest request,
-            CancellationToken cancellationToken) =>
-            _inner.AdmitAsync(request, cancellationToken);
-
-        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-            AdmitExecutionBatchRequest request,
-            CancellationToken cancellationToken) =>
-            _inner.AdmitBatchAsync(request, cancellationToken);
 
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
             RenewLeasesRequest request,
@@ -480,8 +445,6 @@ public sealed class WorkerAndDashboardHardeningTests
 
         public Type PayloadType => typeof(object);
 
-        // Deliberately ignores the cancellation token: this is the
-        // uncooperative-handler scenario the fence deadline must survive.
         public async ValueTask InvokeAsync(
             IServiceProvider serviceProvider,
             string payloadJson,

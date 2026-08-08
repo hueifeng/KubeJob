@@ -176,10 +176,10 @@ public sealed partial class InMemoryJobRuntimeStore
                     && run.Phase is JobPhase.Pending or JobPhase.Running);
             }
 
+            var scheduledFor = command.ScheduledFor.ToUniversalTime();
             JobRunRecord? run = null;
             if (createRun)
             {
-                var scheduledFor = command.ScheduledFor.ToUniversalTime();
                 var existingOccurrence = _runs.Values.SingleOrDefault(candidate =>
                     string.Equals(candidate.ScheduleId, schedule.Id, StringComparison.Ordinal)
                     && candidate.ScheduledFor == scheduledFor);
@@ -203,10 +203,10 @@ public sealed partial class InMemoryJobRuntimeStore
                         JobKey = schedule.JobKey,
                         PayloadJson = schedule.PayloadJson,
                         Queue = schedule.Queue,
-                        DeliveryProfile = schedule.DeliveryProfile,
+                        DeliveryProfile = ExecutionDeliveryProfile.Pull,
                         ExecutionLane = schedule.ExecutionLane,
                         ConsumerGroup = schedule.ConsumerGroup,
-                        TransportId = schedule.TransportId,
+                        TransportId = null,
                         OrderingMode = schedule.OrderingMode,
                         Priority = schedule.Priority,
                         Phase = JobPhase.Pending,
@@ -233,10 +233,9 @@ public sealed partial class InMemoryJobRuntimeStore
                     _idempotency[command.IdempotencyKey] = run.Id;
                     AddWorkAvailableOutbox(run, now);
                 }
-
-                schedule.LastFireAt = scheduledFor;
             }
 
+            schedule.LastFireAt = scheduledFor;
             schedule.NextFireAt = command.NextFireAt.ToUniversalTime();
             schedule.ClaimToken = null;
             schedule.ClaimUntil = null;

@@ -1,49 +1,99 @@
+using System.Collections.Concurrent;
 using KubeJob.Core.Attributes;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Interfaces;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace KubeJob.Benchmark;
 
-/// <summary>
-/// Minimal payload for the benchmark job. Fields are intentionally trivial so
-/// serialization and deserialization cost stay constant across scenarios; the
-/// measured load is the durable pipeline (outbox, broker dispatch, admission,
-/// completion), not payload handling.
-/// </summary>
-public sealed record BenchPayload(int Value = 0);
+public sealed record BenchPayload(int Value = 0, long EnqueuedUtcTicks = 0);
 
-/// <summary>
-/// Per-job execution behavior. <see cref="WorkMs"/> simulates CPU-bound handler
-/// work; the default of zero measures the pipeline ceiling (overhead-bound),
-/// while a positive value exposes contention in the KeyOrdered hot-key case.
-/// </summary>
 public sealed class BenchJobOptions
 {
     public int WorkMs { get; set; }
 }
 
+public sealed record BenchCompletionSnapshot(int Completed, double[] LatencySamplesMs);
+
 /// <summary>
-/// No-op handler registered under a stable job key. It never fails and never
-/// retries, so every submitted Run reaches a terminal Succeeded phase and the
-/// benchmark measures pure pipeline throughput and latency.
+/// Process-local completion tracker shared by both runtime modes. BrokerNative
+/// benchmarks therefore never query JobRun state merely to discover that a job
+/// completed, keeping PostgreSQL out of the measured broker hot path.
 /// </summary>
+public sealed class BenchCompletionTracker
+{
+    private readonly object _gate = new();
+    private ConcurrentQueue<double> _latencies = new();
+    private TaskCompletionSource<bool> _completed = NewCompletionSource();
+    private int _expected;
+    private int _count;
+
+    public void Begin(int expected)
+    {
+        lock (_gate)
+        {
+            _expected = Math.Max(0, expected);
+            _count = 0;
+            _latencies = new ConcurrentQueue<double>();
+            _completed = NewCompletionSource();
+            if (_expected == 0)
+            {
+                _completed.TrySetResult(true);
+            }
+        }
+    }
+
+    public void Record(long enqueuedUtcTicks)
+    {
+        if (enqueuedUtcTicks > 0)
+        {
+            var elapsedTicks = Math.Max(0, DateTimeOffset.UtcNow.UtcTicks - enqueuedUtcTicks);
+            _latencies.Enqueue(TimeSpan.FromTicks(elapsedTicks).TotalMilliseconds);
+        }
+
+        var count = Interlocked.Increment(ref _count);
+        if (count >= Volatile.Read(ref _expected))
+        {
+            _completed.TrySetResult(true);
+        }
+    }
+
+    public async Task<BenchCompletionSnapshot> WaitAsync(TimeSpan timeout)
+    {
+        try
+        {
+            await _completed.Task.WaitAsync(timeout);
+        }
+        catch (TimeoutException)
+        {
+            // Return the partial snapshot; the caller reports the remainder as
+            // incomplete instead of hiding a throughput failure.
+        }
+
+        return new BenchCompletionSnapshot(
+            Math.Min(Volatile.Read(ref _count), Volatile.Read(ref _expected)),
+            _latencies.ToArray());
+    }
+
+    private static TaskCompletionSource<bool> NewCompletionSource() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+}
+
 [KubeJob(BenchJobKeyString)]
 public sealed class NoopBenchJob : IKubeJob<BenchPayload>
 {
     public const string BenchJobKeyString = "bench.noop";
 
-    /// <summary>
-    /// Stable <see cref="KubeJob.Core.Jobs.JobKey{T}"/> shared by the typed
-    /// submission path and the RabbitMQ ingress envelope, so both entry
-    /// points dispatch to this same handler.
-    /// </summary>
     public static KubeJob.Core.Jobs.JobKey<BenchPayload> JobKey { get; } =
         new(BenchJobKeyString);
 
     private readonly BenchJobOptions _options;
+    private readonly BenchCompletionTracker _tracker;
 
-    public NoopBenchJob(BenchJobOptions options) => _options = options;
+    public NoopBenchJob(BenchJobOptions options, BenchCompletionTracker tracker)
+    {
+        _options = options;
+        _tracker = tracker;
+    }
 
     public async ValueTask ExecuteAsync(
         BenchPayload payload,
@@ -54,5 +104,7 @@ public sealed class NoopBenchJob : IKubeJob<BenchPayload>
         {
             await Task.Delay(_options.WorkMs, cancellationToken);
         }
+
+        _tracker.Record(payload.EnqueuedUtcTicks);
     }
 }

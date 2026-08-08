@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using KubeJob.Core.Runtime;
 
 namespace KubeJob.Benchmark;
 
@@ -30,31 +31,26 @@ public sealed record MetricSamples(
 
 public sealed record ScenarioResult(
     BenchScenario Scenario,
+    QueueRuntimeMode RuntimeMode,
     int JobCount,
     int Succeeded,
     int Failed,
-    int CanceledOrDead,
+    int Incomplete,
     double IngestTps,
     double E2eTps,
-    double WallClockE2eTps,
     LatencyStats Latency,
     MetricSamples Metrics,
-    TimeSpan Duration)
-{
-    public string Mode { get; init; } = string.Empty;
-    /// <summary>Execution lane count (1 = shared queue, N > 1 = per-lane queues).</summary>
-    public int LaneCount { get; init; } = 1;
-}
+    TimeSpan Duration);
 
-/// <summary>
-/// Nearest-rank percentile computation and a console/markdown results table.
-/// No external statistics dependency is required.
-/// </summary>
 public static class Percentiles
 {
     public static LatencyStats Compute(double[] samplesMs)
     {
-        if (samplesMs.Length == 0) return LatencyStats.Empty;
+        if (samplesMs.Length == 0)
+        {
+            return LatencyStats.Empty;
+        }
+
         Array.Sort(samplesMs);
         return new LatencyStats(
             Rank(samplesMs, 0.50),
@@ -64,12 +60,9 @@ public static class Percentiles
             samplesMs.Length);
     }
 
-    private static double Rank(double[] sorted, double p)
+    private static double Rank(double[] sorted, double percentile)
     {
-        // Nearest-rank: the ceil(p*N)-th element (1-indexed), clamped to bounds.
-        var rank = (int)Math.Ceiling(p * sorted.Length);
-        if (rank < 1) rank = 1;
-        if (rank > sorted.Length) rank = sorted.Length;
+        var rank = Math.Clamp((int)Math.Ceiling(percentile * sorted.Length), 1, sorted.Length);
         return sorted[rank - 1];
     }
 }
@@ -79,87 +72,75 @@ public static class ResultTable
     public static void PrintHeader(BenchmarkOptions opts)
     {
         Console.WriteLine();
-        Console.WriteLine("KubeJob throughput benchmark");
-        Console.WriteLine($"  mode={opts.SubmissionMode} jobs={opts.JobCount} warmup={opts.Warmup} work-ms={opts.JobWorkMs}");
-        Console.WriteLine($"  submitters={opts.SubmitterConcurrency} worker-concurrency={opts.WorkerMaxConcurrency} "
-            + $"prefetch={opts.PrefetchCount} dispatch-concurrency={opts.ConsumerDispatchConcurrency}");
-        Console.WriteLine($"  outbox-concurrency={opts.OutboxPublishConcurrency} outbox-batch={opts.OutboxBatchSize} "
-            + $"publisher-concurrency={opts.PublisherConcurrency}");
-        Console.WriteLine($"  hotkey-count={opts.HotKeyCardinality} uniform-keys={(opts.UniformKeyCardinality == 0 ? "distinct" : opts.UniformKeyCardinality)}");
-        Console.WriteLine($"  lane-sweep=[{string.Join(",", opts.LaneCountSweep)}]");
-        Console.WriteLine($"  poll-ms={opts.PollIntervalMs} status-parallelism={opts.StatusPollParallelism} "
-            + $"metrics-ms={opts.MetricsIntervalMs} cpu={(opts.CpuSamplingEnabled ? "on" : "off")} "
-            + $"delivery={opts.DeliveryProfile}");
+        Console.WriteLine("KubeJob V3 throughput benchmark");
+        Console.WriteLine($"  runtime={opts.RuntimeMode} jobs={opts.JobCount} warmup={opts.Warmup} work-ms={opts.JobWorkMs}");
+        Console.WriteLine($"  submitters={opts.SubmitterConcurrency} worker-concurrency={opts.WorkerMaxConcurrency} prefetch={opts.PrefetchCount}");
+        Console.WriteLine($"  managed-outbox-concurrency={opts.OutboxPublishConcurrency} managed-outbox-batch={opts.OutboxBatchSize}");
+        Console.WriteLine($"  metrics-ms={opts.MetricsIntervalMs} cpu={(opts.CpuSamplingEnabled ? "on" : "off")}");
+        Console.WriteLine("  BrokerNative invariant: normal publish/consume/handler/ACK path must not open PostgreSQL connections.");
         Console.WriteLine();
     }
 
-    public static void PrintRow(ScenarioResult r)
+    public static void PrintRow(ScenarioResult result)
     {
-        var laneTag = r.LaneCount > 1 ? $" lanes={r.LaneCount}" : "";
-        Console.WriteLine($"[{r.Scenario.Label()}] ({r.Mode}{laneTag})");
-        Console.WriteLine($"  jobs={r.JobCount} succeeded={r.Succeeded} failed={r.Failed} canceled/dead={r.CanceledOrDead}");
-        Console.WriteLine("  TPS:  ingest={0,8:F1}  e2e(server)={1,8:F1}  e2e(wall)={2,8:F1}",
-            r.IngestTps, r.E2eTps, r.WallClockE2eTps);
-        Console.WriteLine("  Latency (ms): P50={0:F2}  P95={1:F2}  P99={2:F2}  max={3:F2}  (n={4})",
-            r.Latency.P50Ms, r.Latency.P95Ms, r.Latency.P99Ms, r.Latency.MaxMs, r.Latency.Samples);
-        Console.WriteLine("  Metrics:     db-conn-max={0}  rabbit-ready-max={1}  rabbit-unacked-max={2}  cpu-avg={3:F1}%  heap-max={4:F1}MB  heap-avg={5:F1}MB  rss-max={6:F1}MB  (samples={7})",
-            r.Metrics.MaxDbConnections, r.Metrics.MaxReady, r.Metrics.MaxUnacked, r.Metrics.AvgCpuPct,
-            r.Metrics.MaxProcessMemoryBytes / (1024.0 * 1024.0),
-            r.Metrics.AvgProcessMemoryBytes / (1024.0 * 1024.0),
-            r.Metrics.MaxWorkingSetBytes / (1024.0 * 1024.0),
-            r.Metrics.SampleCount);
-        Console.WriteLine("  Allocated:   {0:F1}MB total ({1:F0}KB/job)  Gen0={2} Gen1={3} Gen2={4}  threads(proc)={5} threads(pool)={6}",
-            r.Metrics.AllocatedBytes / (1024.0 * 1024.0),
-            r.JobCount == 0 ? 0 : r.Metrics.AllocatedBytes / (1024.0 * r.JobCount),
-            r.Metrics.Gen0Collections, r.Metrics.Gen1Collections, r.Metrics.Gen2Collections,
-            r.Metrics.MaxProcessThreads, r.Metrics.MaxThreadPoolThreads);
-        Console.WriteLine($"  duration={r.Duration.TotalSeconds:F1}s");
+        Console.WriteLine($"[{result.Scenario.Label()}] ({result.RuntimeMode})");
+        Console.WriteLine($"  jobs={result.JobCount} succeeded={result.Succeeded} failed={result.Failed} incomplete={result.Incomplete}");
+        Console.WriteLine("  TPS: ingest={0,8:F1} e2e={1,8:F1}", result.IngestTps, result.E2eTps);
+        Console.WriteLine("  Latency (ms): P50={0:F2} P95={1:F2} P99={2:F2} max={3:F2} (n={4})",
+            result.Latency.P50Ms, result.Latency.P95Ms, result.Latency.P99Ms, result.Latency.MaxMs, result.Latency.Samples);
+        Console.WriteLine("  Metrics: db-conn-max={0} rabbit-ready-max={1} rabbit-unacked-max={2} cpu-avg={3:F1}% heap-max={4:F1}MB rss-max={5:F1}MB",
+            result.Metrics.MaxDbConnections,
+            result.Metrics.MaxReady,
+            result.Metrics.MaxUnacked,
+            result.Metrics.AvgCpuPct,
+            result.Metrics.MaxProcessMemoryBytes / (1024.0 * 1024.0),
+            result.Metrics.MaxWorkingSetBytes / (1024.0 * 1024.0));
+        Console.WriteLine("  Allocated: {0:F1}MB ({1:F0}KB/job) Gen0={2} Gen1={3} Gen2={4} threads(proc)={5} threads(pool)={6}",
+            result.Metrics.AllocatedBytes / (1024.0 * 1024.0),
+            result.JobCount == 0 ? 0 : result.Metrics.AllocatedBytes / (1024.0 * result.JobCount),
+            result.Metrics.Gen0Collections,
+            result.Metrics.Gen1Collections,
+            result.Metrics.Gen2Collections,
+            result.Metrics.MaxProcessThreads,
+            result.Metrics.MaxThreadPoolThreads);
+        Console.WriteLine($"  duration={result.Duration.TotalSeconds:F1}s");
         Console.WriteLine();
     }
 
     public static string ToMarkdown(BenchmarkOptions opts, IReadOnlyList<ScenarioResult> results)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("# KubeJob throughput benchmark");
+        sb.AppendLine("# KubeJob V3 throughput benchmark");
         sb.AppendLine();
-        sb.AppendLine($"- mode: `{opts.SubmissionMode}` | jobs: {opts.JobCount} | warmup: {opts.Warmup} | work-ms: {opts.JobWorkMs}");
-        sb.AppendLine($"- submitters: {opts.SubmitterConcurrency} | worker-concurrency: {opts.WorkerMaxConcurrency} | prefetch: {opts.PrefetchCount} | dispatch-concurrency: {opts.ConsumerDispatchConcurrency}");
-        sb.AppendLine($"- outbox-concurrency: {opts.OutboxPublishConcurrency} | outbox-batch: {opts.OutboxBatchSize} | publisher-concurrency: {opts.PublisherConcurrency}");
-        sb.AppendLine($"- hotkey-count: {opts.HotKeyCardinality} | uniform-keys: {(opts.UniformKeyCardinality == 0 ? "distinct" : opts.UniformKeyCardinality.ToString(CultureInfo.InvariantCulture))}");
-        sb.AppendLine($"- lane-sweep: [{string.Join(",", opts.LaneCountSweep)}]");
-        sb.AppendLine($"- poll-ms: {opts.PollIntervalMs} | status-parallelism: {opts.StatusPollParallelism} | metrics-ms: {opts.MetricsIntervalMs} | cpu: {(opts.CpuSamplingEnabled ? "on" : "off")} | delivery: {opts.DeliveryProfile}");
+        sb.AppendLine($"- runtime: `{opts.RuntimeMode}` | jobs: {opts.JobCount} | warmup: {opts.Warmup} | work-ms: {opts.JobWorkMs}");
+        sb.AppendLine($"- submitters: {opts.SubmitterConcurrency} | worker-concurrency: {opts.WorkerMaxConcurrency} | prefetch: {opts.PrefetchCount}");
+        sb.AppendLine($"- normal PostgreSQL durability is enabled; the harness no longer sets `synchronous_commit=off`.");
         sb.AppendLine();
-        sb.AppendLine("| Scenario | Mode | Lanes | Jobs | Succeeded | Ingest TPS | E2E TPS (server) | E2E TPS (wall) | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Heap max MB | RSS max MB | Alloc MB | Alloc KB/job | Gen0 | Gen1 | Gen2 | Thr(proc) | Thr(pool) | Duration s |");
-        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-        foreach (var r in results)
+        sb.AppendLine("| Scenario | Runtime | Jobs | Succeeded | Incomplete | Ingest TPS | E2E TPS | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Heap max MB | RSS max MB | Duration s |");
+        sb.AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        foreach (var result in results)
         {
-            sb.Append("| ").Append(r.Scenario.Label())
-              .Append(" | `").Append(r.Mode).Append("` | ").Append(r.LaneCount)
-              .Append(" | ").Append(r.JobCount)
-              .Append(" | ").Append(r.Succeeded)
-              .Append(" | ").Append(r.IngestTps.ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.E2eTps.ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.WallClockE2eTps.ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.Latency.P50Ms.ToString("F2", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.Latency.P95Ms.ToString("F2", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.Latency.P99Ms.ToString("F2", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.Latency.MaxMs.ToString("F2", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.Metrics.MaxDbConnections)
-              .Append(" | ").Append(r.Metrics.MaxReady)
-              .Append(" | ").Append(r.Metrics.MaxUnacked)
-              .Append(" | ").Append(r.Metrics.AvgCpuPct.ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append((r.Metrics.MaxProcessMemoryBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append((r.Metrics.MaxWorkingSetBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append((r.Metrics.AllocatedBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
-              .Append(" | ").Append((r.JobCount == 0 ? 0 : r.Metrics.AllocatedBytes / (1024.0 * r.JobCount)).ToString("F0", CultureInfo.InvariantCulture))
-              .Append(" | ").Append(r.Metrics.Gen0Collections)
-              .Append(" | ").Append(r.Metrics.Gen1Collections)
-              .Append(" | ").Append(r.Metrics.Gen2Collections)
-              .Append(" | ").Append(r.Metrics.MaxProcessThreads)
-              .Append(" | ").Append(r.Metrics.MaxThreadPoolThreads)
-              .Append(" | ").Append(r.Duration.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture))
+            sb.Append("| ").Append(result.Scenario.Label())
+              .Append(" | `").Append(result.RuntimeMode).Append('`')
+              .Append(" | ").Append(result.JobCount)
+              .Append(" | ").Append(result.Succeeded)
+              .Append(" | ").Append(result.Incomplete)
+              .Append(" | ").Append(result.IngestTps.ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.E2eTps.ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.Latency.P50Ms.ToString("F2", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.Latency.P95Ms.ToString("F2", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.Latency.P99Ms.ToString("F2", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.Latency.MaxMs.ToString("F2", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.Metrics.MaxDbConnections)
+              .Append(" | ").Append(result.Metrics.MaxReady)
+              .Append(" | ").Append(result.Metrics.MaxUnacked)
+              .Append(" | ").Append(result.Metrics.AvgCpuPct.ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append((result.Metrics.MaxProcessMemoryBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append((result.Metrics.MaxWorkingSetBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture))
+              .Append(" | ").Append(result.Duration.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture))
               .AppendLine(" |");
         }
+
         return sb.ToString();
     }
 }

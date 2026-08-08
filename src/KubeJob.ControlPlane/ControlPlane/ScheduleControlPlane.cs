@@ -19,15 +19,18 @@ public sealed class ScheduleControlPlane
 {
     private readonly IJobScheduleStore _store;
     private readonly QueueCatalog _queueCatalog;
+    private readonly IQueueRuntimeResolver? _runtimeResolver;
     private readonly int _maxPayloadBytes;
 
     public ScheduleControlPlane(
         IJobScheduleStore store,
         QueueCatalog queueCatalog,
-        IOptions<JobRuntimeOptions>? options = null)
+        IOptions<JobRuntimeOptions>? options = null,
+        IQueueRuntimeResolver? runtimeResolver = null)
     {
         _store = store;
         _queueCatalog = queueCatalog;
+        _runtimeResolver = runtimeResolver;
         _maxPayloadBytes = options?.Value.MaxPayloadBytes
             ?? new JobRuntimeOptions().MaxPayloadBytes;
     }
@@ -41,7 +44,8 @@ public sealed class ScheduleControlPlane
 
         var now = DateTimeOffset.UtcNow;
         var target = _queueCatalog.Resolve(request.Queue);
-        request = NormalizeAndValidatePolicy(request, target);
+        var runtime = ResolveRuntime(target.Queue);
+        request = NormalizeAndValidatePolicy(request, target, runtime);
         var schedule = await _store.UpsertAsync(
             CreateRecord(scheduleId, request, target, now),
             cancellationToken);
@@ -58,7 +62,8 @@ public sealed class ScheduleControlPlane
 
         var now = DateTimeOffset.UtcNow;
         var target = _queueCatalog.Resolve(request.Queue);
-        request = NormalizeAndValidatePolicy(request, target);
+        var runtime = ResolveRuntime(target.Queue);
+        request = NormalizeAndValidatePolicy(request, target, runtime);
         var schedule = await _store.CreateIfAbsentAsync(
             CreateRecord(scheduleId, request, target, now),
             cancellationToken);
@@ -203,7 +208,8 @@ public sealed class ScheduleControlPlane
 
     private UpsertCronScheduleRequest NormalizeAndValidatePolicy(
         UpsertCronScheduleRequest request,
-        QueueRoute route)
+        QueueRoute route,
+        QueueRuntimeRoute runtime)
     {
         if (Encoding.UTF8.GetByteCount(request.PayloadJson) > _maxPayloadBytes)
         {
@@ -217,6 +223,12 @@ public sealed class ScheduleControlPlane
             throw new ControlPlaneValidationException(
                 "schedule_field_too_long",
                 "ConcurrencyKey exceeds the maximum storage length.");
+        }
+
+        if (runtime.Mode == QueueRuntimeMode.BrokerNative)
+        {
+            ValidateBrokerNativePolicy(request, route.Queue);
+            return request;
         }
 
         if (request.RetryPolicy is { } retryPolicy)
@@ -254,6 +266,55 @@ public sealed class ScheduleControlPlane
             Compensation = normalized.Compensation
         };
     }
+
+    private static void ValidateBrokerNativePolicy(
+        UpsertCronScheduleRequest request,
+        string queue)
+    {
+        if (request.Priority != 0)
+        {
+            throw UnsupportedBrokerNativeSchedule(queue, nameof(request.Priority));
+        }
+
+        if (request.ConcurrencyPolicy != ScheduleConcurrencyPolicy.Allow)
+        {
+            throw new ControlPlaneValidationException(
+                "broker_native_schedule_policy_unsupported",
+                $"BrokerNative schedule queue '{queue}' cannot use SkipIfRunning because it has no strong central Run state.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ConcurrencyKey))
+        {
+            throw new ControlPlaneValidationException(
+                "broker_native_schedule_policy_unsupported",
+                $"BrokerNative schedule queue '{queue}' does not use legacy ConcurrencyKey; ordering is a Queue partition policy.");
+        }
+
+        if (request.RetryPolicy is not null)
+        {
+            throw UnsupportedBrokerNativeSchedule(queue, nameof(request.RetryPolicy));
+        }
+
+        if (request.Continuation is not null)
+        {
+            throw UnsupportedBrokerNativeSchedule(queue, nameof(request.Continuation));
+        }
+
+        if (request.Compensation is not null)
+        {
+            throw UnsupportedBrokerNativeSchedule(queue, nameof(request.Compensation));
+        }
+    }
+
+    private static ControlPlaneValidationException UnsupportedBrokerNativeSchedule(
+        string queue,
+        string option) => new(
+            "broker_native_schedule_policy_unsupported",
+            $"Schedule option '{option}' is not supported by BrokerNative queue '{queue}' yet; KubeJob will not silently change its semantics.");
+
+    private QueueRuntimeRoute ResolveRuntime(string queue)
+        => _runtimeResolver?.Resolve(queue)
+            ?? new QueueRuntimeRoute { Mode = QueueRuntimeMode.PostgresManaged };
 
     private static JobScheduleRecord CreateRecord(
         string scheduleId,

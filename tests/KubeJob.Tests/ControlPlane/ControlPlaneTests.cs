@@ -35,40 +35,9 @@ public sealed class ControlPlaneTests
     }
 
     [Fact]
-    public async Task Job_submission_persists_the_canonical_queue_returned_by_routing()
+    public async Task Job_submission_persists_the_canonical_managed_queue()
     {
-        var options = new QueueDeliveryOptions
-        {
-            Defaults = { Profile = ExecutionDeliveryProfile.Pull }
-        };
-        var optionsWrapper = Options.Create(options);
-        var store = new InMemoryJobRuntimeStore();
-        var controlPlane = new JobControlPlane(
-            store,
-            store,
-            new ConfigurationQueueRouter(optionsWrapper),
-            Options.Create(new JobRuntimeOptions()),
-            new OutboxPublisherSignal());
-
-        var receipt = await controlPlane.SubmitAsync(
-            new EnqueueJobRequest("sample.data", "{}", Queue: " orders.push "));
-
-        var run = await store.GetRunAsync(receipt.Handle.JobId, CancellationToken.None);
-        run!.Queue.Should().Be("orders.push");
-    }
-
-    [Fact]
-    public async Task Cancel_uses_the_run_persisted_delivery_profile_after_routing_changes()
-    {
-        var options = new QueueDeliveryOptions
-        {
-            Defaults =
-            {
-                Profile = ExecutionDeliveryProfile.BrokerDispatch,
-                ConsumerGroup = "orders-workers",
-                TransportId = "rabbitmq"
-            }
-        };
+        var options = new QueueDeliveryOptions();
         var store = new InMemoryJobRuntimeStore();
         var controlPlane = new JobControlPlane(
             store,
@@ -78,23 +47,41 @@ public sealed class ControlPlaneTests
             new OutboxPublisherSignal());
 
         var receipt = await controlPlane.SubmitAsync(
+            new EnqueueJobRequest("sample.data", "{}", Queue: " orders.push "));
+
+        var run = await store.GetRunAsync(receipt.Handle.JobId, CancellationToken.None);
+        run!.Queue.Should().Be("orders.push");
+        run.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
+        run.TransportId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Managed_cancel_is_database_authoritative_and_does_not_emit_broker_cancel_message()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var controlPlane = new JobControlPlane(
+            store,
+            store,
+            new ConfigurationQueueRouter(Options.Create(new QueueDeliveryOptions())),
+            Options.Create(new JobRuntimeOptions()),
+            new OutboxPublisherSignal());
+
+        var receipt = await controlPlane.SubmitAsync(
             new EnqueueJobRequest("sample.data", "{}"));
 
-        options.Defaults.Profile = ExecutionDeliveryProfile.Pull;
-        options.Defaults.TransportId = null;
-
-        (await controlPlane.RequestCancelAsync(receipt.Handle.JobId, "route changed"))
+        (await controlPlane.RequestCancelAsync(receipt.Handle.JobId, "cancel managed run"))
             .Should().BeTrue();
+
+        var run = await store.GetRunAsync(receipt.Handle.JobId, CancellationToken.None);
+        run!.CancelRequested.Should().BeTrue();
+        run.Phase.Should().Be(JobPhase.Canceled);
 
         var outbox = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromMinutes(1),
             10,
             CancellationToken.None);
-        outbox.Should().Contain(message =>
-            message.EventType == OutboxEventTypes.Cancel
-            && message.Queue == "orders-workers"
-            && message.PayloadJson.Contains(receipt.Handle.JobId, StringComparison.Ordinal));
+        outbox.Should().OnlyContain(message => message.EventType == OutboxEventTypes.WorkAvailable);
     }
 
     [Fact]
@@ -239,7 +226,7 @@ public sealed class ControlPlaneTests
     }
 
     [Fact]
-    public async Task Worker_claim_policy_is_applied_before_both_transport_adapters()
+    public async Task Managed_worker_claim_policy_is_applied_before_claiming()
     {
         var services = new ServiceCollection();
         services.AddLogging();
