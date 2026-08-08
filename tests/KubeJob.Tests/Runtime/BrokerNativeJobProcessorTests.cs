@@ -4,6 +4,7 @@ using KubeJob.Core.Runtime;
 using KubeJob.Worker.Extensions;
 using KubeJob.Worker.Options;
 using KubeJob.Worker.Runtime;
+using KubeJob.Worker.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -52,6 +53,7 @@ public sealed class BrokerNativeJobProcessorTests
         engine.Requests[0].PayloadJson.Should().Be("{\"orderId\":1001}");
         engine.Requests[0].Worker.SessionEpoch.Should().Be(0);
         engine.Requests[0].Worker.SessionId.Should().StartWith("broker-");
+        engine.Requests[0].ExecutionKind.Should().Be(WorkerExecutionKind.BrokerNative);
     }
 
     [Fact]
