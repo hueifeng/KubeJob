@@ -31,8 +31,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportPublisher, 
     public MessageTransportCapabilities Capabilities =>
         MessageTransportCapabilities.DurablePublish
         | MessageTransportCapabilities.DeadLetter
-        | MessageTransportCapabilities.ConsumerGroups
-        | MessageTransportCapabilities.OrderedDelivery;
+        | MessageTransportCapabilities.ConsumerGroups;
 
     public ValueTask PublishAsync(
         TransportPublishRequest request,
