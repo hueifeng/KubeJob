@@ -273,7 +273,7 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
         var body = JsonSerializer.SerializeToUtf8Bytes(retryMessage, SerializerOptions);
         lock (publishChannelGate)
         {
-            BasicReturnEventArgs? returned = null;
+            var returned = 0;
             EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
             {
                 if (string.Equals(
@@ -281,7 +281,7 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                         retryMessage.MessageId,
                         StringComparison.Ordinal))
                 {
-                    returned = args;
+                    Interlocked.Exchange(ref returned, 1);
                 }
             };
 
@@ -312,14 +312,14 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                         $"RabbitMQ did not confirm BrokerNative retry for message '{retryMessage.MessageId}'.");
                 }
 
-                if (returned is not null)
+                if (Volatile.Read(ref returned) != 0)
                 {
                     throw new IOException(
                         $"RabbitMQ could not route BrokerNative retry for queue '{retryMessage.Queue}'.");
                 }
 
                 // Only ACK the original after the retry copy is durably
-                // accepted by RabbitMQ. This is the key at-least-once handoff.
+                // accepted by RabbitMQ and no mandatory-return was observed.
                 Ack(consumeChannel, consumeChannelGate, original.DeliveryTag);
             }
             finally
