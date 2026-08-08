@@ -132,24 +132,45 @@ public sealed class DefaultJobClient : IJobClient
             return handles;
         }
 
-        // A broker publish batch cannot provide the database transaction
-        // atomicity of PostgresManaged. Each message is independently confirmed
-        // by its transport; a caller can safely retry using IdempotencyKey when
-        // its business semantics require deduplication.
-        var brokerHandles = new JobHandle[prepared.Length];
+        // BrokerNative cannot provide the database transaction atomicity of
+        // PostgresManaged. A transport may optimize this into one publisher-
+        // confirm batch, but a failure can still be observed after the broker
+        // accepted a subset or all messages. Retrying is therefore at-least-
+        // once. IdempotencyKey is carried as metadata only; KubeJob does not
+        // currently deduplicate BrokerNative deliveries on that value.
+        var brokerSubmissions = new BrokerNativeSubmission[prepared.Length];
         for (var i = 0; i < prepared.Length; i++)
         {
             var item = prepared[i];
-            brokerHandles[i] = await EnqueueBrokerNativeAsync(
+            brokerSubmissions[i] = CreateBrokerNativeSubmission(
                 job.Value,
                 item.Payload,
                 item.Queue,
                 item.Route,
-                item.Options,
-                cancellationToken);
+                item.Options);
         }
 
-        return brokerHandles;
+        foreach (var group in brokerSubmissions.GroupBy(
+                     submission => submission.TransportId,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var publisher = _transportRegistry.GetRequiredPublisher(group.Key);
+            var requests = group.Select(submission => submission.Request).ToArray();
+            if (publisher is IMessageTransportBatchPublisher batchPublisher)
+            {
+                await batchPublisher.PublishBatchAsync(requests, cancellationToken);
+            }
+            else
+            {
+                foreach (var request in requests)
+                {
+                    await publisher.PublishAsync(request, cancellationToken);
+                }
+            }
+        }
+
+        return brokerSubmissions.Select(submission => submission.Handle).ToArray();
     }
 
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(
@@ -158,9 +179,9 @@ public sealed class DefaultJobClient : IJobClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
 
-        // BrokerNative execution history is an asynchronous projection. Until a
-        // projection contains this MessageId, the Managed query naturally
-        // returns null rather than fabricating a strong state.
+        // V3 currently has no BrokerNative history projection. This remains a
+        // PostgresManaged status query, so a BrokerNative MessageId normally
+        // returns null instead of fabricating a strong lifecycle state.
         return await _controlPlane.GetStatusAsync(jobId, cancellationToken);
     }
 
@@ -171,9 +192,9 @@ public sealed class DefaultJobClient : IJobClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
 
-        // Strong cancellation is a PostgresManaged capability. BrokerNative
-        // queued cancellation is intentionally best-effort and will be exposed
-        // separately rather than pretending this Managed operation is strong.
+        // Strong cancellation is a PostgresManaged capability. There is no
+        // BrokerNative queued-cancel protocol in V3 today; passing a BrokerNative
+        // MessageId therefore cannot cancel a broker delivery through this API.
         return _controlPlane.RequestCancelAsync(jobId, reason, cancellationToken);
     }
 
@@ -199,11 +220,28 @@ public sealed class DefaultJobClient : IJobClient
         JobEnqueueOptions options,
         CancellationToken cancellationToken)
     {
+        var submission = CreateBrokerNativeSubmission(
+            jobKey,
+            payload,
+            queue,
+            route,
+            options);
+        var publisher = _transportRegistry.GetRequiredPublisher(submission.TransportId);
+        await publisher.PublishAsync(submission.Request, cancellationToken);
+        return submission.Handle;
+    }
+
+    private static BrokerNativeSubmission CreateBrokerNativeSubmission<TPayload>(
+        string jobKey,
+        TPayload payload,
+        string queue,
+        QueueRuntimeRoute route,
+        JobEnqueueOptions options)
+    {
         ValidateBrokerNativeOptions(options, queue);
         var transportId = route.TransportId
             ?? throw new InvalidOperationException(
                 $"BrokerNative queue '{queue}' does not have a transport configured.");
-        var publisher = _transportRegistry.GetRequiredPublisher(transportId);
 
         var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
         var messageId = Guid.NewGuid().ToString("N");
@@ -225,21 +263,21 @@ public sealed class DefaultJobClient : IJobClient
         message.Validate();
 
         var body = JsonSerializer.SerializeToUtf8Bytes(message, SerializerOptions);
-        await publisher.PublishAsync(
-            new TransportPublishRequest(
-                TransportMessageKind.Job,
-                queue,
-                new TransportMessage(
-                    messageId,
-                    "kubejob.broker-native.job.v1",
-                    body,
-                    message.Headers,
-                    message.CorrelationId,
-                    message.PartitionKey),
-                RoutingKey: queue),
-            cancellationToken);
-
-        return new JobHandle(messageId);
+        var request = new TransportPublishRequest(
+            TransportMessageKind.Job,
+            queue,
+            new TransportMessage(
+                messageId,
+                "kubejob.broker-native.job.v1",
+                body,
+                message.Headers,
+                message.CorrelationId,
+                message.PartitionKey),
+            RoutingKey: queue);
+        return new BrokerNativeSubmission(
+            transportId,
+            request,
+            new JobHandle(messageId));
     }
 
     private static EnqueueJobRequest CreateManagedRequest(
@@ -284,7 +322,7 @@ public sealed class DefaultJobClient : IJobClient
         {
             throw new NotSupportedException(
                 $"BrokerNative queue '{queue}' does not use managed ConcurrencyKey. " +
-                "Use PartitionKey/partitioned routing when ordering is enabled for that Queue.");
+                "Use a transport-native partition/ordering policy when that capability is implemented for the Queue.");
         }
 
         if (options.RetryPolicy is not null)
@@ -321,4 +359,9 @@ public sealed class DefaultJobClient : IJobClient
         JobEnqueueOptions Options,
         string Queue,
         QueueRuntimeRoute Route);
+
+    private sealed record BrokerNativeSubmission(
+        string TransportId,
+        TransportPublishRequest Request,
+        JobHandle Handle);
 }
