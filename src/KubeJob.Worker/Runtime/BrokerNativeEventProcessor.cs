@@ -1,5 +1,6 @@
 using KubeJob.Core.Events;
 using KubeJob.Core.Execution;
+using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
 using Microsoft.Extensions.Options;
 
