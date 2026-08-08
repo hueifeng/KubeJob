@@ -3,6 +3,7 @@ using KubeJob.Benchmark;
 
 // Top-level entry point for the KubeJob throughput benchmark. Re-runnable:
 //   dotnet run --project tests/KubeJob.Benchmark -- --jobs 5000 --scenarios Parallel,KeyOrderedHotKey
+//   dotnet run --project tests/KubeJob.Benchmark -- --runtime BrokerNative --jobs 5000
 // Every parameter also has an environment-variable form; see README.md.
 
 var env = Environment.GetEnvironmentVariables()
@@ -10,6 +11,34 @@ var env = Environment.GetEnvironmentVariables()
     .ToDictionary(entry => (string)entry.Key, entry => (string?)entry.Value ?? string.Empty);
 
 var opts = BenchmarkOptions.Parse(env, args);
+var runtime = ResolveRuntime(env, args);
+
+if (runtime == "BrokerNative")
+{
+    BrokerNativeResultTable.PrintHeader(opts);
+    try
+    {
+        var result = await new BrokerNativePipelineBenchmark(opts).RunAsync();
+        BrokerNativeResultTable.Print(result);
+        var markdown = BrokerNativeResultTable.ToMarkdown(opts, result);
+        Console.WriteLine("--- markdown ---");
+        Console.WriteLine(markdown);
+
+        if (!string.IsNullOrWhiteSpace(opts.OutputFile))
+        {
+            File.WriteAllText(opts.OutputFile, markdown);
+            Console.WriteLine($"Wrote {opts.OutputFile}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"BrokerNative benchmark failed: {ex}");
+        Environment.ExitCode = 1;
+    }
+
+    return;
+}
+
 ResultTable.PrintHeader(opts);
 
 var bench = new PipelineBenchmark(opts);
@@ -48,4 +77,22 @@ if (results.Count > 0)
 else
 {
     Console.Error.WriteLine("No scenarios completed successfully.");
+}
+
+static string ResolveRuntime(IDictionary<string, string> env, string[] args)
+{
+    for (var index = 0; index + 1 < args.Length; index++)
+    {
+        if (string.Equals(args[index], "--runtime", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(args[index + 1], "BrokerNative", StringComparison.OrdinalIgnoreCase)
+                ? "BrokerNative"
+                : "PostgresManaged";
+        }
+    }
+
+    return env.TryGetValue("KUBEJOB_BENCH_RUNTIME", out var value)
+           && string.Equals(value, "BrokerNative", StringComparison.OrdinalIgnoreCase)
+        ? "BrokerNative"
+        : "PostgresManaged";
 }
