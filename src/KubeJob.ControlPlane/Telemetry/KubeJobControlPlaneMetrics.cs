@@ -8,19 +8,15 @@ namespace KubeJob.ControlPlane.Telemetry;
 
 public sealed class KubeJobControlPlaneMetrics : IDisposable
 {
-    private const string AdmissionStatusTagName = "kubejob.admission.status";
     private const string QueueTagName = "kubejob.queue";
 
     private readonly Meter _meter;
     private readonly Counter<long> _submissions;
     private readonly Counter<long> _idempotencyHits;
-    private readonly Histogram<double> _admissionDuration;
     private readonly Counter<long> _reclaimedLeases;
     private readonly Histogram<double> _outboxPublishLag;
     private readonly Histogram<double> _orderingWaitDuration;
 
-    // Observable gauges are kept alive by these fields so the meter does not
-    // collect them between scrapes; the callbacks read the cached snapshot.
     private readonly ObservableGauge<int> _orderingBlockedRuns;
     private readonly ObservableGauge<double> _orderingOldestBlockedAge;
     private readonly ObservableGauge<int> _orderingActiveKeys;
@@ -39,106 +35,80 @@ public sealed class KubeJobControlPlaneMetrics : IDisposable
         _submissions = _meter.CreateCounter<long>(
             "kubejob.job.submissions",
             unit: "{job}",
-            description: "Number of newly accepted KubeJob job submissions.");
+            description: "Number of newly accepted PostgresManaged job submissions.");
         _idempotencyHits = _meter.CreateCounter<long>(
             "kubejob.job.idempotency_hits",
             unit: "{job}",
-            description: "Number of accepted KubeJob submissions resolved to an existing idempotency key.");
-        _admissionDuration = _meter.CreateHistogram<double>(
-            "kubejob.control_plane.admission.duration",
-            unit: "s",
-            description: "Duration of a single-Run BrokerDispatch admission call (WorkerControlPlane.AdmitAsync), including its underlying Claim.");
+            description: "Number of PostgresManaged submissions resolved to an existing idempotency key.");
         _reclaimedLeases = _meter.CreateCounter<long>(
             "kubejob.control_plane.lease_reaper.reclaimed",
             unit: "{attempt}",
-            description: "Number of expired job attempt leases reclaimed by the lease reaper sweep.");
+            description: "Number of expired PostgresManaged attempt leases reclaimed by the lease reaper sweep.");
         _outboxPublishLag = _meter.CreateHistogram<double>(
             "kubejob.control_plane.outbox.publish_lag",
             unit: "s",
-            description: "Elapsed time between an outbox message becoming available for delivery and the moment it is published to its transport.");
+            description: "Elapsed time between a managed wake outbox row becoming available and publication of its optional wake signal.");
         _orderingWaitDuration = _meter.CreateHistogram<double>(
             "kubejob.control_plane.ordering.wait_duration",
             unit: "s",
-            description: "Wall-clock time a KeyOrdered Run waited before admission (claim time minus AvailableAt), including time blocked behind a non-terminal same-key predecessor. Parallel runs are not recorded.");
+            description: "Wall-clock time a PostgresManaged KeyOrdered Run waited before claim. Parallel runs are not recorded.");
         _orderingBlockedRuns = _meter.CreateObservableGauge<int>(
             "kubejob.control_plane.ordering.blocked_runs",
             observeValues: () => ObserveInt(sample => sample.BlockedRuns),
             unit: "{run}",
-            description: "KeyOrdered Pending Runs currently blocked behind a non-terminal same-key predecessor, per queue. Snapshot refreshed periodically; never queried on scrape.");
+            description: "PostgresManaged KeyOrdered Pending Runs blocked behind a non-terminal same-key predecessor, per queue.");
         _orderingOldestBlockedAge = _meter.CreateObservableGauge<double>(
             "kubejob.control_plane.ordering.oldest_blocked_age",
             observeValues: () => ObserveDouble(sample => sample.OldestBlockedAgeSeconds),
             unit: "s",
-            description: "Age of the oldest blocked KeyOrdered Run per queue. Snapshot refreshed periodically; never queried on scrape.");
+            description: "Age of the oldest blocked PostgresManaged KeyOrdered Run per queue.");
         _orderingActiveKeys = _meter.CreateObservableGauge<int>(
             "kubejob.control_plane.ordering.active_keys",
             observeValues: () => ObserveInt(sample => sample.ActiveKeys),
             unit: "{key}",
-            description: "Distinct ConcurrencyKeys with at least one non-terminal KeyOrdered Run per queue. Snapshot refreshed periodically; never queried on scrape.");
+            description: "Distinct keys with at least one non-terminal PostgresManaged KeyOrdered Run per queue.");
         _orderingStrictFifoBlocked = _meter.CreateObservableGauge<int>(
             "kubejob.control_plane.ordering.strictfifo_blocked_runs",
             observeValues: () => ObserveInt(sample => sample.StrictFifoBlocked),
             unit: "{run}",
-            description: "StrictFifo Pending Runs blocked because a prior Run on the same queue is still inflight. Snapshot refreshed periodically.");
+            description: "PostgresManaged StrictFifo Pending Runs blocked behind prior inflight Runs on the same queue.");
         _orderingRetryBlocked = _meter.CreateObservableGauge<int>(
             "kubejob.control_plane.ordering.retry_blocked_runs",
             observeValues: () => ObserveInt(sample => sample.RetryBlockedRuns),
             unit: "{run}",
-            description: "Blocked Runs whose predecessor is retrying (attempt > 1). Helps detect retry-storm stalls.");
+            description: "Blocked managed Runs whose predecessor is retrying.");
         _orderingLaneBacklog = _meter.CreateObservableGauge<int>(
             "kubejob.control_plane.ordering.lane_blocked_runs",
             observeValues: () => ObserveLaneBacklog(),
             unit: "{run}",
-            description: "Per-lane blocked run count within a queue. Tagged with kubejob.lane_id.");
+            description: "Managed execution-lane blocked Run count per queue. Tagged with kubejob.lane_id.");
     }
 
     public void SubmissionCompleted(bool existing)
     {
         var instrument = existing ? _idempotencyHits : _submissions;
-        if (!instrument.Enabled)
+        if (instrument.Enabled)
         {
-            return;
+            instrument.Add(1);
         }
-
-        instrument.Add(1);
-    }
-
-    public bool IsAdmissionDurationEnabled => _admissionDuration.Enabled;
-
-    public void AdmissionCompleted(TimeSpan duration, string status)
-    {
-        if (!_admissionDuration.Enabled)
-        {
-            return;
-        }
-
-        var tags = new TagList
-        {
-            { AdmissionStatusTagName, status }
-        };
-        _admissionDuration.Record(duration.TotalSeconds, tags);
     }
 
     public void LeasesReclaimed(int count)
     {
-        if (count <= 0 || !_reclaimedLeases.Enabled)
+        if (count > 0 && _reclaimedLeases.Enabled)
         {
-            return;
+            _reclaimedLeases.Add(count);
         }
-
-        _reclaimedLeases.Add(count);
     }
 
     public bool IsOutboxPublishLagEnabled => _outboxPublishLag.Enabled;
 
     public void OutboxPublished(TimeSpan lag)
     {
-        if (!_outboxPublishLag.Enabled)
+        if (_outboxPublishLag.Enabled)
         {
-            return;
+            _outboxPublishLag.Record(lag.TotalSeconds);
         }
-
-        _outboxPublishLag.Record(lag.TotalSeconds);
     }
 
     public bool IsOrderingWaitEnabled => _orderingWaitDuration.Enabled;
@@ -157,11 +127,6 @@ public sealed class KubeJobControlPlaneMetrics : IDisposable
         _orderingWaitDuration.Record(wait.TotalSeconds, tags);
     }
 
-    /// <summary>
-    /// Replaces the cached ordering backlog snapshot that backs the observable
-    /// gauges. Called periodically by <c>OrderingMetricsRefreshService</c>; a
-    /// metrics scrape reads this cache and never triggers a store query.
-    /// </summary>
     public void UpdateOrderingBacklog(IReadOnlyList<OrderingBacklogSample> samples)
     {
         ArgumentNullException.ThrowIfNull(samples);
