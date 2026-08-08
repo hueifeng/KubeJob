@@ -29,7 +29,7 @@ public sealed class EventTopologyProvisioningTests
     }
 
     [Fact]
-    public void Rabbit_event_consumer_registers_topology_provisioner_before_consumer()
+    public void Rabbit_event_consumer_keeps_resilient_consumer_without_fail_fast_provisioner()
     {
         var services = new ServiceCollection();
         services.AddRabbitMqKubeJobEventConsumer(options =>
@@ -41,9 +41,8 @@ public sealed class EventTopologyProvisioningTests
             .Where(type => type is not null)
             .ToArray();
 
-        hosted.Should().ContainInOrder(
-            typeof(RabbitMqEventTopologyProvisionerService),
-            typeof(RabbitMqBrokerNativeEventConsumerService));
+        hosted.Should().Contain(typeof(RabbitMqBrokerNativeEventConsumerService));
+        hosted.Should().NotContain(typeof(RabbitMqEventTopologyProvisionerService));
     }
 
     [Fact]
