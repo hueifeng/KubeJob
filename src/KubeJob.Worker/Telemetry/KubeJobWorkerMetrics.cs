@@ -41,7 +41,7 @@ public sealed class KubeJobWorkerMetrics : IDisposable
         _handlerDuration = _meter.CreateHistogram<double>(
             "kubejob.worker.handler.duration",
             unit: "s",
-            description: "Duration of KubeJob handler invocation, excluding durable completion reporting.");
+            description: "Duration of KubeJob handler invocation, excluding durable completion or broker acknowledgement.");
     }
 
     public void AttemptStarted(WorkerExecutionKind executionKind) =>
@@ -52,7 +52,10 @@ public sealed class KubeJobWorkerMetrics : IDisposable
 
     public bool IsHandlerDurationEnabled => _handlerDuration.Enabled;
 
-    public void HandlerCompleted(TimeSpan duration, string outcome)
+    public void HandlerCompleted(
+        TimeSpan duration,
+        string outcome,
+        WorkerExecutionKind executionKind = WorkerExecutionKind.Pull)
     {
         if (!_handlerDuration.Enabled)
         {
@@ -61,7 +64,8 @@ public sealed class KubeJobWorkerMetrics : IDisposable
 
         var tags = new TagList
         {
-            { "kubejob.outcome", outcome }
+            { "kubejob.outcome", outcome },
+            { ExecutionKindTagName, GetExecutionKindTag(executionKind) }
         };
         _handlerDuration.Record(duration.TotalSeconds, tags);
     }
@@ -77,13 +81,13 @@ public sealed class KubeJobWorkerMetrics : IDisposable
 
         var tags = new TagList
         {
-            {
-                ExecutionKindTagName,
-                executionKind == WorkerExecutionKind.Pull
-                    ? "postgres_managed"
-                    : "broker_native"
-            }
+            { ExecutionKindTagName, GetExecutionKindTag(executionKind) }
         };
         _activeAttempts.Add(change, tags);
     }
+
+    private static string GetExecutionKindTag(WorkerExecutionKind executionKind) =>
+        executionKind == WorkerExecutionKind.Pull
+            ? "postgres_managed"
+            : "broker_native";
 }
