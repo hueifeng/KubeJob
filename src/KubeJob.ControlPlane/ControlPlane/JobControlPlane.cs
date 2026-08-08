@@ -21,7 +21,7 @@ public sealed class JobControlPlane
     private readonly IJobSubmissionStore _submissions;
     private readonly IJobQueryStore _queries;
     private readonly IQueueRouter _queueRouter;
-    private readonly OutboxPublisherSignal _wake;
+    private readonly ManagedWorkAvailableDispatcher _wakeDispatcher;
     private readonly JobRuntimeOptions _options;
     private readonly KubeJobControlPlaneMetrics? _metrics;
 
@@ -30,14 +30,14 @@ public sealed class JobControlPlane
         IJobQueryStore queries,
         IQueueRouter queueRouter,
         IOptions<JobRuntimeOptions> options,
-        OutboxPublisherSignal wake,
+        ManagedWorkAvailableDispatcher wakeDispatcher,
         KubeJobControlPlaneMetrics? metrics = null)
     {
-        ArgumentNullException.ThrowIfNull(wake);
+        ArgumentNullException.ThrowIfNull(wakeDispatcher);
         _submissions = submissions;
         _queries = queries;
         _queueRouter = queueRouter;
-        _wake = wake;
+        _wakeDispatcher = wakeDispatcher;
         _options = options.Value;
         _metrics = metrics;
     }
@@ -78,7 +78,10 @@ public sealed class JobControlPlane
 
         if (!result.Existing)
         {
-            _wake.Signal();
+            // The store has already committed the durable Run. Immediate wake
+            // delivery is best effort and coalesced by Queue; losing it only
+            // falls back to normal PostgreSQL polling.
+            _wakeDispatcher.Signal(result.Run);
         }
 
         return new JobSubmissionReceipt(new JobHandle(result.Run.Id), result.Existing);
@@ -141,10 +144,10 @@ public sealed class JobControlPlane
             activity.SetTag("kubejob.submit_batch.count", results.Count);
         }
 
-        if (results.Any(r => !r.Existing))
-        {
-            _wake.Signal();
-        }
+        _wakeDispatcher.Signal(
+            results
+                .Where(result => !result.Existing)
+                .Select(result => result.Run));
 
         return receipts;
     }
