@@ -60,14 +60,12 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<WorkerControlPlane>();
         services.TryAddSingleton<ScheduleControlPlane>();
         services.TryAddSingleton<IWorkAvailableNotifier, NoopWorkAvailableNotifier>();
-        services.TryAddSingleton<ICancelPublisher, NoopCancelPublisher>();
 
-        // V2 delivery routing remains available only to compatibility paths.
+        // PostgresManaged policy is always PostgreSQL-authoritative. These
+        // settings only describe managed worker eligibility and ordering.
         services.AddOptions<QueueDeliveryOptions>();
         services.TryAddSingleton<QueueCatalog>();
         services.TryAddSingleton<IQueueRouter, ConfigurationQueueRouter>();
-        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, UnconfiguredExecutionTransport>());
-        services.TryAddSingleton<IExecutionTransportRegistry, ExecutionTransportRegistry>();
 
         // V3 Queue authority and Event Topic routing are local deployment
         // configuration. BrokerNative publish never reads PostgreSQL simply to
@@ -119,8 +117,8 @@ public static class KubeJobServerExtensions
     }
 
     /// <summary>
-    /// Configures legacy V2 PostgresManaged delivery routing while the old
-    /// BrokerDispatch execution-envelope path is being retired.
+    /// Configures PostgresManaged worker eligibility and ordering policy. This
+    /// API never selects a broker or changes execution authority.
     /// </summary>
     public static IServiceCollection ConfigureKubeJobQueueRouting(
         this IServiceCollection services,
@@ -152,22 +150,6 @@ public static class KubeJobServerExtensions
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
-        return services;
-    }
-
-    public static IServiceCollection AddKubeJobExecutionTransport<TTransport>(
-        this IServiceCollection services)
-        where TTransport : class, IExecutionTransport
-    {
-        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, TTransport>());
-        return services;
-    }
-
-    public static IServiceCollection UseKubeJobCancelPublisher<TCancelPublisher>(
-        this IServiceCollection services)
-        where TCancelPublisher : class, ICancelPublisher
-    {
-        services.Replace(ServiceDescriptor.Singleton<ICancelPublisher, TCancelPublisher>());
         return services;
     }
 
