@@ -149,7 +149,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         results[51].Run.Id.Should().Be(results[5].Run.Id);
         results.Take(50).Should().OnlyContain(result =>
             result.Run.DeliveryProfile == ExecutionDeliveryProfile.Pull
-            && result.Run.TransportId is null);
+            && result.Run.TransportId == null);
 
         var outbox = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
@@ -275,13 +275,13 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(
+        var firstA = await store.SubmitAsync(
             NewSubmission(queue: "ordered", concurrencyKey: "A", orderingMode: ExecutionOrderingMode.KeyOrdered),
             CancellationToken.None);
-        await store.SubmitAsync(
+        var secondA = await store.SubmitAsync(
             NewSubmission(queue: "ordered", concurrencyKey: "A", orderingMode: ExecutionOrderingMode.KeyOrdered),
             CancellationToken.None);
-        await store.SubmitAsync(
+        var firstB = await store.SubmitAsync(
             NewSubmission(queue: "ordered", concurrencyKey: "B", orderingMode: ExecutionOrderingMode.KeyOrdered),
             CancellationToken.None);
 
@@ -289,14 +289,14 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var firstWave = await ClaimAsync(store, session, 3, queue: "ordered");
 
         firstWave.Should().HaveCount(2);
-        firstWave.Select(job => job.ConcurrencyKey).Should().BeEquivalentTo(new[] { "A", "B" });
+        firstWave.Select(job => job.RunId).Should().BeEquivalentTo(new[] { firstA.Run.Id, firstB.Run.Id });
 
-        var keyA = firstWave.Single(job => job.ConcurrencyKey == "A");
-        await CompleteAsync(store, session, keyA, JobAttemptOutcome.Succeeded);
+        var firstAClaim = firstWave.Single(job => job.RunId == firstA.Run.Id);
+        await CompleteAsync(store, session, firstAClaim, JobAttemptOutcome.Succeeded);
 
         var secondWave = await ClaimAsync(store, session, 1, queue: "ordered");
         secondWave.Should().ContainSingle();
-        secondWave[0].ConcurrencyKey.Should().Be("A");
+        secondWave[0].RunId.Should().Be(secondA.Run.Id);
     }
 
     [Fact]
