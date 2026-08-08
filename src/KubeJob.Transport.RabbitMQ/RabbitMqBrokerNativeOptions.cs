@@ -4,34 +4,29 @@ using KubeJob.Core.Queues;
 namespace KubeJob.Transport.RabbitMQ;
 
 /// <summary>
-/// RabbitMQ data-plane options for BrokerNative jobs. The normal topology is
-/// intentionally small: one direct exchange and one physical execution queue
-/// per logical KubeJob queue, consumed competitively by all worker replicas.
-/// Retry/DLQ topology is internal transport plumbing.
+/// RabbitMQ data-plane options for BrokerNative jobs and events. Jobs use one
+/// direct exchange plus one execution queue per logical KubeJob Queue. Events
+/// use one topic exchange per logical Topic and one queue per Subscription.
+/// Retry/DLQ topology remains internal transport plumbing.
 /// </summary>
 public sealed class RabbitMqBrokerNativeOptions
 {
     public string ConnectionString { get; set; } = "amqp://guest:guest@localhost:5672/";
 
     /// <summary>
-    /// Business-domain Job exchange, for example "order.jobs". Logical queue
-    /// names are used as routing keys.
+    /// Business-domain Job exchange. Logical Queue names are routing keys.
     /// </summary>
     public string ExchangeName { get; set; } = "kubejob.jobs";
 
     /// <summary>
-    /// Prefix for physical execution queues. A logical queue "order.created"
-    /// becomes "kubejob.order.created" by default.
+    /// Prefix for physical execution queues and Event topic exchanges.
+    /// A logical queue "order.created" becomes "kubejob.order.created";
+    /// topic "order.events" becomes exchange "kubejob.order.events".
     /// </summary>
     public string QueuePrefix { get; set; } = "kubejob";
 
     public ushort PrefetchCount { get; set; } = 64;
 
-    /// <summary>
-    /// RabbitMQ callback dispatch parallelism. Zero uses the worker's
-    /// MaxConcurrentJobs. A process-wide semaphore still enforces the worker
-    /// concurrency limit across all consumed logical queues.
-    /// </summary>
     public ushort ConsumerDispatchConcurrency { get; set; }
 
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(5);
@@ -80,6 +75,7 @@ public sealed class RabbitMqBrokerNativeOptions
                 "RabbitMQ BrokerNative PublisherConfirmTimeout must be positive.");
         }
 
+        var maximumLogicalName = new string('q', LogicalQueueName.MaximumLength);
         var longestGeneratedName = new[]
         {
             ExchangeName,
@@ -87,13 +83,20 @@ public sealed class RabbitMqBrokerNativeOptions
             GetRetryQueueName(),
             GetDeadLetterExchangeName(),
             GetDeadLetterQueueName(),
-            GetQueueName(new string('q', 100))
+            GetQueueName(maximumLogicalName),
+            GetEventExchangeName(maximumLogicalName),
+            GetEventSubscriptionQueueName(maximumLogicalName, maximumLogicalName),
+            GetEventRetryExchangeName(maximumLogicalName),
+            GetEventRetryQueueName(maximumLogicalName, maximumLogicalName),
+            GetEventDeadLetterExchangeName(maximumLogicalName),
+            GetEventDeadLetterQueueName(maximumLogicalName, maximumLogicalName)
         }.MaxBy(name => Encoding.UTF8.GetByteCount(name))!;
 
         if (Encoding.UTF8.GetByteCount(longestGeneratedName) >= 255)
         {
             throw new InvalidOperationException(
-                "RabbitMQ BrokerNative topology names must be shorter than 255 UTF-8 bytes.");
+                "RabbitMQ BrokerNative topology names must be shorter than 255 UTF-8 bytes. " +
+                "Shorten QueuePrefix when using long Topic/Subscription names.");
         }
     }
 
@@ -110,4 +113,29 @@ public sealed class RabbitMqBrokerNativeOptions
     public string GetDeadLetterExchangeName() => $"{ExchangeName}.dlx";
 
     public string GetDeadLetterQueueName() => $"{ExchangeName}.dlq";
+
+    public string GetEventExchangeName(string topic)
+    {
+        var normalized = LogicalQueueName.Normalize(topic, nameof(topic));
+        return $"{QueuePrefix}.{normalized}";
+    }
+
+    public string GetEventSubscriptionQueueName(string topic, string subscription)
+    {
+        var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
+        var normalizedSubscription = LogicalQueueName.Normalize(subscription, nameof(subscription));
+        return $"{QueuePrefix}.{normalizedTopic}.{normalizedSubscription}";
+    }
+
+    public string GetEventRetryExchangeName(string topic)
+        => $"{GetEventExchangeName(topic)}.retry";
+
+    public string GetEventRetryQueueName(string topic, string subscription)
+        => $"{GetEventSubscriptionQueueName(topic, subscription)}.retry";
+
+    public string GetEventDeadLetterExchangeName(string topic)
+        => $"{GetEventExchangeName(topic)}.dlx";
+
+    public string GetEventDeadLetterQueueName(string topic, string subscription)
+        => $"{GetEventSubscriptionQueueName(topic, subscription)}.dlq";
 }
