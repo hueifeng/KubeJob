@@ -101,7 +101,11 @@ Deployment configuration may select `Parallel`, `KeyOrdered`, or `StrictFifo` fo
 
 ### Managed wake notifications
 
-The current implementation may publish `WorkAvailable` notifications to wake workers sooner. They are hints only: PostgreSQL remains the authority and polling remains the correctness path if a notification is lost.
+Immediate PostgresManaged submission no longer inserts one durable `Kj2_Outbox` WorkAvailable row per Run. The control plane first commits the durable Run, then queues a best-effort wake in `ManagedWorkAvailableDispatcher`. That dispatcher coalesces bursts by logical Queue and publishes asynchronously through `IWorkAvailableNotifier`.
+
+Losing an immediate wake cannot lose a Job: PostgreSQL is still the authority and Worker polling remains the correctness path. A lost wake can only add up to the normal polling delay.
+
+Future-dated `NotBefore` jobs and explicit recovery/requeue paths currently retain durable WorkAvailable outbox rows so delayed/recovery wake semantics can be migrated independently from the hot submission path.
 
 ## BrokerNative RabbitMQ
 
@@ -268,7 +272,7 @@ Kj2_Outbox
 
 PostgreSQL is the source of truth only for PostgresManaged execution. BrokerNative queues publish self-contained transport messages and do not use the managed Run/lease/completion path.
 
-Some legacy compatibility columns remain in the schema so the V3 runtime migration is not also a destructive schema migration. New managed writes normalize to the PostgresManaged model and no active runtime path uses those columns to resurrect BrokerDispatch execution.
+`Kj2_Outbox` remains for delayed/recovery managed wake scenarios, but immediate Submit/Batch no longer create one outbox row per Run. Some legacy compatibility columns also remain so the V3 runtime migration is not simultaneously a destructive schema migration.
 
 ## Architecture decision
 
