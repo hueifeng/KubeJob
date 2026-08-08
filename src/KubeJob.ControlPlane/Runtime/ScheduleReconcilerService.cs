@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Core.Transport;
@@ -175,7 +174,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
 
     private async ValueTask CommitManagedFireAsync(
         ClaimedSchedule claim,
-        ScheduleReconciliationPlan plan,
+        ScheduleFirePlan plan,
         string occurrenceId,
         string idempotencyKey,
         CancellationToken cancellationToken)
@@ -195,7 +194,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
 
     private async ValueTask CommitBrokerNativeFireAsync(
         ClaimedSchedule claim,
-        ScheduleReconciliationPlan plan,
+        ScheduleFirePlan plan,
         string occurrenceId,
         string idempotencyKey,
         QueueRuntimeRoute runtime,
