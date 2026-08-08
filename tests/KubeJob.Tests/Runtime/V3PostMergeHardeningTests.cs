@@ -5,7 +5,10 @@ using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Transport;
 using KubeJob.Server.Extensions;
+using KubeJob.Storage.PostgreSQL.Extensions;
+using KubeJob.Transport.RabbitMQ;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Tests.Runtime;
 
@@ -61,6 +64,21 @@ public sealed class V3PostMergeHardeningTests
 
         claimed.Should().ContainSingle();
         claimed[0].EventType.Should().Be(OutboxEventTypes.WorkAvailable);
+    }
+
+    [Fact]
+    public void PostgreSql_storage_registration_does_not_require_a_wake_notifier()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddOptions<JobRuntimeOptions>();
+        services.AddKubeJobPostgreSql(
+            "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres");
+        using var provider = services.BuildServiceProvider();
+
+        var act = () => provider.GetRequiredService<IJobSubmissionStore>();
+
+        act.Should().NotThrow();
     }
 
     [Fact]
@@ -126,6 +144,19 @@ public sealed class V3PostMergeHardeningTests
             });
 
         publisher.SingleCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public void RabbitMq_default_competing_consumer_transport_does_not_claim_ordered_execution()
+    {
+        using var publisher = new RabbitMqBrokerNativePublisher(
+            Options.Create(new RabbitMqBrokerNativeOptions
+            {
+                ConnectionString = "amqp://guest:guest@localhost:5672/"
+            }));
+
+        publisher.Capabilities.HasFlag(MessageTransportCapabilities.OrderedDelivery)
+            .Should().BeFalse();
     }
 
     private sealed record TestPayload(int Value);
