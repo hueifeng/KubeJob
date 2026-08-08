@@ -86,6 +86,11 @@ public sealed class DefaultJobClient : IJobClient
             return Array.Empty<JobHandle>();
         }
 
+        // The public batch API needs one bounded allocation/publish envelope
+        // regardless of authority. For PostgresManaged this protects the
+        // database transaction; for BrokerNative it also bounds serialization,
+        // publisher-lock hold time, and one confirm window.
+        _controlPlane.ValidateSubmissionBatchSize(batch.Count);
         EnsureJobKey(job);
 
         var prepared = new PreparedSubmission<TPayload>[batch.Count];
@@ -109,7 +114,6 @@ public sealed class DefaultJobClient : IJobClient
 
         if (commonMode == QueueRuntimeMode.PostgresManaged)
         {
-            _controlPlane.ValidateSubmissionBatchSize(batch.Count);
             var requests = new EnqueueJobRequest[prepared.Length];
             for (var i = 0; i < prepared.Length; i++)
             {
