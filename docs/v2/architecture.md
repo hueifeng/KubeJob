@@ -220,11 +220,25 @@ For BrokerNative, the transport adapter owns the retry handoff. The RabbitMQ ada
 
 ## Work-available wake hints
 
-PostgreSQL remains the only execution authority for PostgresManaged. The current implementation writes `WorkAvailable` rows to the internal outbox and publishes them through `IWorkAvailableNotifier` as optional wake hints.
+PostgreSQL remains the only execution authority for PostgresManaged. Wake notifications reduce discovery latency only; they never grant ownership.
 
-These notifications do **not** grant ownership. Worker polling remains the correctness path if a wake notification is lost.
+For an immediately runnable new Run, the hot path is:
 
-Because the wake hint is non-authoritative, this durable outbox is an optimization boundary rather than part of the Single Authority requirement. It may be replaced by a cheaper best-effort or database-native wake mechanism without changing correctness.
+```text
+commit JobRun
+    ↓
+ManagedWorkAvailableDispatcher
+    ↓  coalesce by logical Queue
+IWorkAvailableNotifier
+    ↓
+optional in-process / RabbitMQ wake
+```
+
+The dispatcher runs after the durable Run transaction has committed. It is best-effort and process-local, so an immediate Submit/Batch no longer inserts one `Kj2_Outbox` row per Run and the producer does not wait for broker publisher-confirm latency. Losing the wake is safe: normal PostgreSQL polling is the recovery path and may only add polling delay.
+
+Future-dated `NotBefore` Runs and explicit recovery/requeue scenarios currently retain durable WorkAvailable outbox rows. `OutboxPublisherService` polls those lower-frequency compatibility rows and republishes the same non-authoritative hint. Schedule/recovery paths can be migrated independently later without changing execution correctness.
+
+RabbitMQ wake routing is keyed by logical Queue. Every independent managed ConsumerGroup notification queue binds that Queue key, so one coalesced Queue wake reaches all groups while replicas inside each group compete.
 
 ## Scheduling
 
@@ -287,4 +301,4 @@ The BrokerNative data plane does not require an `IWorkerRuntimeClient` or Postgr
 
 ## Version boundary
 
-The active runtime is V3 Single Authority. Historical V2/BrokerDispatch ADRs remain in the repository only as decision history. ADR 015 is the current architecture decision.
+The active runtime is V3 Single Authority. Historical V2/BrokerDispatch ADRs remain in the repository only as decision history. [ADR 015](../adr/015-v3-single-authority-runtime-model.md) is the current architecture decision.
