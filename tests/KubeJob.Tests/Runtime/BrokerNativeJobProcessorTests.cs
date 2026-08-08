@@ -1,14 +1,36 @@
 using FluentAssertions;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Runtime;
+using KubeJob.Worker.Extensions;
 using KubeJob.Worker.Options;
 using KubeJob.Worker.Runtime;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Tests.Runtime;
 
 public sealed class BrokerNativeJobProcessorTests
 {
+    [Fact]
+    public void BrokerNative_worker_registration_does_not_register_managed_runtime_client()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobBrokerNativeWorker(options =>
+        {
+            options.WorkerId = "broker-worker";
+            options.Queues = new List<string> { "orders" };
+        });
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetService<IWorkerRuntimeClient>().Should().BeNull();
+        provider.GetService<WorkerRuntimeService>().Should().BeNull();
+        provider.GetRequiredService<IWorkerExecutionEngine>()
+            .Should().BeOfType<WorkerExecutionEngine>();
+        provider.GetRequiredService<BrokerNativeJobProcessor>()
+            .Should().NotBeNull();
+    }
+
     [Fact]
     public async Task Succeeded_message_is_acked_without_control_plane_dependency()
     {
