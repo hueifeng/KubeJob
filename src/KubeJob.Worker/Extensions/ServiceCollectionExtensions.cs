@@ -15,35 +15,53 @@ namespace KubeJob.Worker.Extensions;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the typed pull worker. Remote workers use HTTP by default;
-    /// unified hosts replace the transport with the in-process implementation.
+    /// Registers the PostgreSQL/control-plane managed worker runtime. Remote
+    /// workers use HTTP by default; unified hosts replace the transport with
+    /// the in-process implementation.
     /// </summary>
     public static IServiceCollection AddKubeJobWorker(
         this IServiceCollection services,
+        Action<KubeJobWorkerOptions> configure)
+    {
+        AddExecutionCore(services, configure);
+        services.AddKubeJobWorkerClaimTrigger();
+        services.TryAddSingleton<HttpWorkerRuntimeClient>();
+        services.TryAddSingleton<IWorkerRuntimeClient>(sp =>
+            sp.GetRequiredService<HttpWorkerRuntimeClient>());
+        services.TryAddSingleton<WorkerRuntimeService>();
+        services.AddHostedService(sp => sp.GetRequiredService<WorkerRuntimeService>());
+        return services;
+    }
+
+    /// <summary>
+    /// Registers only the transport-neutral execution core required by a
+    /// BrokerNative worker. No control-plane runtime client, Claim loop,
+    /// WorkerSession, lease renewal, or Managed hosted service is registered.
+    /// A broker adapter (RabbitMQ, Kafka, etc.) is expected to own delivery,
+    /// ACK/redelivery, retry, and DLQ semantics.
+    /// </summary>
+    public static IServiceCollection AddKubeJobBrokerNativeWorker(
+        this IServiceCollection services,
+        Action<KubeJobWorkerOptions> configure)
+    {
+        AddExecutionCore(services, configure);
+        return services;
+    }
+
+    private static void AddExecutionCore(
+        IServiceCollection services,
         Action<KubeJobWorkerOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
         services.Configure(configure);
         services.AddMetrics();
         services.TryAddSingleton<JobHandlerRegistry>();
-        services.AddKubeJobWorkerClaimTrigger();
         services.TryAddSingleton<KubeJobWorkerMetrics>();
-        services.TryAddSingleton<HttpWorkerRuntimeClient>();
-        services.TryAddSingleton<IWorkerRuntimeClient>(sp =>
-            sp.GetRequiredService<HttpWorkerRuntimeClient>());
-        services.TryAddSingleton<IWorkerExecutionEngine>(sp =>
-            new WorkerExecutionEngine(
-                sp.GetRequiredService<IServiceScopeFactory>(),
-                sp.GetRequiredService<JobHandlerRegistry>(),
-                sp.GetRequiredService<ILogger<WorkerExecutionEngine>>(),
-                sp.GetService<KubeJobWorkerMetrics>(),
-                sp.GetService<JobExecutionPipelineBuilder>()));
-        services.TryAddSingleton<WorkerRuntimeService>();
-        services.AddHostedService(sp => sp.GetRequiredService<WorkerRuntimeService>());
 
-        // Register the execution pipeline builder and build the pipeline
-        // from the configured middleware types.
-        services.AddSingleton(sp =>
+        // Register the execution pipeline builder and build the pipeline from
+        // the configured middleware types. This is shared by Managed and
+        // BrokerNative runtimes so business handler behavior stays identical.
+        services.TryAddSingleton<JobExecutionPipelineBuilder>(sp =>
         {
             var options = sp.GetRequiredService<IOptions<KubeJobWorkerOptions>>().Value;
             var builder = new JobExecutionPipelineBuilder();
@@ -57,7 +75,9 @@ public static class ServiceCollectionExtensions
                         $"must implement {typeof(IJobExecutionMiddleware).FullName}.");
                 }
 
-                // Register the middleware type in DI if not already registered.
+                // Preserve the existing registration behavior. Applications
+                // may also register middleware explicitly with
+                // AddKubeJobMiddleware<TMiddleware>().
                 services.TryAddTransient(middlewareType);
                 builder.Use(middlewareType);
             }
@@ -65,7 +85,14 @@ public static class ServiceCollectionExtensions
             return builder;
         });
 
-        return services;
+        services.TryAddSingleton<IWorkerExecutionEngine>(sp =>
+            new WorkerExecutionEngine(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<JobHandlerRegistry>(),
+                sp.GetRequiredService<ILogger<WorkerExecutionEngine>>(),
+                sp.GetService<KubeJobWorkerMetrics>(),
+                sp.GetService<JobExecutionPipelineBuilder>()));
+        services.TryAddSingleton<BrokerNativeJobProcessor>();
     }
 
     /// <summary>
