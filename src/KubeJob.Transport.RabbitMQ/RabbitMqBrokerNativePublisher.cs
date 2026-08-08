@@ -1,0 +1,211 @@
+using KubeJob.Core.Transport;
+using Microsoft.Extensions.Options;
+using RabbitMQ.Client;
+
+namespace KubeJob.Transport.RabbitMQ;
+
+/// <summary>
+/// RabbitMQ implementation of the transport-neutral publisher contract.
+/// The runtime supplies a logical Queue; this adapter owns exchange, binding,
+/// durability, mandatory routing, and publisher-confirm details.
+/// </summary>
+public sealed class RabbitMqBrokerNativePublisher : IMessageTransportPublisher, IDisposable
+{
+    public const string Id = "rabbitmq";
+
+    private readonly RabbitMqBrokerNativeOptions _options;
+    private readonly object _gate = new();
+    private IConnection? _connection;
+    private IModel? _channel;
+    private bool _disposed;
+
+    public RabbitMqBrokerNativePublisher(IOptions<RabbitMqBrokerNativeOptions> options)
+    {
+        _options = options.Value;
+        _options.Validate();
+    }
+
+    public string TransportId => Id;
+
+    public MessageTransportCapabilities Capabilities =>
+        MessageTransportCapabilities.DurablePublish
+        | MessageTransportCapabilities.DeadLetter
+        | MessageTransportCapabilities.ConsumerGroups
+        | MessageTransportCapabilities.OrderedDelivery;
+
+    public ValueTask PublishAsync(
+        TransportPublishRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Message);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (request.Kind != TransportMessageKind.Job)
+        {
+            throw new NotSupportedException(
+                "RabbitMqBrokerNativePublisher currently publishes Job destinations only. " +
+                "Event topics use the Event transport adapter.");
+        }
+
+        if (request.NotBefore is not null)
+        {
+            throw new NotSupportedException(
+                "Generic delayed publish is not enabled for the RabbitMQ BrokerNative transport.");
+        }
+
+        var logicalQueue = Core.Queues.LogicalQueueName.Normalize(
+            request.Destination,
+            nameof(request.Destination));
+        var routingKey = string.IsNullOrWhiteSpace(request.RoutingKey)
+            ? logicalQueue
+            : request.RoutingKey.Trim();
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureChannel();
+
+            var channel = _channel!;
+            RabbitMqBrokerNativeTopology.Declare(
+                channel,
+                _options,
+                new[] { logicalQueue });
+
+            BasicReturnEventArgs? returned = null;
+            EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
+            {
+                if (string.Equals(
+                        args.BasicProperties.MessageId,
+                        request.Message.MessageId,
+                        StringComparison.Ordinal))
+                {
+                    returned = args;
+                }
+            };
+
+            channel.BasicReturn += returnHandler;
+            try
+            {
+                var properties = channel.CreateBasicProperties();
+                properties.Persistent = true;
+                properties.ContentType = "application/json";
+                properties.Type = request.Message.MessageType;
+                properties.MessageId = request.Message.MessageId;
+                properties.CorrelationId = request.Message.CorrelationId;
+
+                if (request.Message.Headers is { Count: > 0 })
+                {
+                    properties.Headers = request.Message.Headers.ToDictionary(
+                        pair => pair.Key,
+                        pair => (object)pair.Value,
+                        StringComparer.Ordinal);
+                }
+
+                channel.BasicPublish(
+                    exchange: _options.ExchangeName,
+                    routingKey: routingKey,
+                    mandatory: true,
+                    basicProperties: properties,
+                    body: request.Message.Body);
+
+                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                {
+                    InvalidateChannel();
+                    throw new IOException(
+                        $"RabbitMQ did not confirm BrokerNative message '{request.Message.MessageId}'.");
+                }
+
+                if (returned is not null)
+                {
+                    throw new IOException(
+                        $"RabbitMQ could not route BrokerNative message '{request.Message.MessageId}' " +
+                        $"to logical queue '{logicalQueue}'.");
+                }
+            }
+            catch
+            {
+                if (_channel is { IsOpen: false })
+                {
+                    InvalidateChannel();
+                }
+
+                throw;
+            }
+            finally
+            {
+                if (channel.IsOpen)
+                {
+                    channel.BasicReturn -= returnHandler;
+                }
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    private void EnsureChannel()
+    {
+        if (_connection is { IsOpen: true } && _channel is { IsOpen: true })
+        {
+            return;
+        }
+
+        InvalidateChannel();
+
+        var factory = new ConnectionFactory
+        {
+            Uri = new Uri(_options.ConnectionString, UriKind.Absolute),
+            AutomaticRecoveryEnabled = true,
+            TopologyRecoveryEnabled = true
+        };
+
+        _connection = factory.CreateConnection("KubeJob.BrokerNative.Publisher");
+        _channel = _connection.CreateModel();
+        _channel.ConfirmSelect();
+    }
+
+    private void InvalidateChannel()
+    {
+        try
+        {
+            _channel?.Dispose();
+        }
+        catch
+        {
+            // Best effort cleanup before reconnect.
+        }
+
+        try
+        {
+            _connection?.Dispose();
+        }
+        catch
+        {
+            // Best effort cleanup before reconnect.
+        }
+
+        _channel = null;
+        _connection = null;
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            InvalidateChannel();
+        }
+    }
+}
