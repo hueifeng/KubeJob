@@ -68,15 +68,6 @@ public sealed class JobRuntimeController : ControllerBase
         return Ok(await _controlPlane.RenewLeasesAsync(request, cancellationToken));
     }
 
-    [HttpPost("executions/requeue")]
-    public async Task<IActionResult> RequeueExecution(
-        [FromBody] RequeueExecutionRequest request,
-        CancellationToken cancellationToken)
-    {
-        var accepted = await _controlPlane.RequeueExecutionAsync(request, cancellationToken);
-        return accepted ? Ok() : Conflict(new { reason = "execution_no_longer_pending" });
-    }
-
     [HttpPost("attempts/complete")]
     public async Task<ActionResult<CompleteAttemptResponse>> Complete(
         [FromBody] CompleteAttemptRequest request,
