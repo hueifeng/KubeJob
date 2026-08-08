@@ -25,8 +25,9 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
-    /// Registers RabbitMQ as a transport-neutral BrokerNative publisher.
-    /// This registration is producer-only and does not start a Worker.
+    /// Registers RabbitMQ as a transport-neutral BrokerNative publisher for
+    /// both Job Queue and Event Topic messages. This registration is
+    /// producer-only and does not start a Worker.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobBrokerNativeTransport(
         this IServiceCollection services,
@@ -40,13 +41,9 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
-    /// Adds the RabbitMQ-authoritative BrokerNative data plane. Pair this with
-    /// AddKubeJobBrokerNativeWorker, not AddKubeJobWorker: no control-plane
-    /// runtime client or Managed Claim/Lease loop is required for consumption.
-    /// One physical execution queue is declared per logical worker queue and
-    /// all replicas configured for that queue compete for its deliveries.
-    /// The publisher adapter is registered as well, allowing unified hosts to
-    /// enqueue through the transport-neutral IJobClient route.
+    /// Adds the RabbitMQ-authoritative BrokerNative Job data plane. Pair this
+    /// with AddKubeJobBrokerNativeWorker. One physical execution queue is
+    /// declared per logical Job Queue and all worker replicas compete for it.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobBrokerNativeConsumer(
         this IServiceCollection services,
@@ -54,6 +51,21 @@ public static class RabbitMqNotificationExtensions
     {
         services.AddRabbitMqKubeJobBrokerNativeTransport(configure);
         services.AddHostedService<RabbitMqBrokerNativeConsumerService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Adds the RabbitMQ Event subscription data plane. Each logical
+    /// (Topic, Subscription) owns one queue, and all replicas of that
+    /// subscription compete for deliveries. Distinct subscriptions receive
+    /// independent event copies. Retry and DLQ remain subscription-scoped.
+    /// </summary>
+    public static IServiceCollection AddRabbitMqKubeJobEventConsumer(
+        this IServiceCollection services,
+        Action<RabbitMqBrokerNativeOptions> configure)
+    {
+        services.AddRabbitMqKubeJobBrokerNativeTransport(configure);
+        services.AddHostedService<RabbitMqBrokerNativeEventConsumerService>();
         return services;
     }
 
@@ -73,9 +85,8 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
-    /// Registers RabbitMQ as the legacy internal execution-envelope adapter.
-    /// A Queue must be routed to BrokerDispatch separately. This API remains
-    /// only for V2 compatibility while BrokerNative replaces that data path.
+    /// Registers RabbitMQ as the legacy V2 internal execution-envelope adapter.
+    /// Kept only while PostgresManaged/BrokerDispatch compatibility is retired.
     /// </summary>
     public static IServiceCollection UseRabbitMqKubeJobExecutionDispatcher(
         this IServiceCollection services,
@@ -108,10 +119,6 @@ public static class RabbitMqNotificationExtensions
         return services;
     }
 
-    /// <summary>
-    /// Replaces the default no-op <c>ICancelPublisher</c> with the legacy
-    /// BrokerDispatch RabbitMQ cancel publisher.
-    /// </summary>
     public static IServiceCollection UseRabbitMqKubeJobCancelPublisher(
         this IServiceCollection services,
         Action<RabbitMqExecutionOptions> configure)
@@ -123,11 +130,6 @@ public static class RabbitMqNotificationExtensions
         return services;
     }
 
-    /// <summary>
-    /// Adds queue-specific wake notifications to a remote HTTP Managed worker.
-    /// The listener pulses the worker claim trigger and does not change claim,
-    /// lease, or completion semantics.
-    /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobWorkerNotifications(
         this IServiceCollection services,
         Action<RabbitMqNotificationOptions> configure)
