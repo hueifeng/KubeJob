@@ -52,8 +52,9 @@ public static class KubeJobPostgresExtensions
         {
             var runtimeOptions = sp.GetRequiredService<IOptions<JobRuntimeOptions>>().Value;
             storageOptions.ValidateCapacity(runtimeOptions.OutboxPublishConcurrency);
-            var emitWorkAvailableOutbox =
-                sp.GetRequiredService<IWorkAvailableNotifier>() is not NoopWorkAvailableNotifier;
+            var notifier = sp.GetService<IWorkAvailableNotifier>();
+            var emitWorkAvailableOutbox = notifier is not null
+                && notifier is not NoopWorkAvailableNotifier;
             return new PostgreSqlJobRuntimeStore(
                 sp.GetRequiredKeyedService<NpgsqlDataSource>(PostgreSqlDataSourceKind.Business),
                 sp.GetRequiredKeyedService<NpgsqlDataSource>(PostgreSqlDataSourceKind.Background),
