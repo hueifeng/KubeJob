@@ -2,9 +2,14 @@
 
 ## Status
 
-Accepted (2026-07-26) — decision **not** to build a Run-less, broker-authoritative
-execution mode now. Revisit when the criteria in [Revisit criteria](#revisit-criteria)
-hold. Relates to [ADR 011](011-hide-physical-delivery-from-job-submitters.md)
+Superseded (2026-08-08) by [ADR 015](015-single-authority-runtime-modes.md).
+
+This ADR records the earlier decision made on 2026-07-26 to defer a Run-less,
+broker-authoritative mode. V3 deliberately revisits that decision and adopts an
+explicit `BrokerNative` runtime alongside `PostgresManaged`; the historical
+reasoning below is retained for context only.
+
+Relates to [ADR 011](011-hide-physical-delivery-from-job-submitters.md)
 (BrokerDispatch delivery profile) and [ADR 012](012-bound-terminal-record-growth-with-per-job-retention.md)
 (terminal retention).
 
