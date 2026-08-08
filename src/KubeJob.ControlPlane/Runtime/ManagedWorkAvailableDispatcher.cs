@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
