@@ -7,6 +7,7 @@ using KubeJob.Worker.Runtime;
 using KubeJob.Worker.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Worker.Extensions;
@@ -30,6 +31,13 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<HttpWorkerRuntimeClient>();
         services.TryAddSingleton<IWorkerRuntimeClient>(sp =>
             sp.GetRequiredService<HttpWorkerRuntimeClient>());
+        services.TryAddSingleton<IWorkerExecutionEngine>(sp =>
+            new WorkerExecutionEngine(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<JobHandlerRegistry>(),
+                sp.GetRequiredService<ILogger<WorkerExecutionEngine>>(),
+                sp.GetService<KubeJobWorkerMetrics>(),
+                sp.GetService<JobExecutionPipelineBuilder>()));
         services.TryAddSingleton<WorkerRuntimeService>();
         services.AddHostedService(sp => sp.GetRequiredService<WorkerRuntimeService>());
 
