@@ -176,10 +176,10 @@ public sealed partial class InMemoryJobRuntimeStore
                     && run.Phase is JobPhase.Pending or JobPhase.Running);
             }
 
+            var scheduledFor = command.ScheduledFor.ToUniversalTime();
             JobRunRecord? run = null;
             if (createRun)
             {
-                var scheduledFor = command.ScheduledFor.ToUniversalTime();
                 var existingOccurrence = _runs.Values.SingleOrDefault(candidate =>
                     string.Equals(candidate.ScheduleId, schedule.Id, StringComparison.Ordinal)
                     && candidate.ScheduledFor == scheduledFor);
@@ -206,7 +206,9 @@ public sealed partial class InMemoryJobRuntimeStore
                         DeliveryProfile = schedule.DeliveryProfile,
                         ExecutionLane = schedule.ExecutionLane,
                         ConsumerGroup = schedule.ConsumerGroup,
-                        TransportId = schedule.TransportId,
+                        TransportId = schedule.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch
+                            ? schedule.TransportId
+                            : null,
                         OrderingMode = schedule.OrderingMode,
                         Priority = schedule.Priority,
                         Phase = JobPhase.Pending,
@@ -233,10 +235,12 @@ public sealed partial class InMemoryJobRuntimeStore
                     _idempotency[command.IdempotencyKey] = run.Id;
                     AddWorkAvailableOutbox(run, now);
                 }
-
-                schedule.LastFireAt = scheduledFor;
             }
 
+            // A schedule occurrence has been durably handled even when the
+            // execution authority is BrokerNative (no managed Run is created)
+            // or SkipIfRunning suppresses managed Run creation.
+            schedule.LastFireAt = scheduledFor;
             schedule.NextFireAt = command.NextFireAt.ToUniversalTime();
             schedule.ClaimToken = null;
             schedule.ClaimUntil = null;
