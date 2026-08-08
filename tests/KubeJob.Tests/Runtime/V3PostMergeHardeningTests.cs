@@ -147,6 +147,40 @@ public sealed class V3PostMergeHardeningTests
     }
 
     [Fact]
+    public async Task BrokerNative_batch_is_bounded_by_MaxSubmissionBatchSize()
+    {
+        var publisher = new RecordingBatchPublisher();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        services.Configure<JobRuntimeOptions>(options => options.MaxSubmissionBatchSize = 1);
+        services.ConfigureKubeJobQueueRuntimes(options =>
+        {
+            options.Queues["native"] = new QueueRuntimeRoute
+            {
+                Mode = QueueRuntimeMode.BrokerNative,
+                TransportId = RecordingBatchPublisher.Id
+            };
+        });
+        services.AddSingleton<IMessageTransportPublisher>(publisher);
+        using var provider = services.BuildServiceProvider();
+
+        var client = provider.GetRequiredService<IJobClient>();
+        var act = async () => await client.EnqueueBatchAsync(
+            Job,
+            new[]
+            {
+                (new TestPayload(1), (JobEnqueueOptions?)new JobEnqueueOptions { Queue = "native" }),
+                (new TestPayload(2), (JobEnqueueOptions?)new JobEnqueueOptions { Queue = "native" })
+            });
+
+        var exception = await act.Should().ThrowAsync<ControlPlaneValidationException>();
+        exception.Which.Code.Should().Be("job_submission_batch_too_large");
+        publisher.BatchCalls.Should().Be(0);
+        publisher.SingleCalls.Should().Be(0);
+    }
+
+    [Fact]
     public void RabbitMq_default_competing_consumer_transport_does_not_claim_ordered_execution()
     {
         using var publisher = new RabbitMqBrokerNativePublisher(
