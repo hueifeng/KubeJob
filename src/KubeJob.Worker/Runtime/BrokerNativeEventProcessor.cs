@@ -27,7 +27,7 @@ public sealed class BrokerNativeEventProcessor
     {
         _executionEngine = executionEngine;
         _worker = worker.Value;
-        _worker.Validate();
+        _worker.Validate(requireJobQueues: false);
     }
 
     public async ValueTask<BrokerNativeEventProcessingResult> ProcessAsync(
