@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KubeJob.Core.Execution;
 using KubeJob.Core.Runtime;
+using KubeJob.Worker.Extensions;
 using KubeJob.Worker.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -9,6 +10,22 @@ namespace KubeJob.Tests.Runtime;
 
 public sealed class WorkerExecutionEngineTests
 {
+    [Fact]
+    public void AddKubeJobWorker_registers_transport_neutral_execution_engine()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobWorker(options =>
+        {
+            options.WorkerId = "worker-di";
+            options.Queues = new List<string> { "default" };
+        });
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<IWorkerExecutionEngine>()
+            .Should().BeOfType<WorkerExecutionEngine>();
+    }
+
     [Fact]
     public async Task ExecuteAsync_invokes_registered_handler_and_returns_success()
     {
