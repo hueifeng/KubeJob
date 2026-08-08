@@ -3,45 +3,36 @@ using KubeJob.Core.Queues;
 namespace KubeJob.Worker.Options;
 
 /// <summary>
-/// Configuration options for a KubeJob worker process.
+/// Configuration options shared by Managed workers and BrokerNative workers.
+/// Job Queue membership is required by Managed/Job consumers but event-only
+/// BrokerNative workers may legitimately have no Job queues.
 /// </summary>
 public sealed class KubeJobWorkerOptions
 {
     private const int MaximumMetadataItems = 256;
 
-    /// <summary>
-    /// HTTP endpoint of the KubeJob control plane. Unified hosts replace the
-    /// transport and do not make localhost HTTP calls.
-    /// </summary>
     public string ServerEndpoint { get; set; } = "http://localhost:5000";
 
-    /// <summary>
-    /// Maximum number of handlers executing concurrently in this process.
-    /// The default (64) is chosen so a single worker can keep the storage
-    /// backend's commit throughput saturated without the operator having to
-    /// tune it. Raise this when the storage backend can sustain more parallel
-    /// transactions (e.g. an SSD-backed Postgres with a fast WAL).
-    /// </summary>
     public int MaxConcurrentJobs { get; set; } = 64;
 
-    /// <summary>
-    /// Stable worker identity. Each process start receives a unique session
-    /// identity and a monotonically increasing session epoch.
-    /// </summary>
     public string WorkerId { get; set; } = Environment.MachineName;
 
     /// <summary>
-    /// Consumer group owned by this worker process. A worker belongs to exactly
-    /// one group.
+    /// Managed worker-group identity. Event subscriptions have their own
+    /// explicit subscription names.
     /// </summary>
     public string ConsumerGroup { get; set; } = "default";
+
+    /// <summary>
+    /// Managed execution lane used for worker eligibility and ordering.
+    /// </summary>
     public string ExecutionLane { get; set; } = "default";
 
     public Dictionary<string, string> Labels { get; set; } = new();
 
     /// <summary>
-    /// Queues this worker is allowed to claim from. A worker must declare its
-    /// business queues explicitly; there is no implicit catch-all queue.
+    /// Logical Job Queues consumed by this process. Event-only BrokerNative
+    /// workers may leave this empty.
     /// </summary>
     public List<string> Queues { get; set; } = new();
 
@@ -50,30 +41,24 @@ public sealed class KubeJobWorkerOptions
     public TimeSpan EmptyPollDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan LeaseRenewalInterval { get; set; } = TimeSpan.FromSeconds(10);
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(5);
-
-    /// <summary>
-    /// Grace period for in-flight attempts during shutdown and the fence
-    /// deadline. On shutdown the worker waits up to this long for attempts to
-    /// complete; a handler that ignores cancellation beyond the deadline does
-    /// not block process exit (the lease reaper reclaims its attempt). When
-    /// the session is fenced, the worker fails its hosted service after at
-    /// most this period even if a handler is still running.
-    /// </summary>
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
-
-    /// <summary>
-    /// Maximum failure detail persisted for one Attempt. Logs retain the original
-    /// exception; durable state is bounded to protect storage and Dashboard responses.
-    /// </summary>
     public int MaximumFailureMessageLength { get; set; } = 32 * 1024;
-
-    /// <summary>
-    /// Ordered list of execution middleware types. Middleware is invoked in
-    /// registration order, wrapping the handler invocation.
-    /// </summary>
     public IList<Type> ExecutionMiddleware { get; init; } = [];
 
-    public void Validate()
+    /// <summary>
+    /// Validates a Managed or BrokerNative Job worker and therefore requires at
+    /// least one logical Job Queue. The public API remains parameterless so
+    /// existing method-group callers keep compiling.
+    /// </summary>
+    public void Validate() => ValidateCore(requireJobQueues: true);
+
+    /// <summary>
+    /// Validates an Event-only BrokerNative worker without requiring a fake Job
+    /// Queue. Event subscriptions themselves define its delivery streams.
+    /// </summary>
+    public void ValidateEventWorker() => ValidateCore(requireJobQueues: false);
+
+    private void ValidateCore(bool requireJobQueues)
     {
         if (!Uri.TryCreate(ServerEndpoint, UriKind.Absolute, out var endpoint)
             || endpoint.Scheme is not ("http" or "https"))
@@ -128,19 +113,14 @@ public sealed class KubeJobWorkerOptions
             .Select(queue => LogicalQueueName.Normalize(queue ?? string.Empty))
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        if (Queues.Count == 0)
+        if (requireJobQueues && Queues.Count == 0)
         {
-            throw new InvalidOperationException("At least one non-empty queue is required.");
+            throw new InvalidOperationException("At least one non-empty Job queue is required.");
         }
 
         if (Queues.Count > MaximumMetadataItems)
         {
             throw new InvalidOperationException($"A worker cannot register more than {MaximumMetadataItems} queues.");
-        }
-
-        if (Queues.Any(queue => queue.Length > 100))
-        {
-            throw new InvalidOperationException("Queue names cannot exceed 100 characters.");
         }
 
         if (Labels is null)

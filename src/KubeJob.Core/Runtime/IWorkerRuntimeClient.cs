@@ -1,8 +1,8 @@
 namespace KubeJob.Core.Runtime;
 
 /// <summary>
-/// Worker-facing control-plane protocol. Hosting packages provide remote HTTP
-/// and in-process implementations without exposing the transport to handlers.
+/// PostgresManaged worker-facing control-plane protocol. BrokerNative workers
+/// consume directly from their transport and do not use this client.
 /// </summary>
 public interface IWorkerRuntimeClient
 {
@@ -20,20 +20,6 @@ public interface IWorkerRuntimeClient
 
     ValueTask<ClaimJobsResponse> ClaimAsync(
         ClaimJobsRequest request,
-        CancellationToken cancellationToken);
-
-    ValueTask<AdmitExecutionResponse> AdmitAsync(
-        AdmitExecutionRequest request,
-        CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Admits several envelopes in one claim transaction so the broker consumer
-    /// can amortize admission round trips across a batch instead of paying one
-    /// per envelope. Per-Run fencing and ordering gates are unchanged; results
-    /// are returned in input order.
-    /// </summary>
-    ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-        AdmitExecutionBatchRequest request,
         CancellationToken cancellationToken);
 
     ValueTask<RenewLeasesResponse> RenewLeasesAsync(

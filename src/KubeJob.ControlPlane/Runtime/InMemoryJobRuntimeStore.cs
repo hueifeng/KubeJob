@@ -65,7 +65,7 @@ public sealed partial class InMemoryJobRuntimeStore :
 
     /// <summary>
     /// For StrictFifo lanes: the entire queue (or lane) is a single logical
-    /// worker. A new run is NOT admitted while any prior run on the same
+    /// worker. A new run is NOT claimable while any prior run on the same
     /// queue/lane is inflight (not terminal). This is a coarser gate than
     /// KeyOrdered: no per-key filtering, just "any inflight on this queue/lane".
     /// </summary>

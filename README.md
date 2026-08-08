@@ -3,10 +3,12 @@
 [中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [本地开发环境](./docs/v2/local-development.zh-CN.md) · [Local Development](./docs/v2/local-development.md) · [Architecture](./docs/v2/architecture.md) · [Hardening Review](./docs/v2/hardening-review.md)
 
 KubeJob is a typed, embeddable, distributed background-job runtime for .NET.
-It uses logical Runs, physical Attempts, Pull or BrokerDispatch workers,
-expiring leases, worker-session fencing, PostgreSQL transactions, an Outbox,
-and independent cron Schedule resources. `BrokerDispatch` is the default
-delivery profile; a deployment can pin an individual logical Queue to `Pull`.
+It uses logical Runs, physical Attempts, PostgreSQL-managed workers with
+expiring leases and session fencing, transactional wake-up hints, and
+independent cron Schedule resources. A deployment may additionally select the
+BrokerNative RabbitMQ transport for queues or event subscriptions; that path
+owns delivery, retry, acknowledgement, and dead-letter handling without using
+the managed Run/lease path.
 
 KubeJob provides **at-least-once execution**. It does not claim exactly-once
 external side effects.
@@ -245,11 +247,12 @@ Kj2_JobSchedules
 Kj2_Outbox
 ```
 
-PostgreSQL is the source of truth. For `BrokerDispatch` queues, the
-transactional Outbox publishes a full `ExecutionEnvelope` for targeted worker
-admission. For `Pull` queues, workers discover claimable Runs from PostgreSQL;
-optional MQ notification adapters publish only wake-up hints. Duplicate or
-missing messages cannot grant execution ownership in either profile.
+PostgreSQL is the source of truth for PostgresManaged queues. The transactional
+Outbox publishes only a best-effort `work-available` wake-up hint; workers still
+claim Runs, acquire leases, and complete Attempts in PostgreSQL. BrokerNative
+queues bypass the managed Outbox and publish self-contained transport messages
+through their configured adapter. Duplicate or missing wake-up messages cannot
+grant execution ownership.
 
 Authorization policies are optional for backward compatibility. Production
 deployments should configure separate client, worker, and Dashboard policies;

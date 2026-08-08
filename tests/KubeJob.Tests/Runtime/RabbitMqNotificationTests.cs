@@ -1,8 +1,8 @@
 using FluentAssertions;
+using KubeJob.Core.Transport;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Extensions;
-using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Extensions;
@@ -29,57 +29,18 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Control_plane_can_register_a_separate_execution_dispatcher()
+    public void Broker_native_registration_adds_transport_publisher_without_managed_runtime_client()
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddKubeJobServer();
-        services.UseRabbitMqKubeJobExecutionDispatcher(options =>
+        services.AddRabbitMqKubeJobBrokerNativeTransport(options =>
             options.ConnectionString = "amqp://guest:guest@localhost:5672/");
 
         using var provider = services.BuildServiceProvider();
 
-        provider.GetServices<IExecutionTransport>()
-            .Should().ContainSingle(transport => transport is RabbitMqExecutionDispatcher);
-    }
-
-    [Fact]
-    public void Worker_can_register_execution_consumer_without_changing_runtime_client()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddKubeJobWorker(options =>
-        {
-            options.ServerEndpoint = "https://jobs.internal/";
-            options.WorkerId = "worker-1";
-            options.MaxConcurrentJobs = 1;
-            options.Queues = new List<string> { "test.queue" };
-        });
-        services.AddRabbitMqKubeJobExecutionConsumer(options =>
-            options.ConnectionString = "amqp://guest:guest@localhost:5672/");
-
-        using var provider = services.BuildServiceProvider();
-
-        provider.GetRequiredService<IWorkerRuntimeClient>()
-            .Should().BeOfType<HttpWorkerRuntimeClient>();
-        provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
-            .Should().Contain(service => service is RabbitMqExecutionConsumerService);
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("http://rabbitmq")]
-    [InlineData("rabbitmq")]
-    public void Invalid_execution_connection_string_is_rejected(string value)
-    {
-        var options = new RabbitMqExecutionOptions
-        {
-            ConnectionString = value
-        };
-
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>();
+        provider.GetServices<IMessageTransportPublisher>()
+            .Should().ContainSingle(publisher => publisher is RabbitMqBrokerNativePublisher);
+        provider.GetService<IWorkerRuntimeClient>().Should().BeNull();
     }
 
     [Fact]
@@ -98,7 +59,7 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Remote_worker_registration_keeps_http_claims_and_adds_shared_trigger()
+    public void Remote_worker_notification_registration_keeps_http_claims_and_adds_shared_trigger()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -124,16 +85,20 @@ public sealed class RabbitMqNotificationTests
     [InlineData("")]
     [InlineData("http://rabbitmq")]
     [InlineData("rabbitmq")]
-    public void Invalid_connection_string_is_rejected(string value)
+    public void Invalid_notification_connection_string_is_rejected(string value)
     {
-        var options = new RabbitMqNotificationOptions
-        {
-            ConnectionString = value
-        };
+        var options = new RabbitMqNotificationOptions { ConnectionString = value };
+        options.Invoking(x => x.Validate()).Should().Throw<InvalidOperationException>();
+    }
 
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>();
+    [Theory]
+    [InlineData("")]
+    [InlineData("http://rabbitmq")]
+    [InlineData("rabbitmq")]
+    public void Invalid_broker_native_connection_string_is_rejected(string value)
+    {
+        var options = new RabbitMqBrokerNativeOptions { ConnectionString = value };
+        options.Invoking(x => x.Validate()).Should().Throw<InvalidOperationException>();
     }
 
     [Fact]
@@ -154,7 +119,7 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Invalid_consumer_topology_options_are_rejected()
+    public void Notification_consumer_topology_options_are_validated()
     {
         var options = new RabbitMqNotificationOptions
         {
@@ -162,71 +127,48 @@ public sealed class RabbitMqNotificationTests
             PublisherConfirmTimeout = TimeSpan.Zero
         };
 
-        var action = options.Validate;
-
-        action.Should().Throw<ArgumentException>();
+        options.Invoking(x => x.Validate()).Should().Throw<ArgumentException>();
     }
 
     [Fact]
-    public void Nonpositive_publisher_confirm_timeout_is_rejected()
-    {
-        var options = new RabbitMqNotificationOptions
-        {
-            PublisherConfirmTimeout = TimeSpan.Zero
-        };
-
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*PublisherConfirmTimeout*");
-    }
-
-    [Fact]
-    public void Consumer_queue_prefix_is_bounded_by_utf8_size()
+    public void Notification_queue_prefix_is_bounded_by_utf8_size()
     {
         var options = new RabbitMqNotificationOptions
         {
             ConsumerQueuePrefix = new string('队', 61)
         };
 
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>()
+        options.Invoking(x => x.Validate())
+            .Should().Throw<InvalidOperationException>()
             .WithMessage("*180 UTF-8 bytes*");
     }
 
     [Fact]
-    public void Business_execution_topology_uses_one_queue_per_logical_queue_and_shared_retry()
+    public void Broker_native_uses_one_physical_queue_per_logical_job_queue()
     {
-        var options = new RabbitMqExecutionOptions
-        {
-            ConsumerGroup = "unified"
-        };
+        var options = new RabbitMqBrokerNativeOptions();
 
-        options.GetConsumerQueueName("mail.send")
-            .Should().Be("kubejob.execution.unified.mail.send.queue");
-        options.GetConsumerQueueName("report.generate")
-            .Should().Be("kubejob.execution.unified.report.generate.queue");
-        options.GetConsumerQueueName("mail.send")
-            .Should().NotBe(options.GetConsumerQueueName("report.generate"));
-        options.GetSharedRetryQueueName()
-            .Should().Be(options.GetSharedRetryQueueName())
-            .And.EndWith(".retry.queue");
-        options.GetGroupDlqName().Should().EndWith(".dlq.queue");
+        options.GetQueueName("mail.send").Should().Be("kubejob.mail.send");
+        options.GetQueueName("report.generate").Should().Be("kubejob.report.generate");
+        options.GetQueueName("mail.send").Should().NotBe(options.GetQueueName("report.generate"));
     }
 
     [Fact]
-    public void Cancel_queue_is_opt_in_for_execution_consumers()
+    public void Event_subscriptions_get_independent_queues_under_one_topic_exchange()
     {
-        var options = new RabbitMqExecutionOptions();
+        var options = new RabbitMqBrokerNativeOptions();
 
-        options.EnableCancelQueue.Should().BeFalse();
+        options.GetEventExchangeName("order.events").Should().Be("kubejob.order.events");
+        options.GetEventSubscriptionQueueName("order.events", "order-business")
+            .Should().Be("kubejob.order.events.order-business");
+        options.GetEventSubscriptionQueueName("order.events", "order-log")
+            .Should().Be("kubejob.order.events.order-log");
     }
 
     [Fact]
-    public void Execution_dispatch_concurrency_is_bounded()
+    public void Broker_native_dispatch_concurrency_is_bounded()
     {
-        var options = new RabbitMqExecutionOptions
+        var options = new RabbitMqBrokerNativeOptions
         {
             ConsumerDispatchConcurrency = 257
         };
@@ -237,63 +179,16 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Physical_queue_names_preserve_the_business_logical_queue_name()
+    public void Broker_native_validates_actual_generated_topology_names()
     {
-        var execution = new RabbitMqExecutionOptions
+        var options = new RabbitMqBrokerNativeOptions
         {
-            ConsumerGroup = "default"
-        };
-        var notification = new RabbitMqNotificationOptions
-        {
-            ConsumerGroup = "default"
+            QueuePrefix = new string('q', 244)
         };
 
-        execution.GetConsumerQueueName("orders.push")
-            .Should().Be("kubejob.execution.default.orders.push.queue");
-        notification.GetConsumerQueueName("orders.push")
-            .Should().Be("kubejob.work-available.default.orders.push.queue");
-    }
-
-    [Fact]
-    public void Execution_options_reject_composed_topology_names_over_255_bytes()
-    {
-        var options = new RabbitMqExecutionOptions
-        {
-            ConsumerGroup = new string('g', 200)
-        };
-
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*topology names*");
-    }
-
-    [Fact]
-    public void Broker_retry_budget_options_are_validated()
-    {
-        var options = new RabbitMqExecutionOptions
-        {
-            MaxBrokerRetryAttempts = 0
-        };
-
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*MaxBrokerRetryAttempts*");
-    }
-
-    [Fact]
-    public void Broker_reconciliation_delay_must_be_positive()
-    {
-        var options = new RabbitMqExecutionOptions
-        {
-            BrokerRetryReconciliationDelay = TimeSpan.Zero
-        };
-
-        var action = options.Validate;
-
-        action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*BrokerRetryReconciliationDelay*");
+        options.Invoking(x => x.GetQueueName("orders.push"))
+            .Should().Throw<InvalidOperationException>()
+            .WithMessage("*255 UTF-8 bytes*");
     }
 
     [Fact]
@@ -305,8 +200,6 @@ public sealed class RabbitMqNotificationTests
             Source = "orders"
         };
 
-        var action = options.Validate;
-
-        action.Should().Throw<ArgumentException>();
+        options.Invoking(x => x.Validate()).Should().Throw<ArgumentException>();
     }
 }

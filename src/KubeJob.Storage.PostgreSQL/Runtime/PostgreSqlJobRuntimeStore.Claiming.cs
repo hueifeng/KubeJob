@@ -153,7 +153,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             -- Soft ordering guarantee: OrderingSequence is assigned by nextval
             -- at INSERT time while READ COMMITTED visibility applies at COMMIT
             -- time. A run whose transaction commits late can therefore be
-            -- admitted after a later-sequenced run was already claimed (two
+            -- claimed after a later-sequenced run was already claimed (two
             -- concurrent runs on one StrictFifo lane, or inverted KeyOrdered
             -- order) when the earlier submission's transaction spans the later
             -- submission's claim. The window is the commit gap between the two

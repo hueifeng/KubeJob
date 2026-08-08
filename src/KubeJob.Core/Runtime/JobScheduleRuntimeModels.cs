@@ -10,11 +10,15 @@ public sealed class JobScheduleRecord
     public required string CronExpression { get; init; }
     public string TimeZoneId { get; init; } = "UTC";
     public required string Queue { get; init; }
+
+    // Managed metadata retained for storage/schema compatibility. BrokerNative
+    // schedule dispatch resolves QueueRuntimeMode at fire time.
     public string ExecutionLane { get; init; } = "default";
-    public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.BrokerDispatch;
+    public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.Pull;
     public string ConsumerGroup { get; init; } = "default";
     public string? TransportId { get; init; }
     public ExecutionOrderingMode OrderingMode { get; init; } = ExecutionOrderingMode.Parallel;
+
     public int Priority { get; init; }
     public MisfirePolicy MisfirePolicy { get; init; }
     public ScheduleConcurrencyPolicy ConcurrencyPolicy { get; init; }

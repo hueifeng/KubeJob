@@ -1,4 +1,3 @@
-using System.Text.Json;
 using KubeJob.ControlPlane.Telemetry;
 using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Hosting;
@@ -8,10 +7,9 @@ using Microsoft.Extensions.Options;
 namespace KubeJob.ControlPlane.Runtime;
 
 /// <summary>
-/// Default notifier for database-polling deployments. MQ packages replace
-/// this service via <see cref="KubeJob.Server.Runtime.IWorkAvailableNotifier"/>.
-/// The no-op name reflects the fact that polling workers discover claimable
-/// Runs through the control plane, not via a wake signal.
+/// Default wake notifier for PostgresManaged deployments. PostgreSQL remains
+/// the execution authority; adapters may replace this with a best-effort wake
+/// signal without carrying execution ownership.
 /// </summary>
 public sealed class NoopWorkAvailableNotifier : IWorkAvailableNotifier
 {
@@ -25,38 +23,14 @@ public sealed class NoopWorkAvailableNotifier : IWorkAvailableNotifier
 }
 
 /// <summary>
-/// Publishes a per-group cancel signal for Direct Dispatch Mode. MQ transport
-/// packages replace the default no-op with a fanout publisher; the outbox
-/// publisher calls into this interface instead of an MQ client so the
-/// transport seam is consistent with <see cref="IWorkAvailableNotifier"/> and
-/// <see cref="IExecutionTransport"/>.
+/// Publishes PostgresManaged work-available wake signals from the transactional
+/// outbox. BrokerNative jobs bypass this service entirely and publish directly
+/// through IMessageTransportPublisher.
 /// </summary>
-public interface ICancelPublisher
-{
-    ValueTask PublishAsync(string group, string runId, CancellationToken cancellationToken);
-}
-
-/// <summary>
-/// Default no-op cancel publisher for Pull deployments. The control plane
-/// still records <c>cancel</c> outbox rows so log analysis can prove cancel
-/// events flowed; the broker never sees them, and lease reaper drives
-/// cancellation as before.
-/// </summary>
-public sealed class NoopCancelPublisher : ICancelPublisher
-{
-    public ValueTask PublishAsync(string group, string runId, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.CompletedTask;
-    }
-}
-
 public sealed class OutboxPublisherService : BackgroundService
 {
     private readonly IOutboxStore _store;
     private readonly IWorkAvailableNotifier _notifier;
-    private readonly IExecutionTransportRegistry _transports;
-    private readonly ICancelPublisher _cancelPublisher;
     private readonly OutboxPublisherSignal _wake;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<OutboxPublisherService> _logger;
@@ -65,8 +39,6 @@ public sealed class OutboxPublisherService : BackgroundService
     public OutboxPublisherService(
         IOutboxStore store,
         IWorkAvailableNotifier notifier,
-        IExecutionTransportRegistry transports,
-        ICancelPublisher cancelPublisher,
         OutboxPublisherSignal wake,
         IOptions<JobRuntimeOptions> options,
         ILogger<OutboxPublisherService> logger,
@@ -74,8 +46,6 @@ public sealed class OutboxPublisherService : BackgroundService
     {
         _store = store;
         _notifier = notifier;
-        _transports = transports;
-        _cancelPublisher = cancelPublisher;
         _wake = wake;
         _options = options.Value;
         _logger = logger;
@@ -92,7 +62,6 @@ public sealed class OutboxPublisherService : BackgroundService
             try
             {
                 var result = await DispatchParallelAsync(stoppingToken);
-
                 dispatchedAny = result.DispatchedIds.Count > 0;
 
                 if (result.FailedIds.Count > 0)
@@ -105,7 +74,7 @@ public sealed class OutboxPublisherService : BackgroundService
                 if (result.Abandoned.Count > 0)
                 {
                     _logger.LogError(
-                        "Abandoned {Count} KubeJob outbox message(s) because their event type or routing is permanently invalid",
+                        "Abandoned {Count} KubeJob outbox message(s) because their event type is permanently invalid",
                         result.Abandoned.Count);
                 }
             }
@@ -133,12 +102,6 @@ public sealed class OutboxPublisherService : BackgroundService
         }
     }
 
-    /// <summary>
-    /// Idles until either an in-process writer signals a new outbox row
-    /// (<see cref="OutboxPublisherSignal"/>) or the safety-net poll interval
-    /// elapses — whichever comes first. Drains the signal channel so the
-    /// next iteration's empty-scan result still respects the poll cadence.
-    /// </summary>
     private async Task WaitForWakeOrTimeoutAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         var delay = Task.Delay(timeout, cancellationToken);
@@ -147,8 +110,6 @@ public sealed class OutboxPublisherService : BackgroundService
 
         if (first == wake && wake.IsCompletedSuccessfully && wake.Result)
         {
-            // Drain the coalesced signal so a single wake produces one scan,
-            // even if Signal() was called many times during the wait.
             while (_wake.Reader.TryRead(out _))
             {
             }
@@ -177,10 +138,10 @@ public sealed class OutboxPublisherService : BackgroundService
             results = Array.Empty<OutboxDispatchBatch>();
         }
 
-        var dispatchedIds = results.SelectMany(r => r.DispatchedIds).ToArray();
-        var failedIds = results.SelectMany(r => r.FailedIds).ToArray();
-        var abandonedIds = results.SelectMany(r => r.Abandoned).ToArray();
-        return new OutboxDispatchBatch(dispatchedIds, failedIds, abandonedIds);
+        return new OutboxDispatchBatch(
+            results.SelectMany(r => r.DispatchedIds).ToArray(),
+            results.SelectMany(r => r.FailedIds).ToArray(),
+            results.SelectMany(r => r.Abandoned).ToArray());
     }
 
     private async Task<OutboxDispatchBatch> DispatchWorkerLoopAsync(
@@ -208,23 +169,10 @@ public sealed class OutboxPublisherService : BackgroundService
                 break;
             }
 
-            if (batch.DispatchedIds.Count > 0)
-            {
-                totalDispatched.AddRange(batch.DispatchedIds);
-            }
+            totalDispatched.AddRange(batch.DispatchedIds);
+            totalFailed.AddRange(batch.FailedIds);
+            totalAbandoned.AddRange(batch.Abandoned);
 
-            if (batch.FailedIds.Count > 0)
-            {
-                totalFailed.AddRange(batch.FailedIds);
-            }
-
-            if (batch.Abandoned.Count > 0)
-            {
-                totalAbandoned.AddRange(batch.Abandoned);
-            }
-
-            // The store drained the queue for this iteration; yield so other
-            // workers can take a turn before the outer poll cadence kicks in.
             if (batch.DispatchedIds.Count == 0
                 && batch.FailedIds.Count == 0
                 && batch.Abandoned.Count == 0)
@@ -240,90 +188,26 @@ public sealed class OutboxPublisherService : BackgroundService
         OutboxMessageRecord message,
         CancellationToken cancellationToken)
     {
-        switch (message.EventType)
+        if (!string.Equals(message.EventType, OutboxEventTypes.WorkAvailable, StringComparison.Ordinal))
         {
-            case OutboxEventTypes.WorkAvailable:
-                await DispatchWorkAvailableAsync(message, cancellationToken);
-                break;
-            case OutboxEventTypes.Cancel:
-                await DispatchCancelAsync(message, cancellationToken);
-                break;
-            default:
-                _logger.LogWarning(
-                    "KubeJob outbox row {MessageId} has unknown EventType {EventType}; marking Abandoned",
-                    message.Id,
-                    message.EventType);
-                throw new PermanentOutboxException(
-                    $"Unsupported outbox event type '{message.EventType}'.");
+            _logger.LogWarning(
+                "KubeJob outbox row {MessageId} has unsupported EventType {EventType}; marking Abandoned",
+                message.Id,
+                message.EventType);
+            throw new PermanentOutboxException(
+                $"Unsupported managed outbox event type '{message.EventType}'.");
         }
-    }
 
-    private async ValueTask DispatchWorkAvailableAsync(
-        OutboxMessageRecord message,
-        CancellationToken cancellationToken)
-    {
+        // PostgresManaged is the sole authority for durable Runs. The outbox
+        // only emits an optional wake signal; workers still claim from PG.
         var signal = WorkAvailableSignal.FromOutbox(message);
-        switch (message.DeliveryProfile)
-        {
-            case ExecutionDeliveryProfile.Pull:
-                await _notifier.PublishAsync(signal, cancellationToken);
-                break;
-            case ExecutionDeliveryProfile.BrokerDispatch:
-                var transport = _transports.Resolve(message.TransportId
-                    ?? throw new InvalidOperationException(
-                        $"KubeJob outbox row {message.Id} is missing a transport ID."));
-                await transport.PublishAsync(
-                    ExecutionEnvelope.FromWorkAvailableSignal(signal),
-                    cancellationToken);
-                break;
-            default:
-                throw new InvalidOperationException(
-                    $"Unsupported execution delivery profile '{message.DeliveryProfile}'.");
-        }
+        await _notifier.PublishAsync(signal, cancellationToken);
 
         if (_metrics?.IsOutboxPublishLagEnabled == true)
         {
             _metrics.OutboxPublished(DateTimeOffset.UtcNow - message.AvailableAt);
         }
     }
-
-    private async ValueTask DispatchCancelAsync(
-        OutboxMessageRecord message,
-        CancellationToken cancellationToken)
-    {
-        // For cancel rows, message.Queue carries the worker group identifier
-        // (the cancel exchange is per-group, not per logical queue).
-        var group = message.Queue;
-        if (string.IsNullOrWhiteSpace(group))
-        {
-            throw new InvalidOperationException(
-                $"KubeJob cancel outbox row {message.Id} is missing the group identifier in the Queue column.");
-        }
-
-        RunIdPayload? payload;
-        try
-        {
-            payload = JsonSerializer.Deserialize<RunIdPayload>(
-                message.PayloadJson,
-                new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidOperationException(
-                $"KubeJob cancel outbox row {message.Id} has an unparseable payload: {ex.Message}",
-                ex);
-        }
-
-        if (payload is null || string.IsNullOrWhiteSpace(payload.RunId))
-        {
-            throw new InvalidOperationException(
-                $"KubeJob cancel outbox row {message.Id} is missing a runId.");
-        }
-
-        await _cancelPublisher.PublishAsync(group, payload.RunId, cancellationToken);
-    }
-
-    private sealed record RunIdPayload(string RunId);
 }
 
 public sealed class RuntimeRetentionService : BackgroundService

@@ -40,9 +40,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         target.Validate();
         var runId = NewId();
 
-        // INSERT ... RETURNING * removes the separate clock_timestamp() round
-        // trip (CreatedAt is computed server-side) and returns the exact
-        // persisted row, including the database clock's CreatedAt.
         var retryPolicyJson = command.RetryPolicy is not null
             ? JsonSerializer.Serialize(command.RetryPolicy, SerializerOptions)
             : null;
@@ -60,7 +57,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                  ContinuationJson, CompensationJson,
                  IdempotencyKey, ConcurrencyKey, OrderingMode, CancelRequested, Version)
             VALUES
-                (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @Priority,
+                (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, NULL, @Priority,
                  @Phase, @AvailableAt, clock_timestamp(), 0, @MaxAttempts,
                  @TimeoutSeconds, CAST(@RetryPolicyJson AS jsonb),
                  CAST(@ContinuationJson AS jsonb), CAST(@CompensationJson AS jsonb),
@@ -74,9 +71,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 command.PayloadJson,
                 command.Queue,
                 target.ExecutionLane,
-                DeliveryProfile = (int)target.Profile,
+                DeliveryProfile = (int)ExecutionDeliveryProfile.Pull,
                 target.ConsumerGroup,
-                target.TransportId,
                 command.Priority,
                 Phase = (int)JobPhase.Pending,
                 AvailableAt = command.AvailableAt.ToUniversalTime(),
@@ -107,21 +103,19 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return new SubmitJobResult(existing, Existing: true);
         }
 
-        // Pull workers discover claimable runs through the control plane;
-        // only BrokerDispatch requires a durable work-available publication.
-        if (target.Profile == ExecutionDeliveryProfile.BrokerDispatch)
-        {
-            await AddOutboxAsync(
-                connection,
-                transaction,
-                inserted.Queue,
-                OutboxEventTypes.WorkAvailable,
-                JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
-                inserted.AvailableAt,
-                cancellationToken,
-                target,
-                partitionKey: inserted.ConcurrencyKey);
-        }
+        // PostgresManaged remains PostgreSQL-authoritative. This transactional
+        // outbox row is only a best-effort wake signal; workers still claim the
+        // durable Run from PostgreSQL and polling remains the correctness path.
+        await AddOutboxAsync(
+            connection,
+            transaction,
+            inserted.Queue,
+            OutboxEventTypes.WorkAvailable,
+            JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
+            inserted.AvailableAt,
+            cancellationToken,
+            target,
+            partitionKey: inserted.ConcurrencyKey);
 
         await transaction.CommitAsync(cancellationToken);
         return new SubmitJobResult(inserted, Existing: false);
@@ -172,9 +166,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             payloads[index] = command.PayloadJson;
             queues[index] = command.Queue;
             executionLanes[index] = target.ExecutionLane;
-            deliveryProfiles[index] = (int)target.Profile;
+            deliveryProfiles[index] = (int)ExecutionDeliveryProfile.Pull;
             consumerGroups[index] = target.ConsumerGroup;
-            transportIds[index] = target.TransportId;
+            transportIds[index] = null;
             priorities[index] = command.Priority;
             availableAts[index] = command.AvailableAt.ToUniversalTime();
             maxAttempts[index] = command.MaxAttempts;
@@ -190,11 +184,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             targets[index] = target;
         }
 
-        // One multi-row INSERT with ON CONFLICT DO NOTHING. Rows without an
-        // idempotency key never conflict (NULLs are distinct in the unique
-        // constraint), so RETURNING yields exactly the newly inserted rows.
-        // clock_timestamp() is inlined for CreatedAt, removing the per-row
-        // now() round trip that SubmitAsync pays.
         var inserted = (await connection.QueryAsync<JobRunRecord>(new CommandDefinition(@"
             INSERT INTO Kj2_JobRuns
                 (Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, Priority, Phase, AvailableAt,
@@ -257,8 +246,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken))).ToDictionary(x => x.Id, StringComparer.Ordinal);
 
-        // Keyed commands that did not insert resolved to a pre-existing run; fetch
-        // them in one round trip to run compatibility checks and return them.
         var missingKeys = new List<string>(count);
         for (var index = 0; index < count; index++)
         {
@@ -286,21 +273,18 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var results = new SubmitJobResult[count];
-        var brokerOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
+        var workAvailableOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
         for (var index = 0; index < count; index++)
         {
             if (inserted.TryGetValue(ids[index], out var run))
             {
                 results[index] = new SubmitJobResult(run, Existing: false);
-                if (targets[index].Profile == ExecutionDeliveryProfile.BrokerDispatch)
-                {
-                    brokerOutboxItems.Add((
-                        run.Queue,
-                        JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
-                        run.AvailableAt,
-                        targets[index],
-                        run.ConcurrencyKey));
-                }
+                workAvailableOutboxItems.Add((
+                    run.Queue,
+                    JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
+                    run.AvailableAt,
+                    targets[index],
+                    run.ConcurrencyKey));
             }
             else
             {
@@ -318,12 +302,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        if (brokerOutboxItems.Count > 0)
+        if (workAvailableOutboxItems.Count > 0)
         {
             await AddOutboxBatchAsync(
                 connection,
                 transaction,
-                brokerOutboxItems,
+                workAvailableOutboxItems,
                 OutboxEventTypes.WorkAvailable,
                 cancellationToken);
         }
@@ -342,7 +326,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         var state = await connection.QuerySingleOrDefaultAsync<WorkRequeueState>(new CommandDefinition(@"
-            SELECT Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, OrderingMode, Phase, CancelRequested, AvailableAt, ConcurrencyKey
+            SELECT Queue, ExecutionLane, ConsumerGroup, OrderingMode, Phase, CancelRequested, AvailableAt, ConcurrencyKey
             FROM Kj2_JobRuns
             WHERE Id = @RunId
             FOR UPDATE;",
@@ -386,9 +370,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             retryAt,
             cancellationToken,
             new DeliveryTarget(
-                state.DeliveryProfile,
+                ExecutionDeliveryProfile.Pull,
                 state.ExecutionLane,
-                state.TransportId,
+                null,
                 state.ConsumerGroup,
                 state.OrderingMode),
             partitionKey: state.ConcurrencyKey);
@@ -399,7 +383,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
     public async ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,
-        string? consumerGroup,
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
@@ -409,8 +392,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var state = await connection.QuerySingleOrDefaultAsync<RunCancelState>(new CommandDefinition(@"
             SELECT Id AS RunId,
                    Queue,
-                   DeliveryProfile,
-                   ConsumerGroup,
                    Phase,
                    CancelRequested
             FROM Kj2_JobRuns
@@ -423,7 +404,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         if (state is null)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return new CancelJobResult(false, null, null);
+            return new CancelJobResult(false);
         }
 
         if (state.CancelRequested
@@ -433,7 +414,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 or (int)JobPhase.Dead)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return new CancelJobResult(false, state.Queue, consumerGroup);
+            return new CancelJobResult(false);
         }
 
         var databaseNow = await GetDatabaseNowAsync(connection, transaction, cancellationToken);
@@ -461,22 +442,10 @@ public sealed partial class PostgreSqlJobRuntimeStore
             transaction,
             cancellationToken: cancellationToken));
 
-        if (!string.IsNullOrWhiteSpace(consumerGroup)
-            && state.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch
-            && string.Equals(consumerGroup, state.ConsumerGroup, StringComparison.Ordinal)
-            && !string.IsNullOrWhiteSpace(state.Queue))
-        {
-            await AddCancelOutboxAsync(
-                connection,
-                transaction,
-                consumerGroup!,
-                runId,
-                databaseNow,
-                cancellationToken);
-        }
-
+        // Managed cancellation is durable database state. Running workers see
+        // CancelRequested on lease renewal; no transport control message is involved.
         await transaction.CommitAsync(cancellationToken);
-        return new CancelJobResult(true, state.Queue, consumerGroup);
+        return new CancelJobResult(true);
     }
 
     private sealed class WorkRequeueState
@@ -486,9 +455,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public DateTimeOffset AvailableAt { get; set; }
         public string Queue { get; set; } = "default";
         public string ExecutionLane { get; set; } = "default";
-        public ExecutionDeliveryProfile DeliveryProfile { get; set; } = ExecutionDeliveryProfile.Pull;
         public string ConsumerGroup { get; set; } = "default";
-        public string? TransportId { get; set; }
         public ExecutionOrderingMode OrderingMode { get; set; } = ExecutionOrderingMode.Parallel;
         public string? ConcurrencyKey { get; set; }
     }
@@ -538,8 +505,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
     {
         public string RunId { get; set; } = string.Empty;
         public string Queue { get; set; } = string.Empty;
-        public ExecutionDeliveryProfile DeliveryProfile { get; set; } = ExecutionDeliveryProfile.Pull;
-        public string ConsumerGroup { get; set; } = "default";
         public int Phase { get; set; }
         public bool CancelRequested { get; set; }
     }

@@ -2,7 +2,6 @@ using KubeJob;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
-using KubeJob.ControlPlane.Runtime;
 using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Sample.Unified.Jobs;
 using KubeJob.Server.Extensions;
@@ -16,7 +15,6 @@ var postgresConnectionString = builder.Configuration.GetConnectionString("KubeJo
 var rabbitMqConnectionString = builder.Configuration.GetConnectionString("RabbitMQ");
 var workerId = Environment.GetEnvironmentVariable("KUBEJOB_WORKER_ID") ?? "unified-sample";
 var maxConcurrentJobs = ParsePositiveInt("KUBEJOB_MAX_CONCURRENT_JOBS", 100);
-var prefetchCount = ParsePositiveInt("KUBEJOB_PREFETCH_COUNT", maxConcurrentJobs);
 var databasePoolSize = ParsePositiveInt("KUBEJOB_DB_POOL_SIZE", 64);
 var databaseConcurrency = ParsePositiveInt("KUBEJOB_DB_CONCURRENCY", databasePoolSize);
 
@@ -45,29 +43,24 @@ builder.Services.AddKubeJob(
         options.WorkerId = workerId;
         options.MaxConcurrentJobs = maxConcurrentJobs;
         options.Queues = new List<string> { "sample.data", "sample.dashboard-demo" };
-        options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
+        options.BuildId = typeof(DashboardDemoJob).Assembly.GetName().Version?.ToString() ?? "dev";
         options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
         options.Labels["app"] = "unified-sample";
-        // The worker session must register under the same consumer group the
-        // RabbitMQ transport is provisioned for.
         options.ConsumerGroup = "unified-sample";
     });
+
 builder.Services.AddKubeJobDashboard(options =>
 {
     options.RoutePrefix = "admin/jobs";
-    // This sample is local-development only. Enabling mutations makes the
-    // long-running demo job useful for exercising cooperative cancellation.
     options.AllowMutatingActions = true;
 });
 
 if (!string.IsNullOrWhiteSpace(rabbitMqConnectionString))
 {
+    // This sample intentionally remains PostgresManaged. RabbitMQ is only a
+    // best-effort wake signal here; PostgreSQL remains the queue authority.
     builder.Services.ConfigureKubeJobQueueRouting(options =>
     {
-        // The sample keeps routing deployment-owned: business callers still
-        // submit only a logical queue and cannot select RabbitMQ per Run.
-        // Each queue the worker serves gets one definition; the consumer
-        // group must match the transport group configured below.
         options.Queues["sample.data"] = new KubeJob.ControlPlane.Runtime.QueueDefinition
         {
             ConsumerGroup = "unified-sample"
@@ -78,15 +71,14 @@ if (!string.IsNullOrWhiteSpace(rabbitMqConnectionString))
         };
     });
 
-    void ConfigureRabbitMq(RabbitMqExecutionOptions options)
+    void ConfigureRabbitMqWake(RabbitMqNotificationOptions options)
     {
         options.ConnectionString = rabbitMqConnectionString;
         options.ConsumerGroup = "unified-sample";
-        options.PrefetchCount = (ushort)Math.Min(prefetchCount, ushort.MaxValue);
     }
 
-    builder.Services.UseRabbitMqKubeJobExecutionDispatcher(ConfigureRabbitMq);
-    builder.Services.AddRabbitMqKubeJobExecutionConsumer(ConfigureRabbitMq);
+    builder.Services.UseRabbitMqKubeJobNotifications(ConfigureRabbitMqWake);
+    builder.Services.AddRabbitMqKubeJobWorkerNotifications(ConfigureRabbitMqWake);
 }
 
 var app = builder.Build();

@@ -75,7 +75,7 @@ public sealed class OrderingMetricsTests
     }
 
     [Fact]
-    public async Task OrderingAdmitted_records_keyordered_wait_duration_tagged_by_queue()
+    public async Task OrderingClaimed_records_keyordered_wait_duration_tagged_by_queue()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -106,8 +106,8 @@ public sealed class OrderingMetricsTests
         listener.Start();
 
         metrics.IsOrderingWaitEnabled.Should().BeTrue();
-        metrics.OrderingAdmitted(TimeSpan.FromSeconds(5), "default");
-        metrics.OrderingAdmitted(TimeSpan.FromSeconds(7.5), "orders");
+        metrics.OrderingClaimed(TimeSpan.FromSeconds(5), "default");
+        metrics.OrderingClaimed(TimeSpan.FromSeconds(7.5), "orders");
 
         recorded.Should().HaveCount(2);
         recorded.Should().Contain(entry => entry.Queue == "default" && entry.Seconds == 5);

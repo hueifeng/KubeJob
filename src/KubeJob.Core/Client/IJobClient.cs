@@ -22,7 +22,7 @@ public interface IJobClient
     /// Submits multiple jobs of the same type through one control-plane batch.
     /// The server validates every item before opening the store transaction and
     /// preserves input order in the returned handles. This is a bounded,
-    /// atomic admission optimization; it is not a durable JobBatch aggregate
+    /// atomic batch optimization; it is not a durable JobBatch aggregate
     /// with independent lifecycle or MaxParallelism semantics.
     /// </summary>
     ValueTask<IReadOnlyList<JobHandle>> EnqueueBatchAsync<TPayload>(

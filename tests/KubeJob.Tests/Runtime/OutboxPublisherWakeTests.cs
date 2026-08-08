@@ -1,4 +1,3 @@
-using System.Threading.Channels;
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.ControlPlane.Runtime;
@@ -10,7 +9,7 @@ namespace KubeJob.Tests.Runtime;
 
 /// <summary>
 /// Covers the in-process wake-up signal that lets a same-process writer notify
-/// the outbox publisher immediately, instead of waiting for the next poll tick.
+/// the managed outbox publisher immediately instead of waiting for a poll tick.
 /// </summary>
 public sealed class OutboxPublisherWakeTests
 {
@@ -33,10 +32,10 @@ public sealed class OutboxPublisherWakeTests
             signal.Signal();
         }
 
-        // Give the reader a beat to observe.
         await Task.Delay(50);
-
         wakes.Should().Be(1, "the bounded channel should drop writes once it holds a pending signal");
+        signal.Dispose();
+        await consumer.WaitAsync(TimeSpan.FromSeconds(1));
     }
 
     [Fact]
@@ -44,8 +43,6 @@ public sealed class OutboxPublisherWakeTests
     {
         var signal = new OutboxPublisherSignal();
         signal.Signal();
-        // Second call must return immediately even though the buffer is full
-        // and the reader is not draining yet — TryWrite + DropWrite is non-blocking.
         var sw = System.Diagnostics.Stopwatch.StartNew();
         signal.Signal();
         sw.Stop();
@@ -53,22 +50,18 @@ public sealed class OutboxPublisherWakeTests
     }
 
     [Fact]
-    public async Task Outbox_publisher_dispatches_within_few_hundred_ms_when_a_wake_signal_fires_even_if_poll_interval_is_long()
+    public async Task Outbox_publisher_notifies_within_few_hundred_ms_when_a_wake_signal_fires()
     {
         var store = new InMemoryJobRuntimeStore();
-        var transport = new RecordingTransport();
+        var notifier = new RecordingNotifier();
         var wake = new OutboxPublisherSignal();
+        using var cts = new CancellationTokenSource();
         var publisher = new OutboxPublisherService(
             store,
-            new NullNotifier(),
-            new ExecutionTransportRegistry(new[] { transport }),
-            new NoopCancelPublisher(),
+            notifier,
             wake,
             Options.Create(new JobRuntimeOptions
             {
-                // Long poll interval so the test can ONLY succeed via the
-                // wake signal — the row must be picked up before the next
-                // poll tick fires.
                 OutboxPollInterval = TimeSpan.FromSeconds(30),
                 OutboxClaimDuration = TimeSpan.FromSeconds(30),
                 OutboxBatchSize = 8,
@@ -76,54 +69,27 @@ public sealed class OutboxPublisherWakeTests
             }),
             NullLogger<OutboxPublisherService>.Instance);
 
-        using var cts = new CancellationTokenSource();
         await publisher.StartAsync(cts.Token);
-
-        // The row must land after StartAsync: the publisher's startup scan
-        // would otherwise dispatch it regardless of the wake mechanism, which
-        // would make this test pass vacuously. With the row submitted while
-        // the publisher idles in its 30s poll wait, only the wake signal can
-        // trigger dispatch.
-        await store.SubmitAsync(
-            new SubmitJobCommand(
-                "wake.job",
-                "{\"k\":\"v\"}",
-                "default",
-                0,
-                DateTimeOffset.UtcNow,
-                IdempotencyKey: "wake-key",
-                ConcurrencyKey: null,
-                MaxAttempts: 1,
-                TimeoutSeconds: 30,
-                DeliveryTarget: BrokerTarget),
-            CancellationToken.None);
-
-        // Signal a wake; the publisher should drain the row immediately.
+        await SubmitAsync(store, "wake-key");
         wake.Signal();
 
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (transport.Count < 1 && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(20);
-        }
-
+        await notifier.WaitForCountAsync(1, TimeSpan.FromSeconds(2));
         await cts.CancelAsync();
         await publisher.StopAsync(CancellationToken.None);
 
-        transport.Count.Should().Be(1, "the wake signal should trigger dispatch well before the 30s poll interval");
+        notifier.Count.Should().Be(1);
     }
 
     [Fact]
     public async Task Outbox_publisher_falls_back_to_poll_interval_when_no_signal_fires()
     {
         var store = new InMemoryJobRuntimeStore();
-        var transport = new RecordingTransport();
+        var notifier = new RecordingNotifier();
+        using var cts = new CancellationTokenSource();
         var publisher = new OutboxPublisherService(
             store,
-            new NullNotifier(),
-            new ExecutionTransportRegistry(new[] { transport }),
-            new NoopCancelPublisher(),
-            new OutboxPublisherSignal(), // never signaled — exercises the poll path
+            notifier,
+            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(50),
@@ -133,64 +99,70 @@ public sealed class OutboxPublisherWakeTests
             }),
             NullLogger<OutboxPublisherService>.Instance);
 
-        using var cts = new CancellationTokenSource();
         await publisher.StartAsync(cts.Token);
+        await SubmitAsync(store, "fallback-key");
+        await notifier.WaitForCountAsync(1, TimeSpan.FromSeconds(2));
 
-        // The row must land after StartAsync so the publisher's startup scan
-        // cannot dispatch it; only the poll interval may pick it up.
+        await cts.CancelAsync();
+        await publisher.StopAsync(CancellationToken.None);
+        notifier.Count.Should().Be(1);
+    }
+
+    private static async Task SubmitAsync(InMemoryJobRuntimeStore store, string key)
+    {
         await store.SubmitAsync(
             new SubmitJobCommand(
-                "fallback.job",
+                "wake.job",
                 "{\"k\":\"v\"}",
                 "default",
                 0,
                 DateTimeOffset.UtcNow,
-                IdempotencyKey: "fallback-key",
+                IdempotencyKey: key,
                 ConcurrencyKey: null,
                 MaxAttempts: 1,
                 TimeoutSeconds: 30,
-                DeliveryTarget: BrokerTarget),
+                DeliveryTarget: ManagedTarget),
             CancellationToken.None);
-
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (transport.Count < 1 && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(20);
-        }
-
-        await cts.CancelAsync();
-        await publisher.StopAsync(CancellationToken.None);
-
-        transport.Count.Should().Be(1, "without a wake signal the poll-interval path still dispatches the row");
     }
 
-    private sealed class NullNotifier : IWorkAvailableNotifier
-    {
-        public ValueTask PublishAsync(WorkAvailableSignal signal, CancellationToken cancellationToken)
-            => ValueTask.CompletedTask;
-    }
+    private static readonly DeliveryTarget ManagedTarget =
+        new(ExecutionDeliveryProfile.Pull, "default", null, "default");
 
-    private sealed class NoopCancelPublisher : ICancelPublisher
+    private sealed class RecordingNotifier : IWorkAvailableNotifier
     {
-        public ValueTask PublishAsync(string group, string runId, CancellationToken cancellationToken)
-            => ValueTask.CompletedTask;
-    }
-
-    private sealed class RecordingTransport : IExecutionTransport
-    {
+        private readonly TaskCompletionSource<bool> _firstNotification =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _count;
+
         public int Count => Volatile.Read(ref _count);
-        public string TransportId => "test-recording";
-        public ValueTask PublishAsync(ExecutionEnvelope envelope, CancellationToken cancellationToken)
+
+        public ValueTask PublishAsync(
+            WorkAvailableSignal signal,
+            CancellationToken cancellationToken)
         {
-            Interlocked.Increment(ref _count);
+            if (Interlocked.Increment(ref _count) == 1)
+            {
+                _firstNotification.TrySetResult(true);
+            }
+
             return ValueTask.CompletedTask;
         }
-    }
 
-    private static DeliveryTarget BrokerTarget => new(
-        Profile: ExecutionDeliveryProfile.BrokerDispatch,
-        ExecutionLane: "default",
-        TransportId: "test-recording",
-        ConsumerGroup: "default");
+        public async Task WaitForCountAsync(int expected, TimeSpan timeout)
+        {
+            if (expected <= 1)
+            {
+                await _firstNotification.Task.WaitAsync(timeout);
+                return;
+            }
+
+            var deadline = DateTimeOffset.UtcNow + timeout;
+            while (Count < expected && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(5);
+            }
+
+            Count.Should().BeGreaterThanOrEqualTo(expected);
+        }
+    }
 }

@@ -1,6 +1,5 @@
 using KubeJob.Core.Queues;
 using KubeJob.Core.Runtime;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.ControlPlane.Runtime;
@@ -13,75 +12,27 @@ public interface IQueueRouter
 }
 
 /// <summary>
-/// Resolves registered transport implementations by stable deployment ID. More
-/// than one adapter may be registered in a host; routing chooses one target
-/// per persisted Outbox row rather than relying on registration order.
-/// </summary>
-public interface IExecutionTransportRegistry
-{
-    IExecutionTransport Resolve(string transportId);
-}
-
-public sealed class ExecutionTransportRegistry : IExecutionTransportRegistry
-{
-    private readonly IReadOnlyDictionary<string, IExecutionTransport> _transports;
-
-    public ExecutionTransportRegistry(IEnumerable<IExecutionTransport> transports)
-    {
-        ArgumentNullException.ThrowIfNull(transports);
-        _transports = transports.ToDictionary(
-            transport => transport.TransportId,
-            StringComparer.Ordinal);
-    }
-
-    public IExecutionTransport Resolve(string transportId)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(transportId);
-        return _transports.TryGetValue(transportId, out var transport)
-            ? transport
-            : throw new InvalidOperationException(
-                $"No KubeJob execution transport is registered with ID '{transportId}'.");
-    }
-}
-
-/// <summary>
-/// Delivery policy for one logical queue: the deployment-owned choices that
-/// resolve a queue name into an execution target. One queue has one
-/// definition, so the Dashboard and operator tooling can show a single
-/// per-queue row instead of cross-referencing several configuration maps.
+/// PostgresManaged queue policy. Execution authority is always PostgreSQL;
+/// these settings only control managed worker eligibility and ordering.
+/// BrokerNative authority/transport selection lives in QueueRuntimeOptions.
 /// </summary>
 public sealed class QueueDefinition
 {
-    /// <summary>How the queue's Runs are discovered: broker delivery or pull.</summary>
-    public ExecutionDeliveryProfile Profile { get; set; } = ExecutionDeliveryProfile.BrokerDispatch;
-
-    /// <summary>Per-queue ordering contract (Parallel, KeyOrdered, StrictFifo).</summary>
     public ExecutionOrderingMode OrderingMode { get; set; } = ExecutionOrderingMode.Parallel;
 
-    /// <summary>Worker eligibility and isolation boundary for this queue.</summary>
+    /// <summary>
+    /// Managed-only worker eligibility boundary retained for storage/schema
+    /// compatibility. Broker transports must not turn this into physical queues.
+    /// </summary>
     public string ExecutionLane { get; set; } = "default";
 
-    /// <summary>Consumer group that serves this queue.</summary>
     public string ConsumerGroup { get; set; } = "default";
-
-    /// <summary>Transport adapter that physically delivers this queue's Runs.</summary>
-    public string? TransportId { get; set; } = "rabbitmq";
 }
 
-/// <summary>
-/// Deployment-level queue routing policy. It intentionally has no relationship
-/// to EnqueueJobRequest, so a business caller cannot choose a physical target
-/// for an individual Run.
-/// </summary>
 public sealed class QueueDeliveryOptions
 {
-    /// <summary>Defaults applied to any queue without an explicit definition.</summary>
     public QueueDefinition Defaults { get; } = new();
 
-    /// <summary>
-    /// Explicit per-queue definitions, keyed by canonical logical queue name.
-    /// A queue without an entry uses <see cref="Defaults"/>.
-    /// </summary>
     public Dictionary<string, QueueDefinition> Queues { get; } = new(StringComparer.Ordinal);
 
     public void Validate()
@@ -115,32 +66,13 @@ public sealed class QueueDeliveryOptions
                 Queues[normalized] = entry.Value;
             }
 
-            if (trimmed.Length > 100)
-            {
-                throw new InvalidOperationException(
-                    $"Queue policy contains an invalid logical queue (over 100 characters): '{trimmed}'.");
-            }
-
-            ValidateDefinition(trimmed, entry.Value);
+            ValidateDefinition(normalized, entry.Value);
         }
     }
 
     private static void ValidateDefinition(string queue, QueueDefinition definition)
     {
         ArgumentNullException.ThrowIfNull(definition);
-
-        if (!Enum.IsDefined(definition.Profile))
-        {
-            throw new InvalidOperationException(
-                $"Queue policy for '{queue}' has an unsupported execution profile.");
-        }
-
-        if (definition.Profile == ExecutionDeliveryProfile.BrokerDispatch
-            && string.IsNullOrWhiteSpace(definition.TransportId))
-        {
-            throw new InvalidOperationException(
-                $"Queue policy for '{queue}' uses BrokerDispatch but has no TransportId.");
-        }
 
         if (!Enum.IsDefined(definition.OrderingMode))
         {
@@ -179,12 +111,11 @@ public sealed class QueueCatalog
         var definition = options.Queues.TryGetValue(logicalQueue, out var configured)
             ? configured
             : options.Defaults;
+
         var target = new DeliveryTarget(
-            definition.Profile,
+            ExecutionDeliveryProfile.Pull,
             definition.ExecutionLane,
-            definition.Profile == ExecutionDeliveryProfile.BrokerDispatch
-                ? definition.TransportId
-                : null,
+            null,
             definition.ConsumerGroup,
             definition.OrderingMode);
         target.Validate();
@@ -212,27 +143,4 @@ public sealed class ConfigurationQueueRouter : IQueueRouter
     }
 
     public QueueRoute Resolve(string logicalQueue) => _catalog.Resolve(logicalQueue);
-}
-
-public sealed class UnconfiguredExecutionTransport : IExecutionTransport
-{
-    private readonly ILogger<UnconfiguredExecutionTransport> _logger;
-
-    public UnconfiguredExecutionTransport(ILogger<UnconfiguredExecutionTransport> logger)
-    {
-        _logger = logger;
-    }
-
-    public string TransportId => "unconfigured";
-
-    public ValueTask PublishAsync(ExecutionEnvelope envelope, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        ArgumentNullException.ThrowIfNull(envelope);
-        _logger.LogError(
-            "Broker dispatch requires a registered execution transport, but the envelope for Run {RunId} (queue {Queue}) could not be routed to any adapter",
-            envelope.RunId,
-            envelope.Queue);
-        throw new InvalidOperationException("No KubeJob execution transport is registered for broker dispatch.");
-    }
 }

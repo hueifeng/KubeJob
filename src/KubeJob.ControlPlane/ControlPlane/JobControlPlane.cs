@@ -12,8 +12,9 @@ namespace KubeJob.Server.ControlPlane;
 public sealed record JobSubmissionReceipt(JobHandle Handle, bool Existing);
 
 /// <summary>
-/// Owns logical job submission and observation rules independently of HTTP,
-/// typed client serialization, and future message-ingress adapters.
+/// Owns PostgresManaged job submission and observation rules independently of
+/// HTTP and typed client serialization. BrokerNative bypasses this control
+/// plane for publish/consume execution authority.
 /// </summary>
 public sealed class JobControlPlane
 {
@@ -75,10 +76,6 @@ public sealed class JobControlPlane
             activity.SetTag("kubejob.idempotency.existing", result.Existing);
         }
 
-        // Wake the in-process OutboxPublisherService so the new row is
-        // claimed on the next dispatch iteration instead of waiting for the
-        // OutboxPollInterval tick. Idempotent dedupes (Existing == true)
-        // don't enqueue a new outbox row, so they don't need to wake.
         if (!result.Existing)
         {
             _wake.Signal();
@@ -108,6 +105,7 @@ public sealed class JobControlPlane
                     "invalid_job_submission",
                     $"Submission batch item at index {index} cannot be null.");
             }
+
             ValidateSubmission(request);
             var route = _queueRouter.Resolve(request.Queue);
             ValidateOrdering(request, route.Target);
@@ -143,10 +141,6 @@ public sealed class JobControlPlane
             activity.SetTag("kubejob.submit_batch.count", results.Count);
         }
 
-        // Wake once per batch — coalescing in OutboxPublisherSignal means a
-        // single Signal() collapses any number of additional concurrent
-        // writers into one extra scan. Only signal if at least one result
-        // produced a new row.
         if (results.Any(r => !r.Existing))
         {
             _wake.Signal();
@@ -155,11 +149,6 @@ public sealed class JobControlPlane
         return receipts;
     }
 
-    /// <summary>
-    /// Applies the same batch boundary before an adapter allocates its
-    /// translated command array. Persistence remains the authoritative second
-    /// check in <see cref="SubmitBatchAsync"/>.
-    /// </summary>
     public void ValidateSubmissionBatchSize(int count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
@@ -186,22 +175,7 @@ public sealed class JobControlPlane
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-
-        string? group = null;
-        if (_options.BrokerCancelPropagationEnabled)
-        {
-            var run = await _queries.GetRunAsync(runId, cancellationToken);
-            if (run is not null
-                && run.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch)
-            {
-                // Use the group persisted on the Run at submission time. The
-                // routing config may have changed since submission; inspecting
-                // it here could fan the cancel marker out to the wrong group.
-                group = run.ConsumerGroup;
-            }
-        }
-
-        var result = await _submissions.RequestCancelAsync(runId, reason, group, cancellationToken);
+        var result = await _submissions.RequestCancelAsync(runId, reason, cancellationToken);
         return result.Requested;
     }
 

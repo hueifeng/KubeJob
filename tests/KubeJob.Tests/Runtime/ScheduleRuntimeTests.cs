@@ -164,12 +164,9 @@ public sealed class ScheduleRuntimeTests
     }
 
     [Fact]
-    public async Task Cron_persists_broker_target_and_key_ordering_to_run_and_work_outbox()
+    public async Task Cron_persists_managed_target_and_key_ordering_to_run_and_work_outbox()
     {
-        var options = new QueueDeliveryOptions
-        {
-            Defaults = { TransportId = "rabbitmq" }
-        };
+        var options = new QueueDeliveryOptions();
         options.Queues[" reports.generate "] = new QueueDefinition
         {
             ConsumerGroup = "reports-workers",
@@ -229,27 +226,27 @@ public sealed class ScheduleRuntimeTests
             CancellationToken.None);
 
         persistedSchedule.Queue.Should().Be("reports.generate");
-        persistedSchedule.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        persistedSchedule.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
         persistedSchedule.ConsumerGroup.Should().Be("reports-workers");
-        persistedSchedule.TransportId.Should().Be("rabbitmq");
+        persistedSchedule.TransportId.Should().BeNull();
         persistedSchedule.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
         persistedSchedule.ConcurrencyKey.Should().Be("report:42");
         persistedSchedule.RetryPolicy.Should().NotBeNull();
         persistedSchedule.Continuation!.JobKey.Should().Be("report.followup");
         persistedSchedule.Compensation!.JobKey.Should().Be("report.compensate");
         run.Should().NotBeNull();
-        run!.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        run!.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
         run.ConsumerGroup.Should().Be("reports-workers");
-        run.TransportId.Should().Be("rabbitmq");
+        run.TransportId.Should().BeNull();
         run.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
         run.ConcurrencyKey.Should().Be("report:42");
         run.RetryPolicy.Should().BeEquivalentTo(persistedSchedule.RetryPolicy);
         run.Continuation.Should().BeEquivalentTo(persistedSchedule.Continuation);
         run.Compensation.Should().BeEquivalentTo(persistedSchedule.Compensation);
         var work = outbox.Should().ContainSingle(message => message.PayloadJson.Contains("cron-run-1")).Subject;
-        work.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
+        work.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
         work.ConsumerGroup.Should().Be("reports-workers");
-        work.TransportId.Should().Be("rabbitmq");
+        work.TransportId.Should().BeNull();
         var orderingMode = typeof(OutboxMessageRecord).GetProperty("OrderingMode");
         orderingMode.Should().NotBeNull();
         ((ExecutionOrderingMode)orderingMode!.GetValue(work)!).Should().Be(ExecutionOrderingMode.KeyOrdered);

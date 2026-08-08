@@ -6,10 +6,10 @@
     <div>
         <h2 class="mb-1 fw-bold">Queue inventory</h2>
         <div class="small text-muted">
-            A logical Queue is the business-visible identity. Each queue resolves to a delivery profile
-            (Pull or BrokerDispatch), a Worker eligibility lane, a consumer group, and an ordering mode.
-            Physical queue names on the right are owned by the transport adapter and are stable across restarts.
-            Showing @Model.Entries.Count queues; @Model.ActiveWorkerCount active worker sessions as of @Model.ObservedAt.ToLocalTime():HH:mm:ss.
+            A logical Queue has one execution authority. PostgresManaged queues are claimed from PostgreSQL;
+            BrokerNative queues are delivered directly by the configured transport. Broker-specific physical
+            retry, DLQ, exchange, and partition topology is intentionally hidden here.
+            Showing @Model.Entries.Count queues; @Model.ActiveWorkerCount active managed worker sessions as of @Model.ObservedAt.ToLocalTime():HH:mm:ss.
         </div>
     </div>
 </div>
@@ -20,7 +20,7 @@
         <div class="empty-state-icon"><i class="fa-solid fa-route" aria-hidden="true"></i></div>
         <div class="empty-state-title">No queues yet</div>
         <div class="empty-state-detail">
-            Queues appear here once they are configured in QueueDeliveryOptions or claimed by a worker session.
+            Queues appear here once they are configured or registered by a managed worker session.
         </div>
     </div>
 }
@@ -32,13 +32,12 @@ else
                 <thead>
                 <tr>
                     <th scope="col">Logical queue</th>
-                    <th scope="col">Profile</th>
-                    <th scope="col">Lane</th>
-                    <th scope="col">Group</th>
-                    <th scope="col">Ordering</th>
+                    <th scope="col">Runtime</th>
                     <th scope="col">Transport</th>
-                    <th scope="col">Workers</th>
-                    <th scope="col">Physical queues</th>
+                    <th scope="col">Managed lane</th>
+                    <th scope="col">Managed group</th>
+                    <th scope="col">Ordering</th>
+                    <th scope="col">Managed workers</th>
                 </tr>
                 </thead>
                 <tbody>
@@ -47,30 +46,15 @@ else
                     <tr>
                         <td><code class="queue-name">@queue.LogicalQueue</code></td>
                         <td>
-                            <span class="badge text-bg-@(queue.Profile == KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch ? "primary" : "secondary")">
-                                @queue.Profile
+                            <span class="badge text-bg-@(queue.RuntimeMode == KubeJob.Core.Runtime.QueueRuntimeMode.BrokerNative ? "primary" : "secondary")">
+                                @queue.RuntimeMode
                             </span>
                         </td>
-                        <td><code>@queue.ExecutionLane</code></td>
-                        <td><code>@queue.ConsumerGroup</code></td>
-                        <td>@queue.OrderingMode</td>
                         <td>@(string.IsNullOrWhiteSpace(queue.TransportId) ? "—" : queue.TransportId)</td>
+                        <td>@(string.IsNullOrWhiteSpace(queue.ExecutionLane) ? "—" : queue.ExecutionLane)</td>
+                        <td>@(string.IsNullOrWhiteSpace(queue.ConsumerGroup) ? "—" : queue.ConsumerGroup)</td>
+                        <td>@(queue.OrderingMode?.ToString() ?? "transport-native")</td>
                         <td>@queue.ActiveWorkerCount</td>
-                        <td>
-                            @if (queue.PhysicalQueueNames.Count == 0)
-                            {
-                                <span class="text-muted small">no registered transport</span>
-                            }
-                            else
-                            {
-                                <ul class="physical-queue-list">
-                                    @foreach (var physical in queue.PhysicalQueueNames)
-                                    {
-                                        <li><code class="physical-queue-name">@physical</code></li>
-                                    }
-                                </ul>
-                            }
-                        </td>
                     </tr>
                 }
                 </tbody>
@@ -81,19 +65,6 @@ else
 
 <style>
     .queue-name { font-weight: 600; }
-    .physical-queue-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
-    .physical-queue-name {
-        font-size: 11px;
-        color: var(--muted);
-        word-break: break-all;
-    }
     .empty-state {
         border: 1px dashed var(--border-strong);
         border-radius: 6px;
