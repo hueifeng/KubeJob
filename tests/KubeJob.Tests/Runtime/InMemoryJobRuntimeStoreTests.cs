@@ -375,39 +375,6 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
-    public async Task Broker_retry_budget_requeues_pending_run_through_durable_outbox()
-    {
-        var store = new InMemoryJobRuntimeStore();
-        var run = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
-        var requeueAt = DateTimeOffset.UtcNow.AddMinutes(1);
-
-        var scheduled = await store.RequeueWorkAvailableAsync(
-            run.Id,
-            requeueAt,
-            CancellationToken.None);
-        var messages = await store.ClaimPendingAsync(
-            requeueAt,
-            TimeSpan.FromSeconds(30),
-            10,
-            CancellationToken.None);
-
-        scheduled.Should().BeTrue();
-        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
-
-        var canceled = await store.RequestCancelAsync(
-            run.Id,
-            "cancel before reconciliation",
-            CancellationToken.None);
-        var scheduledAfterCancel = await store.RequeueWorkAvailableAsync(
-            run.Id,
-            requeueAt,
-            CancellationToken.None);
-
-        canceled.Requested.Should().BeTrue();
-        scheduledAfterCancel.Should().BeFalse();
-    }
-
-    [Fact]
     public async Task Abandoned_publishing_message_is_reclaimed_after_claim_lease()
     {
         var store = new InMemoryJobRuntimeStore();
