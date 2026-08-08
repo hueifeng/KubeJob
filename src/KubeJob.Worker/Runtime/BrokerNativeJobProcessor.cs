@@ -1,6 +1,7 @@
 using KubeJob.Core.Execution;
 using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
+using KubeJob.Worker.Telemetry;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Worker.Runtime;
@@ -30,16 +31,19 @@ public sealed class BrokerNativeJobProcessor
 {
     private readonly IWorkerExecutionEngine _executionEngine;
     private readonly KubeJobWorkerOptions _worker;
+    private readonly KubeJobWorkerMetrics? _metrics;
     private readonly string _processSessionId = $"broker-{Guid.NewGuid():N}";
     private readonly string _hostName = Environment.MachineName;
 
     public BrokerNativeJobProcessor(
         IWorkerExecutionEngine executionEngine,
-        IOptions<KubeJobWorkerOptions> worker)
+        IOptions<KubeJobWorkerOptions> worker,
+        KubeJobWorkerMetrics? metrics = null)
     {
         _executionEngine = executionEngine;
         _worker = worker.Value;
         _worker.Validate();
+        _metrics = metrics;
     }
 
     public async ValueTask<BrokerNativeProcessingResult> ProcessAsync(
@@ -58,60 +62,69 @@ public sealed class BrokerNativeJobProcessor
                 $"Worker is not configured for queue '{message.Queue}'.");
         }
 
-        var execution = await _executionEngine.ExecuteAsync(
-            new WorkerExecutionRequest(
-                message.MessageId,
-                $"{message.MessageId}:{message.Attempt}",
-                message.Attempt,
-                message.JobKey,
-                message.PayloadJson,
-                message.TimeoutSeconds,
-                new WorkerExecutionInfo(
-                    _worker.WorkerId,
-                    _processSessionId,
-                    SessionEpoch: 0,
-                    _hostName,
-                    _worker.BuildId),
-                attemptCancellationToken,
-                workerStoppingToken));
-
-        // Shutdown/drain is not a job outcome. Let the broker adapter leave the
-        // delivery unacked so RabbitMQ/Kafka can hand it to another worker.
-        workerStoppingToken.ThrowIfCancellationRequested();
-
-        return execution.Outcome switch
+        _metrics?.AttemptStarted(WorkerExecutionKind.BrokerNative);
+        try
         {
-            JobAttemptOutcome.Succeeded => new BrokerNativeProcessingResult(
-                BrokerNativeMessageDisposition.Ack,
-                execution),
+            var execution = await _executionEngine.ExecuteAsync(
+                new WorkerExecutionRequest(
+                    message.MessageId,
+                    $"{message.MessageId}:{message.Attempt}",
+                    message.Attempt,
+                    message.JobKey,
+                    message.PayloadJson,
+                    message.TimeoutSeconds,
+                    new WorkerExecutionInfo(
+                        _worker.WorkerId,
+                        _processSessionId,
+                        SessionEpoch: 0,
+                        _hostName,
+                        _worker.BuildId),
+                    attemptCancellationToken,
+                    workerStoppingToken,
+                    ExecutionKind: WorkerExecutionKind.BrokerNative));
 
-            // An explicit active cancellation is terminal for this delivery.
-            // BrokerNative cancellation is best-effort; once the handler has
-            // observed it, retrying the same message would violate that intent.
-            JobAttemptOutcome.Canceled => new BrokerNativeProcessingResult(
-                BrokerNativeMessageDisposition.Ack,
-                execution),
+            // Shutdown/drain is not a job outcome. Let the broker adapter leave the
+            // delivery unacked so RabbitMQ/Kafka can hand it to another worker.
+            workerStoppingToken.ThrowIfCancellationRequested();
 
-            JobAttemptOutcome.PermanentFailure => new BrokerNativeProcessingResult(
-                BrokerNativeMessageDisposition.DeadLetter,
-                execution),
+            return execution.Outcome switch
+            {
+                JobAttemptOutcome.Succeeded => new BrokerNativeProcessingResult(
+                    BrokerNativeMessageDisposition.Ack,
+                    execution),
 
-            JobAttemptOutcome.RetryableFailure or JobAttemptOutcome.TimedOut
-                when message.Attempt < message.MaxAttempts =>
-                new BrokerNativeProcessingResult(
-                    BrokerNativeMessageDisposition.Retry,
-                    execution,
-                    message with { Attempt = message.Attempt + 1 }),
+                // An explicit active cancellation is terminal for this delivery.
+                // BrokerNative cancellation is best-effort; once the handler has
+                // observed it, retrying the same message would violate that intent.
+                JobAttemptOutcome.Canceled => new BrokerNativeProcessingResult(
+                    BrokerNativeMessageDisposition.Ack,
+                    execution),
 
-            JobAttemptOutcome.RetryableFailure or JobAttemptOutcome.TimedOut =>
-                new BrokerNativeProcessingResult(
+                JobAttemptOutcome.PermanentFailure => new BrokerNativeProcessingResult(
                     BrokerNativeMessageDisposition.DeadLetter,
                     execution),
 
-            _ => new BrokerNativeProcessingResult(
-                BrokerNativeMessageDisposition.DeadLetter,
-                execution)
-        };
+                JobAttemptOutcome.RetryableFailure or JobAttemptOutcome.TimedOut
+                    when message.Attempt < message.MaxAttempts =>
+                    new BrokerNativeProcessingResult(
+                        BrokerNativeMessageDisposition.Retry,
+                        execution,
+                        message with { Attempt = message.Attempt + 1 }),
+
+                JobAttemptOutcome.RetryableFailure or JobAttemptOutcome.TimedOut =>
+                    new BrokerNativeProcessingResult(
+                        BrokerNativeMessageDisposition.DeadLetter,
+                        execution),
+
+                _ => new BrokerNativeProcessingResult(
+                    BrokerNativeMessageDisposition.DeadLetter,
+                    execution)
+            };
+        }
+        finally
+        {
+            _metrics?.AttemptFinished(WorkerExecutionKind.BrokerNative);
+        }
     }
 
     private static BrokerNativeProcessingResult PermanentFailure(
