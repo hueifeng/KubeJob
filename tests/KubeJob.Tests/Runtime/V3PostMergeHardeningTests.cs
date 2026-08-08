@@ -41,6 +41,20 @@ public sealed class V3PostMergeHardeningTests
     }
 
     [Fact]
+    public void Default_noop_notifier_suppresses_in_process_outbox_wake_pulses()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        using var provider = services.BuildServiceProvider();
+
+        var signal = provider.GetRequiredService<OutboxPublisherSignal>();
+        signal.Signal();
+
+        signal.Reader.TryRead(out _).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Explicit_notifier_keeps_managed_wake_outbox_durable()
     {
         var services = new ServiceCollection();
@@ -64,6 +78,22 @@ public sealed class V3PostMergeHardeningTests
 
         claimed.Should().ContainSingle();
         claimed[0].EventType.Should().Be(OutboxEventTypes.WorkAvailable);
+    }
+
+    [Fact]
+    public void Explicit_notifier_keeps_in_process_outbox_wake_pulses_enabled()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        services.UseKubeJobWorkAvailableNotifier<TestNotifier>();
+        using var provider = services.BuildServiceProvider();
+
+        var signal = provider.GetRequiredService<OutboxPublisherSignal>();
+        signal.Signal();
+
+        signal.Reader.TryRead(out var value).Should().BeTrue();
+        value.Should().BeTrue();
     }
 
     [Fact]
