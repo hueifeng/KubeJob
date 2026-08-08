@@ -90,6 +90,74 @@ public sealed class WorkerExecutionEngineTests
         result.FailureMessage.Should().Contain("handler failed");
     }
 
+    [Fact]
+    public async Task Handler_operation_canceled_without_runtime_token_is_not_misclassified_as_timeout()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new OperationCanceledInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+
+        var result = await engine.ExecuteAsync(CreateRequest("order.created"));
+
+        result.Outcome.Should().Be(JobAttemptOutcome.RetryableFailure);
+        result.FailureCode.Should().Be("handler_operation_canceled");
+    }
+
+    [Fact]
+    public async Task Runtime_timeout_is_classified_as_timed_out()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new WaitForCancellationInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+
+        var result = await engine.ExecuteAsync(CreateRequest("order.created") with
+        {
+            TimeoutSeconds = 1
+        });
+
+        result.Outcome.Should().Be(JobAttemptOutcome.TimedOut);
+        result.FailureCode.Should().Be("timeout");
+    }
+
+    [Fact]
+    public async Task Worker_shutdown_is_rethrown_instead_of_persisted_as_job_outcome()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new WaitForCancellationInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+        using var stopping = new CancellationTokenSource();
+        stopping.Cancel();
+
+        var act = async () => await engine.ExecuteAsync(
+            CreateRequest("order.created") with
+            {
+                WorkerStoppingToken = stopping.Token
+            });
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     private static WorkerExecutionRequest CreateRequest(string jobKey) =>
         new(
             "run-1",
@@ -152,5 +220,45 @@ public sealed class WorkerExecutionEngineTests
             JobExecutionContext context,
             CancellationToken cancellationToken) =>
             ValueTask.FromException(new InvalidOperationException("handler failed"));
+    }
+
+    private sealed class OperationCanceledInvoker : IJobHandlerInvoker
+    {
+        public OperationCanceledInvoker(string jobKey)
+        {
+            JobKey = jobKey;
+        }
+
+        public string JobKey { get; }
+
+        public Type PayloadType => typeof(object);
+
+        public ValueTask InvokeAsync(
+            IServiceProvider serviceProvider,
+            string payloadJson,
+            JobExecutionContext context,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromException(new OperationCanceledException("downstream canceled its own operation"));
+    }
+
+    private sealed class WaitForCancellationInvoker : IJobHandlerInvoker
+    {
+        public WaitForCancellationInvoker(string jobKey)
+        {
+            JobKey = jobKey;
+        }
+
+        public string JobKey { get; }
+
+        public Type PayloadType => typeof(object);
+
+        public async ValueTask InvokeAsync(
+            IServiceProvider serviceProvider,
+            string payloadJson,
+            JobExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
     }
 }
