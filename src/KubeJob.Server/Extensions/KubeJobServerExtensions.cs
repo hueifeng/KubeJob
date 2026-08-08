@@ -34,7 +34,9 @@ public static class KubeJobServerExtensions
         options.StorageConfigurator?.Invoke(services);
 
         services.AddMetrics();
-        services.TryAddSingleton<InMemoryJobRuntimeStore>();
+        services.TryAddSingleton<InMemoryJobRuntimeStore>(sp =>
+            new InMemoryJobRuntimeStore(
+                sp.GetRequiredService<IWorkAvailableNotifier>() is not NoopWorkAvailableNotifier));
         services.TryAddSingleton<IJobSubmissionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobClaimStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
