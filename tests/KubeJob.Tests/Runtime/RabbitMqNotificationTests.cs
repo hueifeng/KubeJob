@@ -197,7 +197,7 @@ public sealed class RabbitMqNotificationTests
 
         options.Invoking(x => x.Validate())
             .Should().Throw<InvalidOperationException>()
-            .WithMessage("*reserved for Event physical topology boundaries*");
+            .WithMessage("*reserved for physical topology boundaries*");
     }
 
     [Fact]
