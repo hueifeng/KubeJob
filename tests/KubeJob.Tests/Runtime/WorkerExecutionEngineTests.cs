@@ -27,6 +27,29 @@ public sealed class WorkerExecutionEngineTests
     }
 
     [Fact]
+    public void Managed_worker_reuses_the_registered_transport_neutral_execution_engine()
+    {
+        var customEngine = new StubExecutionEngine();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IWorkerExecutionEngine>(customEngine);
+        services.AddKubeJobWorker(options =>
+        {
+            options.WorkerId = "worker-managed-shared-engine";
+            options.Queues = new List<string> { "default" };
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var worker = provider.GetRequiredService<WorkerRuntimeService>();
+        var field = typeof(WorkerRuntimeService).GetField(
+            "_executionEngine",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        field.Should().NotBeNull();
+        field!.GetValue(worker).Should().BeSameAs(customEngine);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_invokes_registered_handler_and_returns_success()
     {
         var services = new ServiceCollection();
@@ -203,6 +226,12 @@ public sealed class WorkerExecutionEngineTests
             CancellationToken.None,
             CancellationToken.None,
             ConsumerIndex: 0);
+
+    private sealed class StubExecutionEngine : IWorkerExecutionEngine
+    {
+        public ValueTask<WorkerExecutionResult> ExecuteAsync(WorkerExecutionRequest request) =>
+            ValueTask.FromResult(new WorkerExecutionResult(JobAttemptOutcome.Succeeded));
+    }
 
     private sealed class RecordingInvoker : IJobHandlerInvoker
     {
