@@ -3,7 +3,9 @@ using KubeJob.Core.Queues;
 namespace KubeJob.Core.Client;
 
 /// <summary>
-/// Optional submission policy for a logical job run.
+/// Optional submission policy for a KubeJob job. Some policies require
+/// PostgresManaged durable state and are rejected by BrokerNative until the
+/// selected transport/runtime explicitly implements equivalent semantics.
 /// </summary>
 public sealed class JobEnqueueOptions
 {
@@ -17,30 +19,36 @@ public sealed class JobEnqueueOptions
 
     public DateTimeOffset? NotBefore { get; init; }
 
+    /// <summary>
+    /// Durable submission deduplication key for PostgresManaged jobs.
+    /// BrokerNative currently rejects this option because no Inbox/deduplication
+    /// store is implemented; carrying the value in a broker header alone would
+    /// not provide duplicate suppression.
+    /// </summary>
     public string? IdempotencyKey { get; init; }
 
     public string? ConcurrencyKey { get; init; }
 
     /// <summary>
-    /// Maximum number of physical attempts for this logical job, including the first attempt.
+    /// Maximum number of physical attempts for this job, including the first attempt.
     /// </summary>
     public int MaxAttempts { get; init; } = 1;
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// Per-run retry policy. When set, it overrides the global
-    /// <see cref="Runtime.JobRuntimeOptions.RetryPolicy"/> for this specific run.
+    /// Per-run retry policy for PostgresManaged. BrokerNative currently uses
+    /// transport-owned retry timing and rejects this override.
     /// </summary>
     public Runtime.RetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
-    /// Optional continuation that fires when this run reaches a terminal state.
+    /// Optional PostgresManaged continuation that fires when this run reaches a terminal state.
     /// </summary>
     public Runtime.Continuation? Continuation { get; init; }
 
     /// <summary>
-    /// Optional compensation action for failed runs.
+    /// Optional PostgresManaged compensation action for failed runs.
     /// </summary>
     public Runtime.Compensation? Compensation { get; init; }
 

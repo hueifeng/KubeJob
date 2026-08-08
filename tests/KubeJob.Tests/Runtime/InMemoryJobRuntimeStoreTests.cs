@@ -25,6 +25,39 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
+    public async Task Immediate_submit_does_not_create_durable_wake_outbox()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+
+        var outbox = await store.ClaimPendingAsync(
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        outbox.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Future_submit_keeps_durable_delayed_wake_outbox()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var availableAt = DateTimeOffset.UtcNow.AddMinutes(1);
+        var run = (await store.SubmitAsync(
+            NewCommand() with { AvailableAt = availableAt },
+            CancellationToken.None)).Run;
+
+        var outbox = await store.ClaimPendingAsync(
+            availableAt,
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        outbox.Should().ContainSingle(message => message.PayloadJson.Contains(run.Id));
+    }
+
+    [Fact]
     public async Task Concurrent_workers_cannot_claim_the_same_run()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -205,9 +238,9 @@ public sealed class InMemoryJobRuntimeStoreTests
         var followUpRuns = await Task.WhenAll(
             followUps.Select(job => store.GetRunAsync(job.RunId, CancellationToken.None).AsTask()));
         followUpRuns.All(candidate => candidate is not null).Should().BeTrue();
-        followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Continuation)!
+        followUpRuns.Single(candidate => candidate!.RelationKind == RunRelationKind.Continuation)!
             .ParentRunId.Should().Be(run.Id);
-        followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Compensation)!
+        followUpRuns.Single(candidate => candidate!.RelationKind == RunRelationKind.Compensation)!
             .ParentRunId.Should().Be(run.Id);
     }
 
@@ -349,7 +382,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Failed_outbox_message_becomes_available_for_retry()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        await SubmitWithDurableWakeAsync(store, NewCommand());
         var firstClaim = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(30),
@@ -375,7 +408,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
-    public async Task Broker_retry_budget_requeues_pending_run_through_durable_outbox()
+    public async Task Recovery_requeue_uses_durable_outbox()
     {
         var store = new InMemoryJobRuntimeStore();
         var run = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
@@ -392,7 +425,7 @@ public sealed class InMemoryJobRuntimeStoreTests
             CancellationToken.None);
 
         scheduled.Should().BeTrue();
-        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
+        messages.Should().ContainSingle(message => message.PayloadJson.Contains(run.Id));
 
         var canceled = await store.RequestCancelAsync(
             run.Id,
@@ -411,7 +444,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Abandoned_publishing_message_is_reclaimed_after_claim_lease()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        await SubmitWithDurableWakeAsync(store, NewCommand());
         var firstNow = DateTimeOffset.UtcNow.AddSeconds(1);
         var firstClaim = await store.ClaimPendingAsync(
             firstNow,
@@ -439,7 +472,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Stale_outbox_publisher_cannot_overwrite_a_reclaimed_message()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        await SubmitWithDurableWakeAsync(store, NewCommand());
         var first = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(10),
@@ -448,7 +481,7 @@ public sealed class InMemoryJobRuntimeStoreTests
         var firstClaimToken = first.ClaimToken!;
 
         var second = (await store.ClaimPendingAsync(
-            first.AvailableAt.AddSeconds(1),
+            first.AvailableAt.AddSeconds(11),
             TimeSpan.FromSeconds(10),
             10,
             CancellationToken.None)).Single();
@@ -470,8 +503,8 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Batch_outbox_publication_only_completes_matching_claim_tokens()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(NewCommand(idempotencyKey: "one"), CancellationToken.None);
-        await store.SubmitAsync(NewCommand(idempotencyKey: "two"), CancellationToken.None);
+        await SubmitWithDurableWakeAsync(store, NewCommand(idempotencyKey: "one"));
+        await SubmitWithDurableWakeAsync(store, NewCommand(idempotencyKey: "two"));
         var claimed = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(30),
@@ -517,9 +550,9 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Outbox_dispatch_respects_batch_size()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(NewCommand(idempotencyKey: "batch-one"), CancellationToken.None);
-        await store.SubmitAsync(NewCommand(idempotencyKey: "batch-two"), CancellationToken.None);
-        await store.SubmitAsync(NewCommand(idempotencyKey: "batch-three"), CancellationToken.None);
+        await SubmitWithDurableWakeAsync(store, NewCommand(idempotencyKey: "batch-one"));
+        await SubmitWithDurableWakeAsync(store, NewCommand(idempotencyKey: "batch-two"));
+        await SubmitWithDurableWakeAsync(store, NewCommand(idempotencyKey: "batch-three"));
 
         var dispatched = await store.DispatchOnceAsync(
             TimeSpan.FromMinutes(1),
@@ -541,7 +574,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Permanent_outbox_failure_is_abandoned_instead_of_retried_forever()
     {
         var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(NewCommand(), CancellationToken.None);
+        await SubmitWithDurableWakeAsync(store, NewCommand());
 
         var result = await store.DispatchOnceAsync(
             TimeSpan.FromMinutes(1),
@@ -567,7 +600,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     public async Task Runtime_maintenance_removes_published_outbox_and_unkeyed_terminal_runs()
     {
         var store = new InMemoryJobRuntimeStore();
-        var unkeyedRun = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
+        var unkeyedRun = await SubmitWithDurableWakeAsync(store, NewCommand());
         var keyedRun = (await store.SubmitAsync(
             NewCommand(idempotencyKey: "retain-me"),
             CancellationToken.None)).Run;
@@ -602,6 +635,18 @@ public sealed class InMemoryJobRuntimeStoreTests
         terminalDeleted.Should().Be(1);
         (await store.GetRunAsync(unkeyedRun.Id, CancellationToken.None)).Should().BeNull();
         (await store.GetRunAsync(keyedRun.Id, CancellationToken.None)).Should().NotBeNull();
+    }
+
+    private static async Task<JobRunRecord> SubmitWithDurableWakeAsync(
+        InMemoryJobRuntimeStore store,
+        SubmitJobCommand command)
+    {
+        var run = (await store.SubmitAsync(command, CancellationToken.None)).Run;
+        (await store.RequeueWorkAvailableAsync(
+            run.Id,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None)).Should().BeTrue();
+        return run;
     }
 
     private static SubmitJobCommand NewCommand(

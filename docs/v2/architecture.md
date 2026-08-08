@@ -1,21 +1,12 @@
 # KubeJob Runtime Architecture
 
+> The `docs/v2` directory name is retained for link compatibility. The runtime described here is the current V3 Single Authority architecture.
+
 ## Product boundary
 
-KubeJob is a typed, PostgreSQL-first distributed background-job runtime for
-.NET. It is not a Kubernetes replacement, workflow-history engine, message
-broker, actor runtime, or CI/CD system.
+KubeJob is a typed, embeddable, distributed background-job runtime for .NET. It is not a Kubernetes replacement, workflow-history engine, message broker, actor runtime, or CI/CD system.
 
-Optional packages may integrate those systems without moving their complexity
-into the core handler API.
-
-The implementation is layered as `KubeJob.Core` contracts, the independent
-`KubeJob.ControlPlane` runtime, ASP.NET transport/Dashboard adapters in
-`KubeJob.Server`, storage adapters such as PostgreSQL, and optional transport
-packages such as RabbitMQ. `KubeJob.Server` assembles these modules but does not
-own the durable state machine implementation.
-
-The project dependency direction follows the same boundary:
+The implementation is layered as:
 
 ```text
 KubeJob.Core
@@ -23,311 +14,291 @@ KubeJob.Core
 KubeJob.ControlPlane ← KubeJob.Storage.PostgreSQL
     ↑                         ↑
 KubeJob.Server ───────────────┘
+    ↑
+KubeJob.Transport.*
 ```
 
-`KubeJob.Storage.PostgreSQL` exposes a service-collection registration seam;
-`KubeJob.Server` owns the `KubeJobServerOptions` composition wrapper. Storage
-must not depend on ASP.NET Server types or the Server project.
+Transport-specific concepts such as RabbitMQ exchanges, delivery tags, publisher confirms, retry queues, DLX and DLQ stay inside transport adapters.
 
-For the end-to-end topology and request sequences, see
-[Logical Architecture and Sequences](./logical-architecture.md).
+## Single Authority rule
 
-## Public model
+Every logical Job Queue selects exactly one execution authority:
 
 ```text
-JobKey<TPayload>    stable business identity
+QueueRuntimeMode.PostgresManaged
+QueueRuntimeMode.BrokerNative
+```
+
+A Queue never uses RabbitMQ to deliver a task and then asks PostgreSQL to approve that same delivery. That legacy dual-authority BrokerDispatch path has been removed.
+
+### PostgresManaged
+
+PostgreSQL owns execution state and eligibility:
+
+```text
+IJobClient
+   ↓
+JobControlPlane
+   ↓
+PostgreSQL JobRun
+   ↓
+Claim / Attempt / Lease
+   ↓
+WorkerExecutionEngine
+   ↓
+Handler
+   ↓
+Durable Completion
+```
+
+PostgresManaged provides:
+
+- durable `JobRun` / `JobAttempt` state;
+- worker sessions, epochs and fencing;
+- claim and lease renewal;
+- durable cancellation;
+- strong per-Run status and attempt history;
+- managed retry policy;
+- continuation and compensation;
+- database-owned `KeyOrdered` and `StrictFifo` ordering.
+
+Workers request work only when they have free execution slots. PostgreSQL claims eligible Runs with transactional locking and `FOR UPDATE SKIP LOCKED`.
+
+### BrokerNative
+
+The selected message transport owns delivery, redelivery and retry:
+
+```text
+IJobClient
+   ↓
+IMessageTransportPublisher
+   ↓
+Transport
+   ↓
+Transport Consumer
+   ↓
+WorkerExecutionEngine
+   ↓
+Handler
+   ↓
+ACK / Retry / DLQ
+```
+
+A normal BrokerNative execution does **not**:
+
+- create a PostgreSQL `JobRun`;
+- call control-plane admission;
+- create a managed `JobAttempt`;
+- acquire or renew a KubeJob database lease;
+- synchronously persist completion before broker ACK.
+
+RabbitMQ is the first implemented BrokerNative transport. Kafka, SQS, Redis Streams, Pulsar and other adapters are extension targets, not current built-in features.
+
+BrokerNative is at-least-once. External side effects must therefore tolerate duplicate execution. KubeJob currently has no BrokerNative Inbox/deduplication store, so `JobEnqueueOptions.IdempotencyKey` is rejected for BrokerNative rather than pretending that carrying a key in the message provides duplicate suppression.
+
+## Shared execution engine
+
+Both runtime modes converge on the same transport-neutral execution pipeline:
+
+```text
+WorkerExecutionEngine
+├── DI scope
+├── payload deserialization
+├── middleware
+├── timeout / cancellation
+├── handler invocation
+├── telemetry
+└── normalized outcome classification
+```
+
+The execution engine does not know about PostgreSQL leases, RabbitMQ ACKs, broker delivery tags, or storage completion. Runtime coordinators translate an execution result into their own authority-specific completion action.
+
+## Job and Event semantics
+
+KubeJob separates command/job semantics from publish/subscribe semantics.
+
+### Job Queue
+
+A logical Queue is a competing-consumer pool:
+
+```text
+logical queue
+     │
+ ┌───┼───┐
+ ▼   ▼   ▼
+W1  W2  W3
+```
+
+Worker replicas do not receive private queues. One Job delivery is processed by one worker replica.
+
+### Event Topic
+
+An Event Topic fans out to independent Subscriptions:
+
+```text
+Topic
+ ├─ Subscription A → queue → workers A1..An
+ ├─ Subscription B → queue → workers B1..Bn
+ └─ Subscription C → queue → workers C1..Cn
+```
+
+Retries are Subscription-scoped. A failure in Subscription A must never republish the event to the Topic and replay already-successful Subscriptions B and C.
+
+## Public submission model
+
+```text
+JobKey<TPayload>    stable handler identity
 IKubeJob<TPayload>  constructor-injected handler
-IJobClient          submission/query/cancellation
-IJobScheduleClient  independent cron schedule management
+IJobClient          enqueue plus managed observation/cancellation
+IEventBus           publish/subscribe event surface
+IJobScheduleClient  durable schedule definitions
 ```
 
-A handler is not a scheduler, transport consumer, database repository, or worker
-registration object.
+`JobHandle` identifies the result of a submission:
 
-## Control-plane module seam
+- PostgresManaged: `JobId` is a durable Run id.
+- BrokerNative: `JobId` is a transport message id.
 
-Transport adapters do not orchestrate stores directly. They converge on three
-control-plane modules:
+`JobHandle.RuntimeMode`, `TransportId`, `SupportsStrongStatus` and `SupportsStrongCancellation` let callers distinguish these capabilities without changing the existing positional constructor.
 
-```text
-typed IJobClient ─┐
-HTTP jobs API ────┼──> JobControlPlane ─────> submission/query stores
-message ingress ──┤
-Dashboard actions ┘
+Strong `IJobClient.GetStatusAsync` and `CancelAsync` semantics belong to PostgresManaged. BrokerNative does not fabricate a synchronous PostgreSQL Run projection.
 
-HTTP runtime API ─┐
-in-process worker ┼──> WorkerControlPlane ───> session/claim/completion stores
+## Batch submission
 
-typed schedules ──┐
-HTTP schedules API┼──> ScheduleControlPlane ─> schedule store
-Dashboard actions ┘
-```
+`JobRuntimeOptions.MaxSubmissionBatchSize` bounds both runtime modes.
 
-These modules own validation, conversion to durable commands, runtime limits,
-cron calculation, and public snapshots. HTTP status codes, JSON serialization,
-broker acknowledgements, and worker transport remain adapter concerns.
+For PostgresManaged, `EnqueueBatchAsync` validates the batch then persists the independent Runs atomically in one state-store transaction.
 
-The modules are concrete classes rather than a second set of nearly identical
-interfaces. Storage behavior is the real varying seam and already has in-memory
-and PostgreSQL adapters. This keeps one implementation behind multiple callers
-without introducing pass-through abstractions.
+For BrokerNative, a batch is **not atomic**. All items are validated and serialized before the first publish. If a transport implements `IMessageTransportBatchPublisher`, KubeJob may amortize durable broker acknowledgements across the batch. A broker/network failure can still leave a confirmed prefix published.
 
-## Submission batch boundary
+This API is not a durable `JobBatch` aggregate: it does not provide batch lifecycle, group status, `MaxParallelism`, sharding, broadcast or fan-in semantics.
 
-`IJobClient.EnqueueBatchAsync` is a bounded admission operation for independent
-Runs. The control plane validates every request before calling
-`IJobSubmissionStore.SubmitBatchAsync`; the store then persists the new Runs and
-their Outbox rows in one transaction, preserving input order and per-item
-idempotency. `JobRuntimeOptions.MaxSubmissionBatchSize` defaults to 256 and
-protects adapter allocation, validation cost, transaction duration, and rollback
-size. Typed and broker-ingress adapters apply the same boundary before creating
-translated command arrays; the control plane repeats it as the authoritative
-check.
-
-The in-process client and HTTP client use the same contract. HTTP callers use
-`POST /api/kubejob/jobs/batch`, so the remote adapter does not silently degrade
-the operation into unbounded concurrent single-row requests. This is still not
-a durable `JobBatch` aggregate: there is no batch lifecycle, group status,
-`MaxParallelism`, sharding, or broadcast policy. Those remain the separate
-roadmap feature described in [roadmap.md](./roadmap.md).
-
-## Durable model
+## Managed durable model
 
 ```text
 JobSchedule ──creates──> JobRun ──contains──> JobAttempt
                               │
                               └── current Attempt lease/fencing pointer
 
-Worker ──starts──> WorkerSession ──owns temporarily──> JobAttempt
+Worker ──starts──> WorkerSession ──temporarily owns──> JobAttempt
 ```
 
-- **JobRun** is the logical request. It survives retries and worker changes.
-- **JobAttempt** is one physical execution.
+- **JobRun** is the logical managed request and survives retries or worker changes.
+- **JobAttempt** is one physical managed execution.
 - **WorkerId** is stable deployment identity.
-- **SessionId/Epoch** identify one process lifetime.
+- **SessionId/Epoch** identify one worker process lifetime.
 - **LeaseToken** fences a specific Attempt ownership period.
-- **JobSchedule** is an independent template that creates Runs.
+- **JobSchedule** is an independent durable definition.
 
-## State source and transport
+## Managed ordering
 
-PostgreSQL is the authoritative state source. A submission transaction inserts:
+PostgresManaged queues default to `Parallel`.
 
-```text
-Kj2_JobRuns
-Kj2_Outbox   (BrokerDispatch-profile queues only)
-```
+### KeyOrdered
 
-The outbox row is written only for `BrokerDispatch`-profile queues; `Pull`
-submissions skip it because workers discover claimable runs directly via the
-control plane. The Outbox publisher converts the durable row to an execution
-envelope through the selected transport adapter.
+`KeyOrdered` requires a non-empty `ConcurrencyKey`. PostgreSQL prevents a later committed Run with the same Queue/key ordering domain from claiming before its earlier non-terminal predecessor.
 
-The Outbox publisher invokes `IWorkAvailableNotifier`. The default implementation
-is a no-op because workers periodically pull. MQ adapters may wake workers sooner,
-but notification delivery is never the source of execution state.
+Different keys remain parallel.
 
-## Pull scheduling
+### StrictFifo
 
-A worker reports its queues and handler capabilities, but the control plane
-recomputes actual free capacity from `MaxConcurrency - active Attempts`.
+`StrictFifo` serializes the managed Queue/lane through PostgreSQL's ordering gate. It is not implemented by reviving the removed RabbitMQ lane/admission model.
 
-The PostgreSQL claim transaction:
+BrokerNative ordering must be provided by transport-native partition or single-consumer semantics. The current V3 RabbitMQ Job runtime does not expose a managed `ConcurrencyKey` ordering guarantee, so the client rejects that option.
 
-1. locks the Worker Session row;
-2. verifies SessionId/Epoch and `Ready` state;
-3. computes server-side capacity;
-4. selects eligible Runs with `FOR UPDATE SKIP LOCKED`;
-5. serializes identical concurrency keys with transaction advisory locks;
-6. inserts Attempts and leases;
-7. updates each Run's current Attempt pointer;
-8. commits once.
+## Managed completion and fencing
 
-No central in-memory scheduler is required, and multiple control-plane replicas
-may claim concurrently.
+A PostgresManaged completion is accepted only when the active Run/Attempt/session/epoch/lease identity still matches. A stale worker cannot overwrite a newer session.
 
-## Key-ordered queues
-
-Queues default to `Parallel`. A deployment may set a queue's
-`QueueDeliveryOptions.Queues[queue].OrderingMode` to `KeyOrdered`; every submission to that queue
-must then provide `ConcurrencyKey`. PostgreSQL assigns each Run an immutable
-`OrderingSequence` when it is persisted. A claim may execute a key-ordered Run
-only when no non-terminal earlier Run with the same queue, execution lane, and
-key exists.
-
-This is a durable ordering gate over committed-visible Runs: broker prefetch,
-redelivery, retry delay, and worker failover cannot allow a later committed Run
-to overtake a visible predecessor. Concurrent submissions that have not yet
-committed are outside the database visibility contract, so a commit gap can
-still produce an inverted sequence. Different keys and execution lanes remain
-parallel. A retry therefore blocks only its own key within its lane, rather than
-the whole logical queue.
-
-Schedules use the same Run policy boundary. `CronScheduleOptions.ConcurrencyKey`
-is copied to every occurrence Run; a Schedule targeting a `KeyOrdered` queue
-must provide a non-empty key or the control plane rejects the Schedule. The
-Schedule also persists its per-run `RetryPolicy`, `Continuation`, and
-`Compensation`, so an occurrence does not silently fall back to a different
-submission contract.
-
-## Strict-FIFO queues
-
-A queue may instead set `OrderingMode` to `StrictFifo`: the entire queue (or
-lane) is processed one Run at a time — a Run is never claimed while a
-non-terminal predecessor on the same queue and lane exists, equivalent to
-prefetch=1 on every consumer. The claim gate verifies OrderingSequence
-monotonicity like `KeyOrdered`, but it is keyed on the whole lane rather than
-per `ConcurrencyKey`, so no key is required. RabbitMQ deployments must satisfy
-`ValidateStrictFifoPolicy`: `UseSingleActiveConsumer` enabled
-(x-single-active-consumer), `PrefetchCount` = 1, and `ExecutionLaneCount` = 1
-for global FIFO; the transport fails startup with a clear error otherwise.
-
-## Completion fencing
-
-A completion is accepted only when all durable identity and ownership values
-still match and the lease has not expired. Worker registration and completion
-use the same WorkerId advisory-lock key, so a newly registered Session prevents
-the old Session from committing afterward.
-
-Database state is written before transport acknowledgement. Duplicate delivery
-therefore becomes a harmless lookup of an already terminal Run.
-
-A Worker whose heartbeat is rejected stops claiming, cancels its local Attempts,
-and fails its hosted service so the process supervisor can restart it with a new
-SessionId. It does not continue polling with a fenced identity. If a handler
-ignores cancellation, the worker still fails its hosted service after the
-configured drain timeout so the supervisor can interrupt it.
-
-Handlers must honor the `CancellationToken` in their `JobExecutionContext`.
-The token links the attempt timeout, the session fence, and worker drain.
-Delivery is at-least-once: an attempt whose handler ignores cancellation may
-keep running after its lease expires and the control plane has requeued the
-Run, so a later attempt can execute concurrently until the old handler returns
-or its process is restarted.
+Handlers must honor `JobExecutionContext.CancellationToken`. At-least-once still applies: a handler that ignores cancellation can continue external side effects after its lease is lost and a replacement attempt starts.
 
 ## Retry and lease recovery
 
-Retryable failure closes the current Attempt and returns the same Run to
-`Pending` with a future `AvailableAt`. A new Attempt is created on the next
-claim.
+For PostgresManaged, retryable failure closes the current Attempt and returns the Run to `Pending` with a future `AvailableAt`. A later claim creates a new Attempt. Lease reconciliation can cancel, requeue or dead-letter the managed Run according to durable state and attempt budget.
 
-The lease reconciler closes expired Attempts as `LeaseLost`, then either:
+For BrokerNative, the transport adapter owns the retry handoff. The RabbitMQ adapter publishes the retry copy, waits for publisher confirmation, and only then ACKs the original delivery. Worker/process loss leaves the original delivery unacked so RabbitMQ can redeliver it.
 
-- cancels a cancel-requested Run;
-- requeues the Run and writes another Outbox event;
-- or marks it `Dead` after the configured attempt limit.
+## Work-available wake hints
 
-When a Run reaches a terminal state, configured Continuation and Compensation
-actions are created in the same durable transaction. A terminal Run reached by
-retry exhaustion is eligible for `OnAnyTerminal` continuation and compensation;
-a cancel does not fire either action. The current contract rejects cross-Queue
-terminal actions until their separate Queue delivery target can be resolved and
-persisted. Each child Run records `ParentRunId` and `RelationKind`; lineage is
-therefore a storage contract shared by the in-memory reference adapter and
-PostgreSQL, not an adapter-specific metadata convention.
+PostgreSQL remains the only execution authority for PostgresManaged. Wake notifications reduce discovery latency only; they never grant ownership.
 
-## Schedule reconciliation
-
-Schedules have recoverable claims and optimistic versions. A reconciler computes
-a fire plan using cron plus the configured time zone.
-
-The PostgreSQL fire transaction:
-
-1. verifies ScheduleId, claim token, and expected version;
-2. evaluates `SkipIfRunning` inside the transaction;
-3. inserts a deterministically identified occurrence Run if required;
-4. inserts the Outbox event;
-5. advances `NextFireAt` and clears the claim;
-6. commits once.
-
-`FireOnce` creates one compensating Run after multiple missed occurrences,
-but only while the miss is still within the configured
-`ScheduleMisfireThreshold` (default 1 hour); a stale miss — e.g. a schedule
-that was disabled for a long time and re-enabled, whose `NextFireAt` still
-points at the old due time — is skipped like `SkipMissed` instead of
-backfilling an outdated occurrence. `SkipMissed` advances directly to the next
-future occurrence. Failed claim processing backs off with
-`ScheduleFailureDelay` jittered to `[0.5, 1.5] x` so a recovering database
-blip does not re-synchronize every schedule and control-plane instance onto
-the same retry instant.
-
-## Dashboard query boundary
-
-The embedded Dashboard reads through `IJobRuntimeDashboardStore` and
-`IJobQueryStore`; it does not reach into storage repositories or worker protocol
-credentials.
-
-It exposes:
+For an immediately runnable new Run, the hot path is:
 
 ```text
-Overview and Queue backlog
-Run list and Run detail
-Attempt timeline
-Worker Session state and capacity
-Schedule state and policies
+commit JobRun
+    ↓
+ManagedWorkAvailableDispatcher
+    ↓  coalesce by logical Queue
+IWorkAvailableNotifier
+    ↓
+optional in-process / RabbitMQ wake
 ```
 
-List pages use payload-free Run projections; full Payload JSON is fetched only
-when an operator explicitly opens one Run detail page and the host has enabled
-payload display. Runs are paginated. Worker Session and Schedule views have
-configurable hard limits. PostgreSQL supplies indexes for the list filters and
-sort order.
+The dispatcher runs after the durable Run transaction has committed. It is best-effort and process-local, so an immediate Submit/Batch no longer inserts one `Kj2_Outbox` row per Run and the producer does not wait for broker publisher-confirm latency. Losing the wake is safe: normal PostgreSQL polling is the recovery path and may only add polling delay.
 
-The Dashboard has no public CDN dependency, is read-only by default, and hides
-Payload JSON by default. A host may bind it to a named ASP.NET Core authorization
-policy and explicitly enable payload or mutation capabilities. LeaseToken and
-fencing credentials are never rendered.
+Future-dated `NotBefore` Runs and explicit recovery/requeue scenarios currently retain durable WorkAvailable outbox rows. `OutboxPublisherService` polls those lower-frequency compatibility rows and republishes the same non-authoritative hint. Schedule/recovery paths can be migrated independently later without changing execution correctness.
 
-## Bounded process memory
+RabbitMQ wake routing is keyed by logical Queue. Every independent managed ConsumerGroup notification queue binds that Queue key, so one coalesced Queue wake reaches all groups while replicas inside each group compete.
 
-Worker process memory is bounded by:
+## Scheduling
+
+Schedule definitions remain durable in PostgreSQL and are claimed with recoverable ownership plus optimistic versions.
+
+At fire time:
+
+- **PostgresManaged** creates a durable occurrence Run and advances the schedule cursor transactionally.
+- **BrokerNative** creates a deterministic occurrence/message id, publishes the self-contained message through the selected transport, waits for publisher confirmation, then advances the schedule cursor.
+
+A crash after BrokerNative publish confirmation but before cursor commit may redeliver the same deterministic occurrence id. This is an intentional at-least-once trade-off and is safer than advancing the cursor before publish succeeds.
+
+Policies requiring strong Run state, such as `SkipIfRunning`, remain PostgresManaged-only.
+
+## Dashboard boundary
+
+The Dashboard reads managed state through runtime query interfaces. It does not own execution state and it does not expose RabbitMQ physical queue/exchange topology as the product model.
+
+Its logical Queue view should focus on:
 
 ```text
-MaxConcurrentJobs
-+ bounded execution channel
-+ owned Attempt dictionary
-+ claim/renewal batches
-+ handler registry
-+ bounded persisted failure details
+Queue
+Runtime authority
+Transport (BrokerNative only)
+Managed ordering policy
+Worker/session health
 ```
 
-Production history and Payloads remain in PostgreSQL and are not accumulated by
-Worker processes. The in-memory provider intentionally retains process-local
-state and is intended for development, tests, and small ephemeral deployments;
-it is not a durable production history store.
+BrokerNative does not currently provide a strong per-message lifecycle in the managed Dashboard unless a separate asynchronous projection is added in the future.
 
 ## Deployment modes
 
-### Unified
+### Unified managed host
 
 ```text
 ASP.NET process
-├── control plane services
-├── in-process worker protocol
-├── worker execution engine
+├── control plane
+├── PostgresManaged worker
+├── shared WorkerExecutionEngine
 ├── optional Dashboard
-└── shared PostgreSQL state store
+└── PostgreSQL
 ```
 
-The transport is an interface call, not localhost HTTP.
-
-### Distributed
+### Distributed managed host
 
 ```text
-API / client ──HTTP──> control plane replicas ──PostgreSQL
-worker replicas ──HTTP pull/renew/complete──> control plane replicas
-operators ──HTTP──> protected Dashboard route
+API/client ──HTTP──> control-plane replicas ──PostgreSQL
+workers ──HTTP claim/renew/complete──────────> control-plane replicas
 ```
 
-A worker may contact any healthy control-plane replica because coordination is
-transactional in the state store.
+### BrokerNative worker pool
 
-Business-message ingress is a separate adapter role. A generic RabbitMQ or Kafka
-ingress adapter submits an `EnqueueJobRequest` through `JobControlPlane`, uses
-the broker message identity as the idempotency key, and acknowledges or commits
-only after durable acceptance. It never grants execution ownership.
+```text
+producer ──IMessageTransportPublisher──> broker
+worker replicas ──consume───────────────> broker
+worker replicas ──WorkerExecutionEngine→ handlers
+```
+
+The BrokerNative data plane does not require an `IWorkerRuntimeClient` or PostgreSQL connection for normal execution.
 
 ## Version boundary
 
-The runtime is V2-only. The previous non-generic handler API, push dispatcher,
-JobSpec/WorkerNode model, legacy tables, and legacy Dashboard are not registered
-or supported as a compatibility path.
+The active runtime is V3 Single Authority. Historical V2/BrokerDispatch ADRs remain in the repository only as decision history. [ADR 015](../adr/015-v3-single-authority-runtime-model.md) is the current architecture decision.

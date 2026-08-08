@@ -13,7 +13,7 @@ namespace KubeJob.Tests.Runtime;
 public sealed class HostingConfigurationTests
 {
     [Fact]
-    public void Server_registers_the_complete_V2_control_plane()
+    public void Server_registers_the_complete_control_plane()
     {
         var services = new ServiceCollection();
 

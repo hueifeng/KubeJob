@@ -103,19 +103,24 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return new SubmitJobResult(existing, Existing: true);
         }
 
-        // PostgresManaged remains PostgreSQL-authoritative. This transactional
-        // outbox row is only a best-effort wake signal; workers still claim the
-        // durable Run from PostgreSQL and polling remains the correctness path.
-        await AddOutboxAsync(
-            connection,
-            transaction,
-            inserted.Queue,
-            OutboxEventTypes.WorkAvailable,
-            JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
-            inserted.AvailableAt,
-            cancellationToken,
-            target,
-            partitionKey: inserted.ConcurrencyKey);
+        // Immediate PostgresManaged submissions no longer write one durable
+        // outbox row per Run. JobControlPlane emits a best-effort coalesced wake
+        // after commit and worker polling remains the correctness path. Keep the
+        // durable outbox only for future-dated NotBefore work until delayed wake
+        // handling is migrated separately.
+        if (inserted.AvailableAt > DateTimeOffset.UtcNow)
+        {
+            await AddOutboxAsync(
+                connection,
+                transaction,
+                inserted.Queue,
+                OutboxEventTypes.WorkAvailable,
+                JsonSerializer.Serialize(new { runId = inserted.Id, queue = inserted.Queue }, SerializerOptions),
+                inserted.AvailableAt,
+                cancellationToken,
+                target,
+                partitionKey: inserted.ConcurrencyKey);
+        }
 
         await transaction.CommitAsync(cancellationToken);
         return new SubmitJobResult(inserted, Existing: false);
@@ -273,18 +278,22 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var results = new SubmitJobResult[count];
-        var workAvailableOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
+        var wakeCutoff = DateTimeOffset.UtcNow;
+        var delayedWakeOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>();
         for (var index = 0; index < count; index++)
         {
             if (inserted.TryGetValue(ids[index], out var run))
             {
                 results[index] = new SubmitJobResult(run, Existing: false);
-                workAvailableOutboxItems.Add((
-                    run.Queue,
-                    JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
-                    run.AvailableAt,
-                    targets[index],
-                    run.ConcurrencyKey));
+                if (run.AvailableAt > wakeCutoff)
+                {
+                    delayedWakeOutboxItems.Add((
+                        run.Queue,
+                        JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
+                        run.AvailableAt,
+                        targets[index],
+                        run.ConcurrencyKey));
+                }
             }
             else
             {
@@ -302,12 +311,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        if (workAvailableOutboxItems.Count > 0)
+        if (delayedWakeOutboxItems.Count > 0)
         {
             await AddOutboxBatchAsync(
                 connection,
                 transaction,
-                workAvailableOutboxItems,
+                delayedWakeOutboxItems,
                 OutboxEventTypes.WorkAvailable,
                 cancellationToken);
         }

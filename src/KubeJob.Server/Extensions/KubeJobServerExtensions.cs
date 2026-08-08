@@ -45,13 +45,14 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<KubeJobControlPlaneMetrics>();
-        services.TryAddSingleton<OutboxPublisherSignal>();
+        services.TryAddSingleton<IWorkAvailableNotifier, NoopWorkAvailableNotifier>();
+        services.TryAddSingleton<ManagedWorkAvailableDispatcher>();
         services.TryAddSingleton<JobControlPlane>(sp => new JobControlPlane(
             sp.GetRequiredService<IJobSubmissionStore>(),
             sp.GetRequiredService<IJobQueryStore>(),
             sp.GetRequiredService<IQueueRouter>(),
             sp.GetRequiredService<IOptions<JobRuntimeOptions>>(),
-            sp.GetRequiredService<OutboxPublisherSignal>(),
+            sp.GetRequiredService<ManagedWorkAvailableDispatcher>(),
             sp.GetService<KubeJobControlPlaneMetrics>()));
         services.TryAddSingleton<JobMessageIngress>();
         services.TryAddSingleton<IJobMessageIngress>(sp => sp.GetRequiredService<JobMessageIngress>());
@@ -59,7 +60,6 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<CompletionBatcher>();
         services.TryAddSingleton<WorkerControlPlane>();
         services.TryAddSingleton<ScheduleControlPlane>();
-        services.TryAddSingleton<IWorkAvailableNotifier, NoopWorkAvailableNotifier>();
 
         // PostgresManaged policy is always PostgreSQL-authoritative. These
         // settings only describe managed worker eligibility and ordering.
@@ -96,6 +96,7 @@ public static class KubeJobServerExtensions
             .AddApplicationPart(typeof(JobsApiController).Assembly);
         services.AddHostedService<ScheduleReconcilerService>();
         services.AddHostedService<LeaseReaperService>();
+        services.AddHostedService(sp => sp.GetRequiredService<ManagedWorkAvailableDispatcher>());
         services.AddHostedService<OutboxPublisherService>();
         services.AddHostedService<RuntimeRetentionService>();
         services.AddHostedService<OrderingMetricsRefreshService>();

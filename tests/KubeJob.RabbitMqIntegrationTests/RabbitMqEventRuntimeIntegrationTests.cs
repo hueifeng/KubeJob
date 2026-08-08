@@ -101,8 +101,7 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
                 new EventPublishOptions
                 {
                     MaxAttempts = 3,
-                    Timeout = TimeSpan.FromSeconds(10),
-                    IdempotencyKey = "order:1001"
+                    Timeout = TimeSpan.FromSeconds(10)
                 });
 
             handle.EventId.Should().NotBeNullOrWhiteSpace();
