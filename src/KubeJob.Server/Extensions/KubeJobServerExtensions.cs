@@ -47,7 +47,9 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<KubeJobControlPlaneMetrics>();
-        services.TryAddSingleton<OutboxPublisherSignal>();
+        services.TryAddSingleton<OutboxPublisherSignal>(sp =>
+            new OutboxPublisherSignal(
+                sp.GetRequiredService<IWorkAvailableNotifier>() is not NoopWorkAvailableNotifier));
         services.TryAddSingleton<JobControlPlane>(sp => new JobControlPlane(
             sp.GetRequiredService<IJobSubmissionStore>(),
             sp.GetRequiredService<IJobQueryStore>(),
