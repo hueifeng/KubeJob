@@ -60,22 +60,6 @@ public sealed class JobRuntimeController : ControllerBase
         return Ok(await _controlPlane.ClaimAsync(request, cancellationToken));
     }
 
-    [HttpPost("admissions")]
-    public async Task<ActionResult<AdmitExecutionResponse>> Admit(
-        [FromBody] AdmitExecutionRequest request,
-        CancellationToken cancellationToken)
-    {
-        return Ok(await _controlPlane.AdmitAsync(request, cancellationToken));
-    }
-
-    [HttpPost("admissions/batch")]
-    public async Task<ActionResult<AdmitExecutionBatchResponse>> AdmitBatch(
-        [FromBody] AdmitExecutionBatchRequest request,
-        CancellationToken cancellationToken)
-    {
-        return Ok(await _controlPlane.AdmitBatchAsync(request, cancellationToken));
-    }
-
     [HttpPost("leases/renew")]
     public async Task<ActionResult<RenewLeasesResponse>> Renew(
         [FromBody] RenewLeasesRequest request,
@@ -99,7 +83,6 @@ public sealed class JobRuntimeController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _controlPlane.CompleteAsync(request, cancellationToken);
-
         return result.Accepted ? Ok(result) : Conflict(result);
     }
 }
