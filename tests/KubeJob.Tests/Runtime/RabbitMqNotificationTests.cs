@@ -183,7 +183,7 @@ public sealed class RabbitMqNotificationTests
     {
         var options = new RabbitMqBrokerNativeOptions
         {
-            QueuePrefix = new string('q', 240)
+            QueuePrefix = new string('q', 250)
         };
 
         options.Invoking(x => x.GetQueueName("orders.push"))
