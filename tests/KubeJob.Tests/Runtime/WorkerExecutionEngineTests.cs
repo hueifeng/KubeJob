@@ -158,6 +158,34 @@ public sealed class WorkerExecutionEngineTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task Worker_shutdown_wins_when_attempt_cancel_is_also_set()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new WaitForCancellationInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+        using var stopping = new CancellationTokenSource();
+        using var attempt = new CancellationTokenSource();
+        stopping.Cancel();
+        attempt.Cancel();
+
+        var act = async () => await engine.ExecuteAsync(
+            CreateRequest("order.created") with
+            {
+                AttemptCancellationToken = attempt.Token,
+                WorkerStoppingToken = stopping.Token
+            });
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     private static WorkerExecutionRequest CreateRequest(string jobKey) =>
         new(
             "run-1",
