@@ -33,7 +33,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                  ClaimUntil, CreatedAt, UpdatedAt, Version)
             VALUES
                 (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @CronExpression,
-                 @TimeZoneId, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode,
+                 @TimeZoneId, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, NULL, @OrderingMode,
                  @Priority, @MisfirePolicy,
                  @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @ConcurrencyKey,
                  CAST(@RetryPolicyJson AS jsonb),
@@ -51,9 +51,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 schedule.TimeZoneId,
                 schedule.Queue,
                 schedule.ExecutionLane,
-                DeliveryProfile = (int)schedule.DeliveryProfile,
+                DeliveryProfile = (int)ExecutionDeliveryProfile.Pull,
                 schedule.ConsumerGroup,
-                schedule.TransportId,
                 OrderingMode = (int)schedule.OrderingMode,
                 schedule.Priority,
                 MisfirePolicy = (int)schedule.MisfirePolicy,
@@ -96,7 +95,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                  ClaimUntil, CreatedAt, UpdatedAt, Version)
             VALUES
                 (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @CronExpression,
-                 @TimeZoneId, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode,
+                 @TimeZoneId, @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, NULL, @OrderingMode,
                  @Priority, @MisfirePolicy,
                  @ConcurrencyPolicy, @MaxAttempts, @TimeoutSeconds, @ConcurrencyKey,
                  CAST(@RetryPolicyJson AS jsonb),
@@ -112,7 +111,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 ExecutionLane = EXCLUDED.ExecutionLane,
                 DeliveryProfile = EXCLUDED.DeliveryProfile,
                 ConsumerGroup = EXCLUDED.ConsumerGroup,
-                TransportId = EXCLUDED.TransportId,
+                TransportId = NULL,
                 OrderingMode = EXCLUDED.OrderingMode,
                 Priority = EXCLUDED.Priority,
                 MisfirePolicy = EXCLUDED.MisfirePolicy,
@@ -139,9 +138,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 schedule.TimeZoneId,
                 schedule.Queue,
                 schedule.ExecutionLane,
-                DeliveryProfile = (int)schedule.DeliveryProfile,
+                DeliveryProfile = (int)ExecutionDeliveryProfile.Pull,
                 schedule.ConsumerGroup,
-                schedule.TransportId,
                 OrderingMode = (int)schedule.OrderingMode,
                 schedule.Priority,
                 MisfirePolicy = (int)schedule.MisfirePolicy,
@@ -374,7 +372,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                      IdempotencyKey, ConcurrencyKey, ScheduleId, ScheduledFor,
                      CancelRequested, Version)
                 VALUES
-                    (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @OrderingMode,
+                    (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, NULL, @OrderingMode,
                      @Priority,
                      @Pending, @Now, @Now, 0, @MaxAttempts, @TimeoutSeconds,
                      CAST(@RetryPolicyJson AS jsonb), CAST(@ContinuationJson AS jsonb),
@@ -388,9 +386,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     schedule.PayloadJson,
                     schedule.Queue,
                     schedule.ExecutionLane,
-                    DeliveryProfile = (int)schedule.DeliveryProfile,
+                    DeliveryProfile = (int)ExecutionDeliveryProfile.Pull,
                     schedule.ConsumerGroup,
-                    schedule.TransportId,
                     OrderingMode = (int)schedule.OrderingMode,
                     schedule.Priority,
                     Pending = (int)JobPhase.Pending,
@@ -439,9 +436,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
                     databaseNow,
                     cancellationToken,
                     new DeliveryTarget(
-                        schedule.DeliveryProfile,
+                        ExecutionDeliveryProfile.Pull,
                         schedule.ExecutionLane,
-                        schedule.TransportId,
+                        null,
                         schedule.ConsumerGroup,
                         schedule.OrderingMode),
                     partitionKey: run.ConcurrencyKey);
@@ -471,7 +468,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobSchedules
             SET NextFireAt = @NextFireAt,
-                LastFireAt = CASE WHEN @CreatedRun THEN @ScheduledFor ELSE LastFireAt END,
+                LastFireAt = @ScheduledFor,
                 ClaimToken = NULL,
                 ClaimUntil = NULL,
                 UpdatedAt = @Now,
@@ -485,7 +482,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 command.ClaimToken,
                 command.ExpectedVersion,
                 NextFireAt = command.NextFireAt.ToUniversalTime(),
-                CreatedRun = run is not null,
                 ScheduledFor = command.ScheduledFor.ToUniversalTime(),
                 Now = databaseNow
             },
