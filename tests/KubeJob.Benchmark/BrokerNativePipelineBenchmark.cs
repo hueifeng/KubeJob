@@ -23,15 +23,12 @@ namespace KubeJob.Benchmark;
 /// </summary>
 public sealed class BrokerNativePipelineBenchmark
 {
-    private const string LogicalQueue = "bench.broker-native";
-    private static readonly JobKey<BrokerNativeBenchPayload> JobKey = new("bench.broker-native.noop");
+    private const string LogicalQueue = "bench.broker-native.noop";
+    private static readonly JobKey<BrokerNativeBenchPayload> JobKey = new(LogicalQueue);
 
     private readonly BenchmarkOptions _options;
 
-    public BrokerNativePipelineBenchmark(BenchmarkOptions options)
-    {
-        _options = options;
-    }
+    public BrokerNativePipelineBenchmark(BenchmarkOptions options) => _options = options;
 
     public async Task<BrokerNativeBenchmarkResult> RunAsync()
     {
@@ -85,8 +82,8 @@ public sealed class BrokerNativePipelineBenchmark
             })
             .Build();
 
-        // Architectural guard: this benchmark must not accidentally become a
-        // PostgreSQL-backed pipeline while still being labeled BrokerNative.
+        // Guard the benchmark label itself: BrokerNative must not silently turn
+        // into a PostgreSQL-backed pipeline as registrations evolve.
         if (host.Services.GetService<NpgsqlDataSource>() is not null)
         {
             throw new InvalidOperationException(
@@ -102,7 +99,6 @@ public sealed class BrokerNativePipelineBenchmark
                 TimeSpan.FromSeconds(20));
 
             var client = host.Services.GetRequiredService<IJobClient>();
-
             if (_options.Warmup > 0)
             {
                 await PublishAsync(client, _options.Warmup, measured: false);
@@ -116,7 +112,6 @@ public sealed class BrokerNativePipelineBenchmark
 
             await probe.WaitForMeasuredAsync(TimeSpan.FromSeconds(_options.RunTimeoutSeconds));
             var duration = Stopwatch.GetElapsedTime(startedAt);
-            var latency = Percentiles.Compute(probe.GetLatencyMilliseconds());
 
             return new BrokerNativeBenchmarkResult(
                 _options.JobCount,
@@ -128,7 +123,7 @@ public sealed class BrokerNativePipelineBenchmark
                 duration.TotalSeconds <= 0
                     ? 0
                     : _options.JobCount / duration.TotalSeconds,
-                latency,
+                Percentiles.Compute(probe.GetLatencyMilliseconds()),
                 enqueueWatch.Elapsed,
                 duration);
         }
@@ -225,8 +220,7 @@ public sealed class BrokerNativePipelineBenchmark
         }
         catch
         {
-            // Benchmark cleanup is best effort; unique names prevent a failed
-            // cleanup from corrupting a later measurement.
+            // Unique names keep a failed cleanup from corrupting later runs.
         }
     }
 
