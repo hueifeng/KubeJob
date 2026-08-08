@@ -137,8 +137,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             commands.Add(NewSubmission(idempotencyKey: $"batch:{index}", deliveryTarget: ManagedTarget()));
         }
 
-        // Duplicate idempotency keys must resolve to the first occurrence with
-        // Existing=true and must not write a second outbox row.
         commands.Add(NewSubmission(idempotencyKey: "batch:0", deliveryTarget: ManagedTarget()));
         commands.Add(NewSubmission(idempotencyKey: "batch:5", deliveryTarget: ManagedTarget()));
 
@@ -159,21 +157,33 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             run!.Phase.Should().Be(JobPhase.Pending);
         }
 
-        // Every newly inserted run gets exactly one work-available outbox row;
-        // the two duplicates contribute none.
+        // Immediate managed submission must not create one durable wake row per
+        // Run. The control plane emits a post-commit best-effort wake instead.
         var outbox = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(30),
             500,
             CancellationToken.None);
-        var workAvailable = outbox
-            .Where(x => string.Equals(x.EventType, "work-available", StringComparison.Ordinal))
-            .ToArray();
-        workAvailable.Should().HaveCount(200);
-        foreach (var runId in newRunIds)
-        {
-            workAvailable.Count(x => x.PayloadJson.Contains(runId)).Should().Be(1);
-        }
+        outbox.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Future_submit_keeps_durable_delayed_wake_outbox()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var availableAt = DateTimeOffset.UtcNow.AddMinutes(1);
+        var run = (await store.SubmitAsync(
+            NewSubmission(availableAt: availableAt, deliveryTarget: ManagedTarget()),
+            CancellationToken.None)).Run;
+
+        var outbox = await store.ClaimPendingAsync(
+            availableAt.AddMilliseconds(1),
+            TimeSpan.FromSeconds(30),
+            10,
+            CancellationToken.None);
+
+        outbox.Should().ContainSingle(message => message.PayloadJson.Contains(run.Id));
     }
 
     [Fact]
@@ -296,9 +306,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         (await store.GetRunAsync(parent.Id, CancellationToken.None))!
             .Phase.Should().Be(JobPhase.Succeeded);
 
-        // The continuation run must be claimable under its own job key, with
-        // the parent's execution context and the configured payload. The
-        // follow-up session registers the continuation job key as a capability.
         var followUpWorker = await store.RegisterAsync(
             new RegisterWorkerSessionRequest(
                 "cont-success-worker",
@@ -331,7 +338,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         followUpRun.ParentRunId.Should().Be(parent.Id);
         followUpRun.RelationKind.Should().Be(RunRelationKind.Continuation);
 
-        // Compensation must not fire on success.
         var compensationWorker = await store.RegisterAsync(
             new RegisterWorkerSessionRequest(
                 "cont-success-worker",
@@ -394,9 +400,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         (await store.GetRunAsync(parent.Id, CancellationToken.None))!
             .Phase.Should().Be(JobPhase.Failed);
 
-        // Both compensation (PermanentFailure) and OnAnyTerminal continuation
-        // fire, each under its own job key. A follow-up-capable session is
-        // registered for the compensation and continuation keys.
         var followUpWorker = await store.RegisterAsync(
             new RegisterWorkerSessionRequest(
                 "comp-failure-worker",
@@ -494,7 +497,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None);
 
         scheduled.Should().BeTrue();
-        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
+        messages.Should().ContainSingle(message => message.PayloadJson.Contains(run.Id));
 
         var canceled = await store.RequestCancelAsync(
             run.Id,
@@ -987,7 +990,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(deliveryTarget: ManagedTarget()), CancellationToken.None);
+        var run = (await store.SubmitAsync(NewSubmission(deliveryTarget: ManagedTarget()), CancellationToken.None)).Run;
+        (await store.RequeueWorkAvailableAsync(run.Id, DateTimeOffset.UtcNow, CancellationToken.None)).Should().BeTrue();
         var first = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMilliseconds(100),
@@ -1010,7 +1014,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(deliveryTarget: ManagedTarget()), CancellationToken.None);
+        var run = (await store.SubmitAsync(NewSubmission(deliveryTarget: ManagedTarget()), CancellationToken.None)).Run;
+        (await store.RequeueWorkAvailableAsync(run.Id, DateTimeOffset.UtcNow, CancellationToken.None)).Should().BeTrue();
         var first = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMilliseconds(100),
@@ -1047,12 +1052,14 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(
+        var firstRun = (await store.SubmitAsync(
             NewSubmission(idempotencyKey: "outbox-batch:one", deliveryTarget: ManagedTarget()),
-            CancellationToken.None);
-        await store.SubmitAsync(
+            CancellationToken.None)).Run;
+        var secondRun = (await store.SubmitAsync(
             NewSubmission(idempotencyKey: "outbox-batch:two", deliveryTarget: ManagedTarget()),
-            CancellationToken.None);
+            CancellationToken.None)).Run;
+        (await store.RequeueWorkAvailableAsync(firstRun.Id, DateTimeOffset.UtcNow, CancellationToken.None)).Should().BeTrue();
+        (await store.RequeueWorkAvailableAsync(secondRun.Id, DateTimeOffset.UtcNow, CancellationToken.None)).Should().BeTrue();
         var claimed = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromSeconds(30),
@@ -1609,6 +1616,10 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var keyedRun = (await store.SubmitAsync(
             NewSubmission(idempotencyKey: "maintenance-retain-me"),
             CancellationToken.None)).Run;
+        (await store.RequeueWorkAvailableAsync(
+            unkeyedRun.Id,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None)).Should().BeTrue();
 
         var worker = await RegisterAsync(store, "maintenance-worker", "maintenance-session");
         var claim = (await store.ClaimAsync(
