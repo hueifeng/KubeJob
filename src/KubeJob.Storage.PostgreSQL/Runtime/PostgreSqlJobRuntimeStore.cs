@@ -41,6 +41,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
 
     private readonly SemaphoreSlim _databaseGate;
     private readonly KubeJobPostgreSqlMetrics? _metrics;
+    private readonly bool _emitWorkAvailableOutbox;
 
     static PostgreSqlJobRuntimeStore()
     {
@@ -74,12 +75,14 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         NpgsqlDataSource businessDataSource,
         NpgsqlDataSource backgroundDataSource,
         PostgreSqlStorageOptions options,
-        KubeJobPostgreSqlMetrics? metrics = null)
+        KubeJobPostgreSqlMetrics? metrics = null,
+        bool emitWorkAvailableOutbox = true)
     {
         _businessDataSource = businessDataSource;
         _backgroundDataSource = backgroundDataSource;
         _databaseGate = new SemaphoreSlim(options.MaximumConcurrentOperations);
         _metrics = metrics;
+        _emitWorkAvailableOutbox = emitWorkAvailableOutbox;
     }
 
     private async ValueTask<DatabaseOperationPermit> AcquireDatabaseOperationAsync(
@@ -141,7 +144,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome, null)
     };
 
-    private static async ValueTask AddOutboxAsync(
+    private async ValueTask AddOutboxAsync(
         IDbConnection connection,
         IDbTransaction transaction,
         string queue,
@@ -152,6 +155,12 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         DeliveryTarget? deliveryTarget = null,
         string? partitionKey = null)
     {
+        if (!_emitWorkAvailableOutbox
+            && string.Equals(eventType, OutboxEventTypes.WorkAvailable, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         var target = deliveryTarget
             ?? new DeliveryTarget(ExecutionDeliveryProfile.Pull, "default", null, "default");
         target.Validate();
