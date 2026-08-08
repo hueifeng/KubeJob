@@ -4,16 +4,12 @@ using KubeJob.Core.Runtime;
 namespace KubeJob.Benchmark;
 
 /// <summary>
-/// All knobs for one benchmark run. Defaults match the Podman dev stack in
-/// <c>compose.yaml</c> (PostgreSQL <c>kubejob/kubejob-dev</c> on 5432, RabbitMQ
-/// <c>kubejob/kubejob-dev</c> on 5672 with the management plugin on 15672). Every
-/// value can be overridden by an environment variable or a <c>--key value</c>
-/// command-line argument; arguments take precedence over environment, which
-/// takes precedence over the built-in default.
+/// End-to-end V3 benchmark options. The primary comparison is execution
+/// authority: PostgresManaged versus BrokerNative. RabbitMQ-specific admission,
+/// lane and dispatcher knobs were removed with the legacy dual-authority path.
 /// </summary>
 public sealed class BenchmarkOptions
 {
-    // --- External endpoints ---
     public string PostgresConnectionString { get; set; } =
         "Host=localhost;Port=5432;Username=kubejob;Password=kubejob-dev;Database=postgres";
     public string RabbitMqConnectionString { get; set; } =
@@ -21,134 +17,64 @@ public sealed class BenchmarkOptions
     public string RabbitMqManagementUri { get; set; } = "http://localhost:15672";
     public string RabbitMqUser { get; set; } = "kubejob";
     public string RabbitMqPassword { get; set; } = "kubejob-dev";
-
-    // --- Best-effort metrics sources ---
-    /// <summary>Podman container name for <c>podman stats</c> CPU sampling. Empty disables CPU.</summary>
     public string PostgresContainerName { get; set; } = "kubejob-dev-postgres-1";
     public bool CpuSamplingEnabled { get; set; } = true;
 
-    // --- Workload ---
-    public int JobCount { get; set; } = 2000;
-    public int Warmup { get; set; } = 100;
-    public int JobWorkMs { get; set; } = 0;
+    public QueueRuntimeMode RuntimeMode { get; set; } = QueueRuntimeMode.BrokerNative;
 
-    // --- Submission driver ---
-    /// <summary>Concurrent <c>EnqueueAsync</c> calls (typed) or RabbitMQ publishes (ingress).</summary>
-    public int SubmitterConcurrency { get; set; } = 16;
-    public SubmissionMode SubmissionMode { get; set; } = Benchmark.SubmissionMode.TypedClient;
-    public int IngressBatchSize { get; set; } = 100;
-    public int IngressBatchWaitMs { get; set; } = 5;
-    public int IngressPrefetch { get; set; } = 200;
-
-    // --- Worker ---
+    public int JobCount { get; set; } = 10_000;
+    public int Warmup { get; set; } = 500;
+    public int JobWorkMs { get; set; }
+    public int SubmitterConcurrency { get; set; } = 32;
     public int WorkerMaxConcurrency { get; set; } = 128;
-    public int PrefetchCount { get; set; } = 128;
+    public int PrefetchCount { get; set; } = 256;
 
-    /// <summary>Envelopes admitted per control-plane claim transaction.</summary>
-    public int AdmissionBatchSize { get; set; } = 16;
-    public int ConsumerDispatchConcurrency { get; set; } = 128;
-
-    // --- Server / outbox ---
+    // PostgresManaged tuning only.
     public int OutboxPublishConcurrency { get; set; } = 4;
     public int OutboxBatchSize { get; set; } = 512;
     public int OutboxPollIntervalMs { get; set; } = 10;
-    public int PublisherConcurrency { get; set; } = 32;
 
-    // --- Delivery ---
-    /// <summary>BrokerDispatch uses RabbitMQ; Pull uses worker polling (faster for local benchmarks).</summary>
-    public ExecutionDeliveryProfile DeliveryProfile { get; set; } = ExecutionDeliveryProfile.BrokerDispatch;
-
-    // --- Completion polling ---
-    public int PollIntervalMs { get; set; } = 100;
-    public int StatusPollParallelism { get; set; } = 32;
     public int RunTimeoutSeconds { get; set; } = 180;
-
-    // --- Scenarios ---
-    public IReadOnlyList<BenchScenario> Scenarios { get; set; } =
-        new[] { BenchScenario.Parallel, BenchScenario.KeyOrderedUniform, BenchScenario.KeyOrderedHotKey };
     public int HotKeyCardinality { get; set; } = 4;
-    /// <summary>Uniform key space size. Zero means a distinct key per Run.</summary>
-    public int UniformKeyCardinality { get; set; } = 0;
-
-    // --- Lane sweep (Item 1+5: fixed-N MQ lanes) ---
-    /// <summary>
-    /// Sweep N across <see cref="ExecutionLaneCount"/> values. Each combination
-    /// (scenario × N) produces one result row. Default: [1] (single lane, legacy).
-    /// </summary>
-    public IReadOnlyList<int> LaneCountSweep { get; set; } = new[] { 1 };
-    /// <summary>Convenience: the first (or only) lane count for non-sweeping callers.</summary>
-    public int ExecutionLaneCount => LaneCountSweep.Count > 0 ? LaneCountSweep[0] : 1;
-
-    // --- Metrics sampling ---
+    public int UniformKeyCardinality { get; set; }
     public int MetricsIntervalMs { get; set; } = 1000;
 
-    // --- Output ---
+    public IReadOnlyList<BenchScenario> Scenarios { get; set; } =
+        new[] { BenchScenario.Parallel };
+
     public string? OutputFile { get; set; }
 
-    /// <summary>
-    /// Parses environment variables and <c>--key value</c> arguments. Unknown
-    /// keys are ignored so a caller can pass through profiling flags. Boolean
-    /// values accept <c>0</c>/<c>false</c>/<c>no</c> as false.
-    /// </summary>
     public static BenchmarkOptions Parse(IDictionary<string, string> env, string[] args)
     {
-        var opts = new BenchmarkOptions();
+        var opts = new BenchmarkOptions
+        {
+            PostgresConnectionString = Env(env, "KUBEJOB_BENCHMARK_POSTGRES",
+                "KUBEJOB_TEST_POSTGRES",
+                "Host=localhost;Port=5432;Username=kubejob;Password=kubejob-dev;Database=postgres"),
+            RabbitMqConnectionString = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ",
+                "KUBEJOB_RABBITMQ_TEST_CONNECTION",
+                "amqp://kubejob:kubejob-dev@localhost:5672/"),
+            RabbitMqManagementUri = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_MANAGEMENT", "http://localhost:15672"),
+            RabbitMqUser = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_USER", "kubejob"),
+            RabbitMqPassword = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_PASSWORD", "kubejob-dev"),
+            PostgresContainerName = Env(env, "KUBEJOB_BENCH_POSTGRES_CONTAINER", "kubejob-dev-postgres-1")
+        };
 
-        // Environment defaults first.
-        opts.PostgresConnectionString = Env(env, "KUBEJOB_BENCHMARK_POSTGRES",
-            "KUBEJOB_TEST_POSTGRES", opts.PostgresConnectionString);
-        opts.RabbitMqConnectionString = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ",
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION", opts.RabbitMqConnectionString);
-        opts.RabbitMqManagementUri = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_MANAGEMENT",
-            opts.RabbitMqManagementUri);
-        opts.RabbitMqUser = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_USER", opts.RabbitMqUser);
-        opts.RabbitMqPassword = Env(env, "KUBEJOB_BENCHMARK_RABBITMQ_PASSWORD", opts.RabbitMqPassword);
-        opts.PostgresContainerName = Env(env, "KUBEJOB_BENCH_POSTGRES_CONTAINER",
-            opts.PostgresContainerName);
         opts.CpuSamplingEnabled = EnvBool(env, "KUBEJOB_BENCH_CPU", opts.CpuSamplingEnabled);
-
+        opts.RuntimeMode = ParseRuntime(Env(env, "KUBEJOB_BENCH_RUNTIME", opts.RuntimeMode.ToString()));
         opts.JobCount = EnvInt(env, "KUBEJOB_BENCH_JOBS", opts.JobCount);
         opts.Warmup = EnvInt(env, "KUBEJOB_BENCH_WARMUP", opts.Warmup);
         opts.JobWorkMs = EnvInt(env, "KUBEJOB_BENCH_WORK_MS", opts.JobWorkMs);
         opts.SubmitterConcurrency = EnvInt(env, "KUBEJOB_BENCH_SUBMITTERS", opts.SubmitterConcurrency);
-        opts.SubmissionMode = Enum.TryParse(Env(env, "KUBEJOB_BENCH_MODE",
-            opts.SubmissionMode.ToString()), ignoreCase: true, out SubmissionMode sm)
-            ? sm : opts.SubmissionMode;
-        opts.IngressBatchSize = EnvInt(env, "KUBEJOB_BENCH_INGRESS_BATCH", opts.IngressBatchSize);
-        opts.IngressBatchWaitMs = EnvInt(env, "KUBEJOB_BENCH_INGRESS_WAIT_MS", opts.IngressBatchWaitMs);
-        opts.IngressPrefetch = EnvInt(env, "KUBEJOB_BENCH_INGRESS_PREFETCH", opts.IngressPrefetch);
-        opts.DeliveryProfile = Enum.TryParse(Env(env, "KUBEJOB_BENCH_DELIVERY_PROFILE",
-            opts.DeliveryProfile.ToString()), ignoreCase: true, out ExecutionDeliveryProfile dp)
-            ? dp : opts.DeliveryProfile;
-
-        opts.WorkerMaxConcurrency = EnvInt(env, "KUBEJOB_BENCH_WORKER_CONCURRENCY",
-            opts.WorkerMaxConcurrency);
+        opts.WorkerMaxConcurrency = EnvInt(env, "KUBEJOB_BENCH_WORKER_CONCURRENCY", opts.WorkerMaxConcurrency);
         opts.PrefetchCount = EnvInt(env, "KUBEJOB_BENCH_PREFETCH", opts.PrefetchCount);
-        opts.AdmissionBatchSize = EnvInt(env, "KUBEJOB_BENCH_ADMISSION_BATCH", opts.AdmissionBatchSize);
-        opts.ConsumerDispatchConcurrency = EnvInt(env, "KUBEJOB_BENCH_DISPATCH_CONCURRENCY",
-            opts.ConsumerDispatchConcurrency);
-        opts.OutboxPublishConcurrency = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_CONCURRENCY",
-            opts.OutboxPublishConcurrency);
+        opts.OutboxPublishConcurrency = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_CONCURRENCY", opts.OutboxPublishConcurrency);
         opts.OutboxBatchSize = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_BATCH", opts.OutboxBatchSize);
-        opts.OutboxPollIntervalMs = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_POLL_MS",
-            opts.OutboxPollIntervalMs);
-        opts.PublisherConcurrency = EnvInt(env, "KUBEJOB_BENCH_PUBLISHER_CONCURRENCY",
-            opts.PublisherConcurrency);
-
-        opts.PollIntervalMs = EnvInt(env, "KUBEJOB_BENCH_POLL_MS", opts.PollIntervalMs);
-        opts.StatusPollParallelism = EnvInt(env, "KUBEJOB_BENCH_STATUS_PARALLELISM",
-            opts.StatusPollParallelism);
+        opts.OutboxPollIntervalMs = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_POLL_MS", opts.OutboxPollIntervalMs);
         opts.RunTimeoutSeconds = EnvInt(env, "KUBEJOB_BENCH_RUN_TIMEOUT_S", opts.RunTimeoutSeconds);
-
         opts.HotKeyCardinality = EnvInt(env, "KUBEJOB_BENCH_HOTKEY_COUNT", opts.HotKeyCardinality);
         opts.UniformKeyCardinality = EnvInt(env, "KUBEJOB_BENCH_UNIFORM_KEYS", opts.UniformKeyCardinality);
         opts.MetricsIntervalMs = EnvInt(env, "KUBEJOB_BENCH_METRICS_MS", opts.MetricsIntervalMs);
-
-        var laneSweepEnv = Env(env, "KUBEJOB_BENCH_LANES", string.Empty);
-        if (!string.IsNullOrWhiteSpace(laneSweepEnv))
-        {
-            opts.LaneCountSweep = ParseIntCsv(laneSweepEnv);
-        }
 
         var scenarioEnv = Env(env, "KUBEJOB_BENCH_SCENARIOS", string.Empty);
         if (!string.IsNullOrWhiteSpace(scenarioEnv))
@@ -156,70 +82,101 @@ public sealed class BenchmarkOptions
             opts.Scenarios = ParseScenarios(scenarioEnv);
         }
 
-        // --key value arguments override environment.
         ApplyArgs(opts, args);
+        Validate(opts);
         return opts;
     }
 
-    private static string Env(IDictionary<string, string> env, string key, string fallback) =>
-        env.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v : fallback;
+    private static void Validate(BenchmarkOptions opts)
+    {
+        if (opts.JobCount < 1 || opts.Warmup < 0 || opts.SubmitterConcurrency < 1
+            || opts.WorkerMaxConcurrency < 1 || opts.PrefetchCount < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(opts), "Benchmark counts and concurrency values must be positive.");
+        }
 
-    private static string Env(IDictionary<string, string> env, string primary, string secondary, string fallback) =>
+        if (opts.RuntimeMode == QueueRuntimeMode.BrokerNative
+            && opts.Scenarios.Any(s => s != BenchScenario.Parallel))
+        {
+            throw new NotSupportedException(
+                "BrokerNative benchmark currently supports Parallel only. " +
+                "PartitionKey/transport-native ordering must be benchmarked after that feature is enabled.");
+        }
+    }
+
+    private static QueueRuntimeMode ParseRuntime(string value) =>
+        Enum.TryParse<QueueRuntimeMode>(value, ignoreCase: true, out var parsed)
+            ? parsed
+            : throw new ArgumentException($"Unknown KubeJob runtime mode '{value}'.");
+
+    private static string Env(IDictionary<string, string> env, string key, string fallback) =>
+        env.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : fallback;
+
+    private static string Env(
+        IDictionary<string, string> env,
+        string primary,
+        string secondary,
+        string fallback) =>
         Env(env, primary, Env(env, secondary, fallback));
 
     private static int EnvInt(IDictionary<string, string> env, string key, int fallback) =>
-        env.TryGetValue(key, out var v) && int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)
-            ? i : fallback;
+        env.TryGetValue(key, out var value)
+        && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : fallback;
 
     private static bool EnvBool(IDictionary<string, string> env, string key, bool fallback)
     {
-        if (!env.TryGetValue(key, out var v) || string.IsNullOrWhiteSpace(v)) return fallback;
-        return !(v.Equals("0", StringComparison.Ordinal) || v.Equals("false", StringComparison.OrdinalIgnoreCase)
-                 || v.Equals("no", StringComparison.OrdinalIgnoreCase) || v.Equals("off", StringComparison.OrdinalIgnoreCase));
+        if (!env.TryGetValue(key, out var value) || string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        return !(value.Equals("0", StringComparison.Ordinal)
+                 || value.Equals("false", StringComparison.OrdinalIgnoreCase)
+                 || value.Equals("no", StringComparison.OrdinalIgnoreCase)
+                 || value.Equals("off", StringComparison.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<BenchScenario> ParseScenarios(string csv) =>
         csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(s => Enum.Parse<BenchScenario>(s, ignoreCase: true))
-            .ToArray();
-
-    private static IReadOnlyList<int> ParseIntCsv(string csv) =>
-        csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(s => int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
-            .Select(int.Parse)
+            .Select(value => Enum.Parse<BenchScenario>(value, ignoreCase: true))
             .ToArray();
 
     private static void ApplyArgs(BenchmarkOptions opts, string[] args)
     {
-        for (var i = 0; i < args.Length; i++)
+        for (var index = 0; index < args.Length; index++)
         {
-            var token = args[i];
-            if (!token.StartsWith("--", StringComparison.Ordinal)) continue;
+            var token = args[index];
+            if (!token.StartsWith("--", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             var key = token[2..];
-            var value = i + 1 < args.Length ? args[++i] : null;
-            if (value is null) continue;
+            var value = index + 1 < args.Length ? args[++index] : null;
+            if (value is null)
+            {
+                continue;
+            }
+
             switch (key)
             {
+                case "runtime": opts.RuntimeMode = ParseRuntime(value); break;
                 case "jobs": opts.JobCount = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "warmup": opts.Warmup = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "work-ms": opts.JobWorkMs = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "submitters": opts.SubmitterConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "mode": opts.SubmissionMode = Enum.Parse<SubmissionMode>(value, ignoreCase: true); break;
                 case "worker-concurrency": opts.WorkerMaxConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "prefetch": opts.PrefetchCount = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "admission-batch": opts.AdmissionBatchSize = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "dispatch-concurrency": opts.ConsumerDispatchConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "outbox-concurrency": opts.OutboxPublishConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "outbox-batch": opts.OutboxBatchSize = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "delivery-profile": opts.DeliveryProfile = Enum.Parse<ExecutionDeliveryProfile>(value, ignoreCase: true); break;
-                case "publisher-concurrency": opts.PublisherConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "poll-ms": opts.PollIntervalMs = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "status-parallelism": opts.StatusPollParallelism = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "run-timeout-s": opts.RunTimeoutSeconds = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "scenarios": opts.Scenarios = ParseScenarios(value); break;
                 case "hotkey-count": opts.HotKeyCardinality = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "uniform-keys": opts.UniformKeyCardinality = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "lanes": opts.LaneCountSweep = ParseIntCsv(value); break;
                 case "metrics-ms": opts.MetricsIntervalMs = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "postgres": opts.PostgresConnectionString = value; break;
                 case "rabbitmq": opts.RabbitMqConnectionString = value; break;
@@ -227,21 +184,7 @@ public sealed class BenchmarkOptions
                 case "out": opts.OutputFile = value; break;
                 case "cpu": opts.CpuSamplingEnabled = !value.Equals("0", StringComparison.Ordinal); break;
                 case "container": opts.PostgresContainerName = value; break;
-                default:
-                    // Unknown flags are ignored so callers can pass profiling hints.
-                    break;
             }
         }
     }
-}
-
-/// <summary>
-/// Submission entry point. <see cref="TypedClient"/> drives the production .NET
-/// client (<c>IJobClient.EnqueueAsync</c>); <see cref="Ingress"/> publishes
-/// RabbitMQ business messages through the ingress micro-batcher.
-/// </summary>
-public enum SubmissionMode
-{
-    TypedClient,
-    Ingress
 }
