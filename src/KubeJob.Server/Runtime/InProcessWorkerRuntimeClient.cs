@@ -1,13 +1,11 @@
-using KubeJob.ControlPlane.Runtime;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.ControlPlane;
 
 namespace KubeJob.Server.Runtime;
 
 /// <summary>
-/// Executes the worker protocol directly against the configured stores.
-/// Unified hosting therefore has the same attempt/lease semantics as remote
-/// workers without routing through localhost HTTP.
+/// Executes the PostgresManaged worker protocol directly against the control
+/// plane for unified hosting without localhost HTTP.
 /// </summary>
 public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
 {
@@ -20,10 +18,8 @@ public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
 
     public async ValueTask<RegisterWorkerSessionResponse> RegisterAsync(
         RegisterWorkerSessionRequest request,
-        CancellationToken cancellationToken)
-    {
-        return await _controlPlane.RegisterAsync(request, cancellationToken);
-    }
+        CancellationToken cancellationToken) =>
+        await _controlPlane.RegisterAsync(request, cancellationToken);
 
     public ValueTask<bool> HeartbeatAsync(
         WorkerHeartbeatRequest request,
@@ -37,27 +33,13 @@ public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
 
     public async ValueTask<ClaimJobsResponse> ClaimAsync(
         ClaimJobsRequest request,
-        CancellationToken cancellationToken)
-    {
-        return await _controlPlane.ClaimAsync(request, cancellationToken);
-    }
-
-    public ValueTask<AdmitExecutionResponse> AdmitAsync(
-        AdmitExecutionRequest request,
         CancellationToken cancellationToken) =>
-        _controlPlane.AdmitAsync(request, cancellationToken);
-
-    public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-        AdmitExecutionBatchRequest request,
-        CancellationToken cancellationToken) =>
-        _controlPlane.AdmitBatchAsync(request, cancellationToken);
+        await _controlPlane.ClaimAsync(request, cancellationToken);
 
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(
         RenewLeasesRequest request,
-        CancellationToken cancellationToken)
-    {
-        return await _controlPlane.RenewLeasesAsync(request, cancellationToken);
-    }
+        CancellationToken cancellationToken) =>
+        await _controlPlane.RenewLeasesAsync(request, cancellationToken);
 
     public ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
