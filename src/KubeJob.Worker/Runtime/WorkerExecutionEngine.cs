@@ -71,6 +71,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         ArgumentNullException.ThrowIfNull(request);
 
         var handlerStartedAt = 0L;
+        CancellationToken timeoutToken = default;
         try
         {
             if (!_registry.TryGet(request.JobKey, out var handler))
@@ -83,10 +84,11 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
 
             using var scope = _scopeFactory.CreateScope();
             using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(request.TimeoutSeconds));
+            timeoutToken = timeoutSource.Token;
             using var executionSource = CancellationTokenSource.CreateLinkedTokenSource(
                 request.WorkerStoppingToken,
                 request.AttemptCancellationToken,
-                timeoutSource.Token);
+                timeoutToken);
 
             var context = new JobExecutionContext
             {
@@ -164,15 +166,38 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
             return new WorkerExecutionResult(
                 JobAttemptOutcome.Canceled,
                 "canceled",
-                "Execution was canceled by the control plane, worker drain, or session fencing.");
+                "Execution was canceled by the control plane or attempt cancellation token.");
         }
-        catch (OperationCanceledException) when (!request.WorkerStoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (request.WorkerStoppingToken.IsCancellationRequested)
+        {
+            // Worker shutdown/drain is not a handler outcome. Runtime
+            // coordinators must preserve/recover delivery ownership instead of
+            // persisting or ACKing an artificial cancellation result.
+            throw;
+        }
+        catch (OperationCanceledException) when (timeoutToken.IsCancellationRequested)
         {
             RecordHandlerDuration(handlerStartedAt, "timed_out");
             return new WorkerExecutionResult(
                 JobAttemptOutcome.TimedOut,
                 "timeout",
                 $"Execution exceeded its {request.TimeoutSeconds} second timeout.");
+        }
+        catch (OperationCanceledException ex)
+        {
+            // A handler may throw OperationCanceledException for its own
+            // downstream token or application logic. Do not call that a
+            // KubeJob timeout when none of the runtime cancellation sources
+            // fired; classify it as a retryable handler failure instead.
+            _logger.LogWarning(
+                ex,
+                "KubeJob attempt {AttemptId} threw OperationCanceledException without a runtime cancellation source",
+                request.AttemptId);
+            RecordHandlerDuration(handlerStartedAt, "failed");
+            return new WorkerExecutionResult(
+                JobAttemptOutcome.RetryableFailure,
+                "handler_operation_canceled",
+                ex.Message);
         }
         catch (JsonException ex)
         {
