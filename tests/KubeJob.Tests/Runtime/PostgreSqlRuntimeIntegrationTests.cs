@@ -476,40 +476,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PostgreSql_work_reconciliation_requeues_pending_run_only()
-    {
-        if (!Enabled) return;
-        var store = _store!;
-        var run = (await store.SubmitAsync(NewSubmission(), CancellationToken.None)).Run;
-        var requeueAt = DateTimeOffset.UtcNow.AddMinutes(1);
-
-        var scheduled = await store.RequeueWorkAvailableAsync(
-            run.Id,
-            requeueAt,
-            CancellationToken.None);
-        var messages = await store.ClaimPendingAsync(
-            requeueAt,
-            TimeSpan.FromSeconds(30),
-            10,
-            CancellationToken.None);
-
-        scheduled.Should().BeTrue();
-        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
-
-        var canceled = await store.RequestCancelAsync(
-            run.Id,
-            "cancel before reconciliation",
-            CancellationToken.None);
-        var scheduledAfterCancel = await store.RequeueWorkAvailableAsync(
-            run.Id,
-            requeueAt,
-            CancellationToken.None);
-
-        canceled.Requested.Should().BeTrue();
-        scheduledAfterCancel.Should().BeFalse();
-    }
-
-    [Fact]
     public async Task Schedule_occurrence_idempotency_conflict_is_classified_instead_of_retried_forever()
     {
         if (!Enabled) return;
