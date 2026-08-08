@@ -106,6 +106,12 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
                 if (!returnedMessageIds.IsEmpty)
                 {
+                    // A durable Job queue may have been deleted/reconfigured
+                    // outside this process after it was cached as declared.
+                    // Rebuild the channel so the next retry re-declares the
+                    // physical topology instead of repeatedly trusting a stale
+                    // cache entry.
+                    InvalidateChannel();
                     throw new IOException(
                         $"RabbitMQ could not route {returnedMessageIds.Count} BrokerNative message(s): " +
                         string.Join(",", returnedMessageIds.Keys.Take(8)) +
@@ -155,16 +161,16 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                 var logicalQueue = Core.Queues.LogicalQueueName.Normalize(
                     request.Destination,
                     nameof(request.Destination));
-                if (_declaredJobQueues.Add(logicalQueue))
+                if (!_declaredJobQueues.Contains(logicalQueue))
                 {
                     // Queue/exchange declaration is synchronous broker RPC.
-                    // Cache successful declarations for this channel lifetime
-                    // instead of paying that RTT on every message. The cache is
-                    // cleared whenever the channel/connection is rebuilt.
+                    // Cache only successful declarations for this channel
+                    // lifetime instead of paying that RTT on every message.
                     RabbitMqBrokerNativeTopology.Declare(
                         channel,
                         _options,
                         new[] { logicalQueue });
+                    _declaredJobQueues.Add(logicalQueue);
                 }
 
                 var routingKey = string.IsNullOrWhiteSpace(request.RoutingKey)
@@ -186,7 +192,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                     nameof(request.Destination));
                 ArgumentException.ThrowIfNullOrWhiteSpace(request.RoutingKey);
                 var exchange = _options.GetEventExchangeName(topic);
-                if (_declaredEventTopics.Add(topic))
+                if (!_declaredEventTopics.Contains(topic))
                 {
                     // Publishers own only the Topic exchange. Subscription
                     // queues are declared by consumers. Zero subscribers is a
@@ -198,6 +204,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                         durable: true,
                         autoDelete: false,
                         arguments: null);
+                    _declaredEventTopics.Add(topic);
                 }
 
                 PublishUnconfirmed(
