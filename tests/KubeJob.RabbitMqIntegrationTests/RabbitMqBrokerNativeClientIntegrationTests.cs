@@ -97,7 +97,7 @@ public sealed class RabbitMqBrokerNativeClientIntegrationTests
             // BrokerNative submission is a self-contained broker message, not
             // a PostgreSQL Run waiting for later broker admission.
             var queryStore = host.Services.GetRequiredService<IJobQueryStore>();
-            var run = await queryStore.GetRunAsync(handle.JobId);
+            var run = await queryStore.GetRunAsync(handle.JobId, CancellationToken.None);
             run.Should().BeNull();
 
             await EventuallyAsync(
