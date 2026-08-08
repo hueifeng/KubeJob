@@ -1,7 +1,6 @@
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.ControlPlane.Runtime;
-using KubeJob.Server.Runtime;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Tests.ControlPlane;
@@ -21,33 +20,27 @@ public sealed class QueueRoutingTests
         route.Target.TransportId.Should().BeNull();
         route.Target.ConsumerGroup.Should().Be("default");
         route.Target.ExecutionLane.Should().Be("default");
+        route.Target.OrderingMode.Should().Be(ExecutionOrderingMode.Parallel);
     }
 
     [Fact]
-    public void Per_queue_definition_overrides_the_defaults()
+    public void Per_queue_definition_only_changes_managed_policy()
     {
-        var options = new QueueDeliveryOptions
-        {
-            Defaults =
-            {
-                Profile = ExecutionDeliveryProfile.Pull,
-                OrderingMode = ExecutionOrderingMode.Parallel
-            }
-        };
+        var options = new QueueDeliveryOptions();
         options.Queues["orders.push"] = new QueueDefinition
         {
-            Profile = ExecutionDeliveryProfile.BrokerDispatch,
-            TransportId = "rabbitmq",
             ConsumerGroup = "region-b",
+            ExecutionLane = "cpu",
             OrderingMode = ExecutionOrderingMode.KeyOrdered
         };
         var router = new ConfigurationQueueRouter(Options.Create(options));
 
         var route = router.Resolve("orders.push");
 
-        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
-        route.Target.TransportId.Should().Be("rabbitmq");
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
+        route.Target.TransportId.Should().BeNull();
         route.Target.ConsumerGroup.Should().Be("region-b");
+        route.Target.ExecutionLane.Should().Be("cpu");
         route.Target.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
     }
 
@@ -57,7 +50,6 @@ public sealed class QueueRoutingTests
         var options = new QueueDeliveryOptions();
         options.Queues[" orders.push "] = new QueueDefinition
         {
-            Profile = ExecutionDeliveryProfile.Pull,
             ConsumerGroup = "region-b"
         };
         var catalog = new QueueCatalog(Options.Create(options));
@@ -84,55 +76,17 @@ public sealed class QueueRoutingTests
     }
 
     [Fact]
-    public void Broker_dispatch_definition_requires_a_transport_id()
+    public void Managed_queue_policy_rejects_invalid_ordering_mode()
     {
         var options = new QueueDeliveryOptions();
         options.Queues["orders.push"] = new QueueDefinition
         {
-            Profile = ExecutionDeliveryProfile.BrokerDispatch,
-            TransportId = null
+            OrderingMode = (ExecutionOrderingMode)999
         };
 
         var action = () => options.Validate();
 
         action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*TransportId*");
-    }
-
-    [Fact]
-    public void Legacy_platform_policy_can_explicitly_route_a_managed_queue_to_broker_dispatch()
-    {
-        var options = new QueueDeliveryOptions();
-        options.Queues["orders.push"] = new QueueDefinition
-        {
-            Profile = ExecutionDeliveryProfile.BrokerDispatch,
-            TransportId = "rabbitmq"
-        };
-        var router = new ConfigurationQueueRouter(Options.Create(options));
-
-        var route = router.Resolve("orders.push");
-
-        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.BrokerDispatch);
-        route.Target.TransportId.Should().Be("rabbitmq");
-    }
-
-    [Fact]
-    public void Execution_envelope_preserves_logical_run_identity_for_legacy_dispatch()
-    {
-        var signal = new WorkAvailableSignal
-        {
-            SchemaVersion = WorkAvailableSignal.CurrentSchemaVersion,
-            EventId = "outbox-42",
-            Queue = "orders.push",
-            ExecutionLane = "default",
-            ConsumerGroup = "default",
-            RunId = "run-42"
-        };
-
-        var envelope = ExecutionEnvelope.FromWorkAvailableSignal(signal);
-
-        envelope.EventId.Should().Be("outbox-42");
-        envelope.Queue.Should().Be("orders.push");
-        envelope.RunId.Should().Be("run-42");
+            .WithMessage("*ordering mode*");
     }
 }
