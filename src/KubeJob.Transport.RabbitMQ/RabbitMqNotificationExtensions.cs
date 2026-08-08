@@ -59,7 +59,8 @@ public static class RabbitMqNotificationExtensions
     /// EventSubscriptionDefinitions without starting a consumer. Use this in a
     /// deployment/migration step when subscriptions must exist before handler
     /// workers come online so events can accumulate durably while workers are
-    /// offline.
+    /// offline. Provisioning is intentionally fail-fast so a deployment step
+    /// cannot report success while the requested durable topology is missing.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobEventTopologyProvisioner(
         this IServiceCollection services,
@@ -76,14 +77,15 @@ public static class RabbitMqNotificationExtensions
     /// (Topic, Subscription) owns one durable queue, and all replicas of that
     /// subscription compete for deliveries. Distinct subscriptions receive
     /// independent event copies. Retry and DLQ remain subscription-scoped.
-    /// Topology is provisioned before the consumer starts.
+    /// The consumer declares its own topology immediately before BasicConsume
+    /// and keeps its reconnect loop, so a temporary broker outage does not turn
+    /// normal worker startup into a fail-fast provisioning dependency.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobEventConsumer(
         this IServiceCollection services,
         Action<RabbitMqBrokerNativeOptions> configure)
     {
         services.AddRabbitMqKubeJobBrokerNativeTransport(configure);
-        services.AddHostedService<RabbitMqEventTopologyProvisionerService>();
         services.AddHostedService<RabbitMqBrokerNativeEventConsumerService>();
         return services;
     }
