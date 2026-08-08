@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KubeJob.ControlPlane.Runtime;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using Microsoft.Extensions.Logging.Abstractions;
 
