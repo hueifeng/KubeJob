@@ -58,6 +58,20 @@ public interface IMessageTransportPublisher
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Optional producer optimization for transports that can submit several
+/// messages before one durability confirmation. It does not make a batch
+/// atomic: a failure may be observed after the transport has accepted some or
+/// all messages, so callers must retain the same at-least-once retry semantics
+/// as repeated <see cref="IMessageTransportPublisher.PublishAsync"/> calls.
+/// </summary>
+public interface IMessageTransportBatchPublisher : IMessageTransportPublisher
+{
+    ValueTask PublishBatchAsync(
+        IReadOnlyList<TransportPublishRequest> requests,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IMessageTransportRegistry
 {
     IMessageTransportPublisher GetRequiredPublisher(string transportId);
