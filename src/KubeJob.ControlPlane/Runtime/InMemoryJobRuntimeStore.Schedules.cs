@@ -203,12 +203,10 @@ public sealed partial class InMemoryJobRuntimeStore
                         JobKey = schedule.JobKey,
                         PayloadJson = schedule.PayloadJson,
                         Queue = schedule.Queue,
-                        DeliveryProfile = schedule.DeliveryProfile,
+                        DeliveryProfile = ExecutionDeliveryProfile.Pull,
                         ExecutionLane = schedule.ExecutionLane,
                         ConsumerGroup = schedule.ConsumerGroup,
-                        TransportId = schedule.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch
-                            ? schedule.TransportId
-                            : null,
+                        TransportId = null,
                         OrderingMode = schedule.OrderingMode,
                         Priority = schedule.Priority,
                         Phase = JobPhase.Pending,
@@ -237,9 +235,6 @@ public sealed partial class InMemoryJobRuntimeStore
                 }
             }
 
-            // A schedule occurrence has been durably handled even when the
-            // execution authority is BrokerNative (no managed Run is created)
-            // or SkipIfRunning suppresses managed Run creation.
             schedule.LastFireAt = scheduledFor;
             schedule.NextFireAt = command.NextFireAt.ToUniversalTime();
             schedule.ClaimToken = null;
