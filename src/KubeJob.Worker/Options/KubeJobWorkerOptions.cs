@@ -46,7 +46,18 @@ public sealed class KubeJobWorkerOptions
     public int MaximumFailureMessageLength { get; set; } = 32 * 1024;
     public IList<Type> ExecutionMiddleware { get; init; } = [];
 
-    public void Validate(bool requireJobQueues = true)
+    /// <summary>
+    /// Validates a Managed/Job worker and therefore requires at least one
+    /// logical Job Queue. Kept parameterless for source compatibility.
+    /// </summary>
+    public void Validate() => Validate(requireJobQueues: true);
+
+    /// <summary>
+    /// Validates shared worker settings. Event-only BrokerNative hosts pass
+    /// <paramref name="requireJobQueues"/> as false instead of inventing a Job
+    /// Queue solely to satisfy legacy worker metadata.
+    /// </summary>
+    public void Validate(bool requireJobQueues)
     {
         if (!Uri.TryCreate(ServerEndpoint, UriKind.Absolute, out var endpoint)
             || endpoint.Scheme is not ("http" or "https"))
