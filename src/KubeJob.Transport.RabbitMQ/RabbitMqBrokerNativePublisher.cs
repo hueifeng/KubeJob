@@ -1,6 +1,7 @@
 using KubeJob.Core.Transport;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
 namespace KubeJob.Transport.RabbitMQ;
 
