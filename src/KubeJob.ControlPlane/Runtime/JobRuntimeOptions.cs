@@ -11,6 +11,10 @@ public sealed class JobRuntimeOptions
 
     public TimeSpan LeaseReaperInterval { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Poll fallback for the PostgresManaged work-available outbox. Optional
+    /// wake transports can reduce latency, but PostgreSQL remains authoritative.
+    /// </summary>
     public TimeSpan OutboxPollInterval { get; set; } = TimeSpan.FromSeconds(1);
 
     public TimeSpan OutboxClaimDuration { get; set; } = TimeSpan.FromSeconds(30);
@@ -25,24 +29,16 @@ public sealed class JobRuntimeOptions
 
     /// <summary>
     /// How old a missed occurrence may be before a <see cref="MisfirePolicy.FireOnce"/>
-    /// schedule skips it instead of backfilling. When a schedule is behind by
-    /// more than one interval, FireOnce creates at most one Run for the oldest
-    /// missed occurrence, and only if the miss fell within this window; an
-    /// older miss is stale (e.g. a long-disabled schedule re-enabled) and is
-    /// skipped like <see cref="MisfirePolicy.SkipMissed"/>. Set to
-    /// <see cref="TimeSpan.Zero"/> to never backfill missed occurrences; set
-    /// to <see cref="TimeSpan.MaxValue"/> to backfill regardless of age (the
-    /// pre-threshold behavior). Note <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>
-    /// is negative and cannot be used here. Default 1 hour.
+    /// schedule skips it instead of backfilling. Set to <see cref="TimeSpan.Zero"/>
+    /// to never backfill missed occurrences; set to <see cref="TimeSpan.MaxValue"/>
+    /// to backfill regardless of age. Default 1 hour.
     /// </summary>
     public TimeSpan ScheduleMisfireThreshold { get; set; } = TimeSpan.FromHours(1);
 
     public int MaxClaimBatchSize { get; set; } = 32;
 
     /// <summary>
-    /// Maximum number of logical Runs accepted by one submission transaction.
-    /// This bounds validation work, outbox rows, transaction duration, and
-    /// rollback cost without introducing a durable JobBatch aggregate.
+    /// Maximum number of PostgresManaged Runs accepted by one submission transaction.
     /// </summary>
     public int MaxSubmissionBatchSize { get; set; } = 256;
 
@@ -55,11 +51,7 @@ public sealed class JobRuntimeOptions
     public int CompletionBatchSize { get; set; } = 32;
 
     /// <summary>
-    /// Number of independent completion shards. When > 1, completion requests
-    /// are routed to a shard by <c>RunId.GetHashCode() % ShardCount</c>. Each
-    /// shard has its own bounded channel, micro-batch, and database batch
-    /// submission, eliminating the single-batcher hot spot under high worker
-    /// concurrency. Default 4 (Item 6: CompletionBatcher sharding).
+    /// Number of independent completion shards for PostgresManaged attempt reports.
     /// </summary>
     public int CompletionBatcherShardCount { get; set; } = 4;
 
@@ -70,16 +62,15 @@ public sealed class JobRuntimeOptions
     /// <summary>How many claimed schedules the reconciler fires concurrently per iteration.</summary>
     public int ScheduleReconcileConcurrency { get; set; } = 4;
 
-    /// Maximum UTF-8 encoded payload size accepted at the control-plane boundary.
+    /// Maximum UTF-8 encoded payload size accepted at the managed control-plane boundary.
     public int MaxPayloadBytes { get; set; } = 1_048_576;
 
-    /// <summary>How long successfully published Outbox rows remain for diagnostics.</summary>
+    /// <summary>How long successfully published managed wake outbox rows remain for diagnostics.</summary>
     public TimeSpan PublishedOutboxRetention { get; set; } = TimeSpan.FromDays(1);
 
     /// <summary>
     /// Retention for terminal runs without idempotency or schedule identity.
-    /// Keyed terminal history is retained by design: the idempotency key must
-    /// never be reused while its historical Run still exists.
+    /// Keyed terminal history is retained so the idempotency key remains reserved.
     /// </summary>
     public TimeSpan UnkeyedTerminalRetention { get; set; } = TimeSpan.FromDays(7);
 
@@ -88,35 +79,10 @@ public sealed class JobRuntimeOptions
     public int RetentionBatchSize { get; set; } = 1_000;
 
     /// <summary>
-    /// Period at which the control-plane refreshes its cached KeyOrdered
-    /// ordering backlog snapshot. The cache backs the observable gauges, so a
-    /// metrics scrape returns the cached value and never hits the database.
-    /// Too small a value increases query load; too large delays backlog
-    /// detection. Default 5s.
+    /// Period at which the control plane refreshes its cached PostgresManaged
+    /// KeyOrdered backlog snapshot. A metrics scrape never hits the database.
     /// </summary>
     public TimeSpan OrderingBacklogRefreshInterval { get; set; } = TimeSpan.FromSeconds(5);
-
-    /// <summary>
-    /// Flag for broker-accelerated cancellation of BrokerDispatch runs.
-    /// BrokerDispatch submission writes a <c>work-available</c> outbox row; the
-    /// <c>OutboxPublisherService</c> converts it to an
-    /// <see cref="KubeJob.Core.Runtime.ExecutionEnvelope"/> at publish time for
-    /// queues whose delivery profile is
-    /// <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>,
-    /// while Pull submission discovers work directly from the store.
-    /// When this flag is <c>true</c>, cancelling a BrokerDispatch-profile Run
-    /// also writes a <c>cancel</c> outbox row so a registered
-    /// <c>ICancelPublisher</c> can fan out a low-latency cancel signal to
-    /// workers; when <c>false</c>, cancel only sets <c>CancelRequested</c> and
-    /// relies on the lease reaper / renewal loop as the correctness fallback.
-    /// Requires <c>RabbitMqNotificationExtensions.UseRabbitMqKubeJobExecutionDispatcher</c>
-    /// and an <c>ICancelPublisher</c> implementation for the cancel path to
-    /// function; hosts that stay on <c>Pull</c> and skip the RabbitMQ execution
-    /// extensions can set this back to <c>false</c>. Default is <c>true</c>,
-    /// matching <c>QueueDeliveryOptions.Defaults.Profile</c> defaulting to
-    /// <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>.
-    /// </summary>
-    public bool BrokerCancelPropagationEnabled { get; set; } = true;
 
     public void Validate()
     {
