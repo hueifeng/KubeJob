@@ -38,6 +38,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<WorkerExecutionEngine>>(),
                 sp.GetService<KubeJobWorkerMetrics>(),
                 sp.GetService<JobExecutionPipelineBuilder>()));
+        services.TryAddSingleton<BrokerNativeJobProcessor>();
         services.TryAddSingleton<WorkerRuntimeService>();
         services.AddHostedService(sp => sp.GetRequiredService<WorkerRuntimeService>());
 
