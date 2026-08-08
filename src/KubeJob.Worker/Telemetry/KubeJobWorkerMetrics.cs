@@ -7,8 +7,8 @@ namespace KubeJob.Worker.Telemetry;
 
 public enum WorkerExecutionKind
 {
-    Pull,
-    BrokerDispatch
+    PostgresManaged,
+    BrokerNative
 }
 
 public enum WorkerHandlerOutcome
@@ -37,7 +37,7 @@ public sealed class KubeJobWorkerMetrics : IDisposable
         _activeAttempts = _meter.CreateUpDownCounter<long>(
             "kubejob.worker.active_attempts",
             unit: "{attempt}",
-            description: "Number of KubeJob attempts currently owned by this worker process.");
+            description: "Number of KubeJob executions currently owned by this worker process.");
         _handlerDuration = _meter.CreateHistogram<double>(
             "kubejob.worker.handler.duration",
             unit: "s",
@@ -77,7 +77,12 @@ public sealed class KubeJobWorkerMetrics : IDisposable
 
         var tags = new TagList
         {
-            { ExecutionKindTagName, executionKind == WorkerExecutionKind.Pull ? "pull" : "broker_dispatch" }
+            {
+                ExecutionKindTagName,
+                executionKind == WorkerExecutionKind.PostgresManaged
+                    ? "postgres_managed"
+                    : "broker_native"
+            }
         };
         _activeAttempts.Add(change, tags);
     }
