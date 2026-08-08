@@ -6,6 +6,7 @@ using KubeJob.Server.Extensions;
 using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace KubeJob.Tests.ControlPlane;
@@ -45,7 +46,7 @@ public sealed class ControlPlaneTests
             store,
             new ConfigurationQueueRouter(optionsWrapper),
             Options.Create(new JobRuntimeOptions()),
-            new OutboxPublisherSignal());
+            CreateWakeDispatcher());
 
         var receipt = await controlPlane.SubmitAsync(
             new EnqueueJobRequest("sample.data", "{}", Queue: " orders.push "));
@@ -70,7 +71,7 @@ public sealed class ControlPlaneTests
             store,
             new ConfigurationQueueRouter(Options.Create(options)),
             Options.Create(new JobRuntimeOptions()),
-            new OutboxPublisherSignal());
+            CreateWakeDispatcher());
 
         var receipt = await controlPlane.SubmitAsync(
             new EnqueueJobRequest("sample.data", "{}"));
@@ -85,8 +86,7 @@ public sealed class ControlPlaneTests
             TimeSpan.FromMinutes(1),
             10,
             CancellationToken.None);
-        outbox.Should().OnlyContain(message =>
-            message.EventType == OutboxEventTypes.WorkAvailable);
+        outbox.Should().BeEmpty();
     }
 
     [Fact]
@@ -325,6 +325,11 @@ public sealed class ControlPlaneTests
         schedule.NextFireAt.Should().BeAfter(DateTimeOffset.UtcNow);
         duplicate.Should().BeNull();
     }
+
+    private static ManagedWorkAvailableDispatcher CreateWakeDispatcher()
+        => new(
+            new NoopWorkAvailableNotifier(),
+            NullLogger<ManagedWorkAvailableDispatcher>.Instance);
 
     private static ServiceProvider CreateProvider()
     {
