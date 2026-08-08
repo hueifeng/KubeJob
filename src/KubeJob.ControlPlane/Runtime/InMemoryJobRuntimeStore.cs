@@ -26,7 +26,19 @@ public sealed partial class InMemoryJobRuntimeStore :
     private readonly Dictionary<string, JobScheduleRecord> _schedules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _idempotency = new(StringComparer.Ordinal);
     private readonly Dictionary<string, OutboxMessageRecord> _outbox = new(StringComparer.Ordinal);
+    private readonly bool _emitWorkAvailableOutbox;
     private long _nextOrderingSequence;
+
+    /// <summary>
+    /// Direct construction keeps the historical reference-store behavior so
+    /// focused outbox tests remain deterministic. Production composition passes
+    /// the actual notifier policy explicitly and disables wake rows when the
+    /// notifier is the default no-op implementation.
+    /// </summary>
+    public InMemoryJobRuntimeStore(bool emitWorkAvailableOutbox = true)
+    {
+        _emitWorkAvailableOutbox = emitWorkAvailableOutbox;
+    }
 
     private bool TryGetSession(
         string workerId,
@@ -91,6 +103,11 @@ public sealed partial class InMemoryJobRuntimeStore :
 
     private void AddWorkAvailableOutbox(JobRunRecord run, DateTimeOffset now)
     {
+        if (!_emitWorkAvailableOutbox)
+        {
+            return;
+        }
+
         var message = new OutboxMessageRecord
         {
             Id = NewId(),

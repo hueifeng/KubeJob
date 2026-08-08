@@ -18,6 +18,7 @@ namespace KubeJob.ControlPlane.Runtime;
 /// </remarks>
 public sealed class OutboxPublisherSignal : IDisposable
 {
+    private readonly bool _enabled;
     private readonly Channel<bool> _channel = Channel.CreateBounded<bool>(
         new BoundedChannelOptions(capacity: 1)
         {
@@ -27,14 +28,33 @@ public sealed class OutboxPublisherSignal : IDisposable
         });
 
     /// <summary>
+    /// Direct construction remains enabled for focused runtime tests and custom
+    /// hosts. Server composition disables this signal when the effective
+    /// WorkAvailable notifier is the no-op implementation, because no new wake
+    /// outbox rows are generated in that configuration.
+    /// </summary>
+    public OutboxPublisherSignal(bool enabled = true)
+    {
+        _enabled = enabled;
+    }
+
+    /// <summary>
     /// Reader the publisher awaits in parallel with <c>Task.Delay(OutboxPollInterval)</c>.
     /// </summary>
     public ChannelReader<bool> Reader => _channel.Reader;
 
     /// <summary>
     /// Non-blocking wake hint. Safe to call from any thread; never throws, never blocks.
+    /// When disabled, calls are intentionally ignored and the outbox publisher
+    /// relies on its low-frequency poll only to drain legacy pending rows.
     /// </summary>
-    public void Signal() => _channel.Writer.TryWrite(true);
+    public void Signal()
+    {
+        if (_enabled)
+        {
+            _channel.Writer.TryWrite(true);
+        }
+    }
 
     public void Dispose() => _channel.Writer.TryComplete();
 }

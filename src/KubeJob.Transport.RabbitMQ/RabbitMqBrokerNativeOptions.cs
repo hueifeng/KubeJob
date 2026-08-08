@@ -12,6 +12,7 @@ namespace KubeJob.Transport.RabbitMQ;
 public sealed class RabbitMqBrokerNativeOptions
 {
     private const int RabbitMqNameByteLimit = 255;
+    private const char TopologyBoundary = '~';
 
     public string ConnectionString { get; set; } = "amqp://guest:guest@localhost:5672/";
 
@@ -21,9 +22,10 @@ public sealed class RabbitMqBrokerNativeOptions
     public string ExchangeName { get; set; } = "kubejob.jobs";
 
     /// <summary>
-    /// Prefix for physical execution queues and Event topic exchanges.
-    /// A logical queue "order.created" becomes "kubejob.order.created";
-    /// topic "order.events" becomes exchange "kubejob.order.events".
+    /// Root prefix for physical Job queues and Event topology. Event objects
+    /// include reserved '~' kind/boundary markers that logical Queue/Topic names
+    /// cannot contain, preventing a Job queue from aliasing an Event
+    /// subscription queue.
     /// </summary>
     public string QueuePrefix { get; set; } = "kubejob";
 
@@ -48,6 +50,13 @@ public sealed class RabbitMqBrokerNativeOptions
 
         ArgumentException.ThrowIfNullOrWhiteSpace(ExchangeName);
         ArgumentException.ThrowIfNullOrWhiteSpace(QueuePrefix);
+
+        if (QueuePrefix.Contains(TopologyBoundary)
+            || ExchangeName.Contains(TopologyBoundary))
+        {
+            throw new InvalidOperationException(
+                $"RabbitMQ BrokerNative QueuePrefix and ExchangeName cannot contain '{TopologyBoundary}' because it is reserved for Event physical topology boundaries.");
+        }
 
         if (PrefetchCount == 0)
         {
@@ -110,7 +119,9 @@ public sealed class RabbitMqBrokerNativeOptions
     public string GetEventExchangeName(string topic)
     {
         var normalized = LogicalQueueName.Normalize(topic, nameof(topic));
-        return ValidateTopologyName($"{QueuePrefix}.{normalized}", "event exchange");
+        return ValidateTopologyName(
+            $"{QueuePrefix}.eventx{TopologyBoundary}{normalized}",
+            "event exchange");
     }
 
     public string GetEventSubscriptionQueueName(string topic, string subscription)
@@ -118,25 +129,43 @@ public sealed class RabbitMqBrokerNativeOptions
         var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
         var normalizedSubscription = LogicalQueueName.Normalize(subscription, nameof(subscription));
         return ValidateTopologyName(
-            $"{QueuePrefix}.{normalizedTopic}.{normalizedSubscription}",
+            $"{QueuePrefix}.eventsub{TopologyBoundary}{normalizedTopic}{TopologyBoundary}{normalizedSubscription}",
             "event subscription queue");
     }
 
     public string GetEventRetryExchangeName(string topic)
-        => ValidateTopologyName($"{GetEventExchangeName(topic)}.retry", "event retry exchange");
+    {
+        var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
+        return ValidateTopologyName(
+            $"{QueuePrefix}.eventretryx{TopologyBoundary}{normalizedTopic}",
+            "event retry exchange");
+    }
 
     public string GetEventRetryQueueName(string topic, string subscription)
-        => ValidateTopologyName(
-            $"{GetEventSubscriptionQueueName(topic, subscription)}.retry",
+    {
+        var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
+        var normalizedSubscription = LogicalQueueName.Normalize(subscription, nameof(subscription));
+        return ValidateTopologyName(
+            $"{QueuePrefix}.eventretryq{TopologyBoundary}{normalizedTopic}{TopologyBoundary}{normalizedSubscription}",
             "event retry queue");
+    }
 
     public string GetEventDeadLetterExchangeName(string topic)
-        => ValidateTopologyName($"{GetEventExchangeName(topic)}.dlx", "event dead-letter exchange");
+    {
+        var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
+        return ValidateTopologyName(
+            $"{QueuePrefix}.eventdlx{TopologyBoundary}{normalizedTopic}",
+            "event dead-letter exchange");
+    }
 
     public string GetEventDeadLetterQueueName(string topic, string subscription)
-        => ValidateTopologyName(
-            $"{GetEventSubscriptionQueueName(topic, subscription)}.dlq",
+    {
+        var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
+        var normalizedSubscription = LogicalQueueName.Normalize(subscription, nameof(subscription));
+        return ValidateTopologyName(
+            $"{QueuePrefix}.eventdlq{TopologyBoundary}{normalizedTopic}{TopologyBoundary}{normalizedSubscription}",
             "event dead-letter queue");
+    }
 
     private static string ValidateTopologyName(string name, string kind)
     {

@@ -42,8 +42,6 @@ public sealed record ScenarioResult(
     TimeSpan Duration)
 {
     public string Mode { get; init; } = string.Empty;
-    /// <summary>Execution lane count (1 = shared queue, N > 1 = per-lane queues).</summary>
-    public int LaneCount { get; init; } = 1;
 }
 
 /// <summary>
@@ -66,7 +64,6 @@ public static class Percentiles
 
     private static double Rank(double[] sorted, double p)
     {
-        // Nearest-rank: the ceil(p*N)-th element (1-indexed), clamped to bounds.
         var rank = (int)Math.Ceiling(p * sorted.Length);
         if (rank < 1) rank = 1;
         if (rank > sorted.Length) rank = sorted.Length;
@@ -84,7 +81,7 @@ public static class ResultTable
         Console.WriteLine($"  submitters={opts.SubmitterConcurrency} worker-concurrency={opts.WorkerMaxConcurrency}");
         Console.WriteLine($"  outbox-concurrency={opts.OutboxPublishConcurrency} outbox-batch={opts.OutboxBatchSize}");
         Console.WriteLine($"  hotkey-count={opts.HotKeyCardinality} uniform-keys={(opts.UniformKeyCardinality == 0 ? "distinct" : opts.UniformKeyCardinality)}");
-        Console.WriteLine($"  lane-sweep=[{string.Join(",", opts.LaneCountSweep)}]");
+        Console.WriteLine($"  synchronous-commit={(opts.SynchronousCommitEnabled ? "on" : "off (throughput experiment; not production durability)")}");
         Console.WriteLine($"  poll-ms={opts.PollIntervalMs} status-parallelism={opts.StatusPollParallelism} "
             + $"metrics-ms={opts.MetricsIntervalMs} cpu={(opts.CpuSamplingEnabled ? "on" : "off")} "
             + "delivery=PostgresManaged");
@@ -93,8 +90,7 @@ public static class ResultTable
 
     public static void PrintRow(ScenarioResult r)
     {
-        var laneTag = r.LaneCount > 1 ? $" lanes={r.LaneCount}" : "";
-        Console.WriteLine($"[{r.Scenario.Label()}] ({r.Mode}{laneTag})");
+        Console.WriteLine($"[{r.Scenario.Label()}] ({r.Mode})");
         Console.WriteLine($"  jobs={r.JobCount} succeeded={r.Succeeded} failed={r.Failed} canceled/dead={r.CanceledOrDead}");
         Console.WriteLine("  TPS:  ingest={0,8:F1}  e2e(server)={1,8:F1}  e2e(wall)={2,8:F1}",
             r.IngestTps, r.E2eTps, r.WallClockE2eTps);
@@ -124,15 +120,15 @@ public static class ResultTable
         sb.AppendLine($"- submitters: {opts.SubmitterConcurrency} | worker-concurrency: {opts.WorkerMaxConcurrency}");
         sb.AppendLine($"- outbox-concurrency: {opts.OutboxPublishConcurrency} | outbox-batch: {opts.OutboxBatchSize}");
         sb.AppendLine($"- hotkey-count: {opts.HotKeyCardinality} | uniform-keys: {(opts.UniformKeyCardinality == 0 ? "distinct" : opts.UniformKeyCardinality.ToString(CultureInfo.InvariantCulture))}");
-        sb.AppendLine($"- lane-sweep: [{string.Join(",", opts.LaneCountSweep)}]");
+        sb.AppendLine($"- synchronous-commit: {(opts.SynchronousCommitEnabled ? "on" : "off (throughput experiment; not production durability)")}");
         sb.AppendLine($"- poll-ms: {opts.PollIntervalMs} | status-parallelism: {opts.StatusPollParallelism} | metrics-ms: {opts.MetricsIntervalMs} | cpu: {(opts.CpuSamplingEnabled ? "on" : "off")} | delivery: PostgresManaged");
         sb.AppendLine();
-        sb.AppendLine("| Scenario | Mode | Lanes | Jobs | Succeeded | Ingest TPS | E2E TPS (server) | E2E TPS (wall) | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Heap max MB | RSS max MB | Alloc MB | Alloc KB/job | Gen0 | Gen1 | Gen2 | Thr(proc) | Thr(pool) | Duration s |");
-        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        sb.AppendLine("| Scenario | Mode | Jobs | Succeeded | Ingest TPS | E2E TPS (server) | E2E TPS (wall) | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Heap max MB | RSS max MB | Alloc MB | Alloc KB/job | Gen0 | Gen1 | Gen2 | Thr(proc) | Thr(pool) | Duration s |");
+        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         foreach (var r in results)
         {
             sb.Append("| ").Append(r.Scenario.Label())
-              .Append(" | `").Append(r.Mode).Append("` | ").Append(r.LaneCount)
+              .Append(" | `").Append(r.Mode).Append("`")
               .Append(" | ").Append(r.JobCount)
               .Append(" | ").Append(r.Succeeded)
               .Append(" | ").Append(r.IngestTps.ToString("F1", CultureInfo.InvariantCulture))

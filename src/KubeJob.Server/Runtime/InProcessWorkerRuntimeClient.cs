@@ -45,9 +45,4 @@ public sealed class InProcessWorkerRuntimeClient : IWorkerRuntimeClient
         CompleteAttemptRequest request,
         CancellationToken cancellationToken) =>
         _controlPlane.CompleteAsync(request, cancellationToken);
-
-    public ValueTask<bool> RequeueExecutionAsync(
-        RequeueExecutionRequest request,
-        CancellationToken cancellationToken) =>
-        _controlPlane.RequeueExecutionAsync(request, cancellationToken);
 }

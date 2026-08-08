@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted (2026-07-31). Relates to [ADR 007](007-mq-notifications-do-not-own-jobs.md)
+Superseded (2026-08-08) by [ADR 015](015-single-authority-runtime-modes.md).
+
+This ADR records the earlier 2026-07-31 decision to promote the hybrid
+`BrokerDispatch` path. V3 removes that path from the active runtime model and
+uses explicit `PostgresManaged` or `BrokerNative` authority instead. The
+historical reasoning below is retained for context only.
+
+Relates to [ADR 007](007-mq-notifications-do-not-own-jobs.md)
 (MQ notifications do not own jobs), [ADR 011](011-hide-physical-delivery-from-job-submitters.md)
 (hide physical delivery from job submitters), and
 [ADR 013](013-defer-broker-authoritative-directpublish-mode.md) (defer

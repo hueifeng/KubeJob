@@ -46,16 +46,6 @@ public interface IJobSubmissionStore
         IReadOnlyList<SubmitJobCommand> commands,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Schedules a durable work-available signal for a still-pending Run after
-    /// delivery retry budget is exhausted. Returns false when the Run is no longer
-    /// pending and therefore needs no broker re-drive.
-    /// </summary>
-    ValueTask<bool> RequeueWorkAvailableAsync(
-        string runId,
-        DateTimeOffset availableAt,
-        CancellationToken cancellationToken);
-
     ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,

@@ -8,8 +8,12 @@ namespace KubeJob.Tests.Telemetry;
 
 public sealed class WorkerMetricsTests
 {
-    [Fact]
-    public void Active_attempt_counter_uses_matching_start_and_finish_tags()
+    [Theory]
+    [InlineData(WorkerExecutionKind.Pull, "postgres_managed")]
+    [InlineData(WorkerExecutionKind.BrokerNative, "broker_native")]
+    public void Active_attempt_counter_uses_matching_start_and_finish_tags(
+        WorkerExecutionKind executionKind,
+        string expectedTag)
     {
         var measurements = new List<(long Value, KeyValuePair<string, object?>[] Tags)>();
 
@@ -34,13 +38,13 @@ public sealed class WorkerMetricsTests
         using var metrics = new KubeJobWorkerMetrics(
             provider.GetRequiredService<IMeterFactory>());
 
-        metrics.AttemptStarted(WorkerExecutionKind.Pull);
-        metrics.AttemptFinished(WorkerExecutionKind.Pull);
+        metrics.AttemptStarted(executionKind);
+        metrics.AttemptFinished(executionKind);
 
         measurements.Select(measurement => measurement.Value).Should().Equal(1, -1);
         measurements[0].Tags.Should().Equal(measurements[1].Tags);
         measurements[0].Tags.Should().ContainSingle(tag =>
-            tag.Key == "kubejob.execution.kind" && (string?)tag.Value == "postgres_managed");
+            tag.Key == "kubejob.execution.kind" && (string?)tag.Value == expectedTag);
     }
 
     [Fact]
@@ -69,8 +73,12 @@ public sealed class WorkerMetricsTests
         allocated.Should().Be(0);
     }
 
-    [Fact]
-    public void Handler_duration_records_seconds_with_completion_outcome()
+    [Theory]
+    [InlineData(WorkerExecutionKind.Pull, "postgres_managed")]
+    [InlineData(WorkerExecutionKind.BrokerNative, "broker_native")]
+    public void Handler_duration_records_seconds_outcome_and_execution_kind(
+        WorkerExecutionKind executionKind,
+        string expectedTag)
     {
         var measurements = new List<(double Value, KeyValuePair<string, object?>[] Tags)>();
 
@@ -95,11 +103,16 @@ public sealed class WorkerMetricsTests
         using var metrics = new KubeJobWorkerMetrics(
             provider.GetRequiredService<IMeterFactory>());
 
-        metrics.HandlerCompleted(TimeSpan.FromMilliseconds(250), "succeeded");
+        metrics.HandlerCompleted(
+            TimeSpan.FromMilliseconds(250),
+            "succeeded",
+            executionKind);
 
         measurements.Should().ContainSingle();
         measurements[0].Value.Should().BeApproximately(0.25, 0.0001);
-        measurements[0].Tags.Should().ContainSingle(tag =>
+        measurements[0].Tags.Should().Contain(tag =>
             tag.Key == "kubejob.outcome" && (string?)tag.Value == "succeeded");
+        measurements[0].Tags.Should().Contain(tag =>
+            tag.Key == "kubejob.execution.kind" && (string?)tag.Value == expectedTag);
     }
 }

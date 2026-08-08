@@ -296,7 +296,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
         var body = JsonSerializer.SerializeToUtf8Bytes(retryMessage, SerializerOptions);
         lock (publishChannelGate)
         {
-            BasicReturnEventArgs? returned = null;
+            var returned = 0;
             EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
             {
                 if (string.Equals(
@@ -304,7 +304,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                         retryMessage.EventId,
                         StringComparison.Ordinal))
                 {
-                    returned = args;
+                    Interlocked.Exchange(ref returned, 1);
                 }
             };
 
@@ -337,12 +337,14 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                         $"for subscription '{group.Subscription}'.");
                 }
 
-                if (returned is not null)
+                if (Volatile.Read(ref returned) != 0)
                 {
                     throw new IOException(
                         $"RabbitMQ could not route event retry for '{group.Topic}/{group.Subscription}'.");
                 }
 
+                // ACK only after the subscription-scoped retry copy is both
+                // confirmed and not returned as unroutable.
                 Ack(consumeChannel, consumeChannelGate, original.DeliveryTag);
             }
             finally

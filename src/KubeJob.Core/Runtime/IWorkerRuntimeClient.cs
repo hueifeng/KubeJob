@@ -29,8 +29,4 @@ public interface IWorkerRuntimeClient
     ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
         CancellationToken cancellationToken);
-
-    ValueTask<bool> RequeueExecutionAsync(
-        RequeueExecutionRequest request,
-        CancellationToken cancellationToken);
 }

@@ -49,7 +49,8 @@ public sealed class WorkerRuntimeService : BackgroundService
         IOptions<KubeJobWorkerOptions> options,
         ILogger<WorkerRuntimeService> logger,
         KubeJobWorkerMetrics? metrics = null,
-        JobExecutionPipelineBuilder? pipelineBuilder = null)
+        JobExecutionPipelineBuilder? pipelineBuilder = null,
+        IWorkerExecutionEngine? executionEngine = null)
     {
         _registry = registry;
         _runtimeClient = runtimeClient;
@@ -58,7 +59,7 @@ public sealed class WorkerRuntimeService : BackgroundService
         _metrics = metrics;
         _logger = logger;
         _options.Validate();
-        _executionEngine = new WorkerExecutionEngine(
+        _executionEngine = executionEngine ?? new WorkerExecutionEngine(
             scopeFactory,
             registry,
             logger,

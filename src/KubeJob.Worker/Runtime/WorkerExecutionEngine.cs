@@ -23,7 +23,8 @@ public sealed record WorkerExecutionRequest(
     WorkerExecutionInfo Worker,
     CancellationToken AttemptCancellationToken,
     CancellationToken WorkerStoppingToken,
-    int? ConsumerIndex = null);
+    int? ConsumerIndex = null,
+    WorkerExecutionKind ExecutionKind = WorkerExecutionKind.Pull);
 
 /// <summary>
 /// Normalized handler result. It intentionally contains no lease, database,
@@ -71,6 +72,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         ArgumentNullException.ThrowIfNull(request);
 
         var handlerStartedAt = 0L;
+        CancellationToken timeoutToken = default;
         try
         {
             if (!_registry.TryGet(request.JobKey, out var handler))
@@ -83,10 +85,11 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
 
             using var scope = _scopeFactory.CreateScope();
             using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(request.TimeoutSeconds));
+            timeoutToken = timeoutSource.Token;
             using var executionSource = CancellationTokenSource.CreateLinkedTokenSource(
                 request.WorkerStoppingToken,
                 request.AttemptCancellationToken,
-                timeoutSource.Token);
+                timeoutToken);
 
             var context = new JobExecutionContext
             {
@@ -103,9 +106,14 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
             // execution mechanics out of WorkerRuntimeService.
             context.Items["_JobKey"] = request.JobKey;
 
+            // A normal per-job log at Information becomes a dominant allocation
+            // and I/O cost for BrokerNative/no-op handlers at high TPS. Keep
+            // task-level detail available for diagnostics without putting it on
+            // the production information hot path; aggregate throughput and
+            // latency belong in Metrics/Trace.
             if (request.ConsumerIndex is int consumerIndex)
             {
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Consumer {ConsumerIndex} executing job {RunId} attempt {AttemptNumber} ({JobKey})",
                     consumerIndex,
                     request.RunId,
@@ -114,7 +122,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
             }
             else
             {
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Executing job {RunId} attempt {AttemptNumber} ({JobKey})",
                     request.RunId,
                     request.AttemptNumber,
@@ -147,7 +155,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                     JobAttemptOutcome.TimedOut => "timed_out",
                     JobAttemptOutcome.Canceled => "canceled",
                     _ => "failed"
-                });
+                }, request.ExecutionKind);
 
                 return new WorkerExecutionResult(
                     context.Outcome.Value,
@@ -155,28 +163,51 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                     context.FailureMessage ?? "Outcome set by execution middleware.");
             }
 
-            RecordHandlerDuration(handlerStartedAt, "succeeded");
+            RecordHandlerDuration(handlerStartedAt, "succeeded", request.ExecutionKind);
             return new WorkerExecutionResult(JobAttemptOutcome.Succeeded);
+        }
+        catch (OperationCanceledException) when (request.WorkerStoppingToken.IsCancellationRequested)
+        {
+            // Worker shutdown/drain is not a handler outcome. Give it priority
+            // even when an attempt token was canceled at the same time so the
+            // runtime coordinator/broker can recover ownership cleanly.
+            throw;
         }
         catch (OperationCanceledException) when (request.AttemptCancellationToken.IsCancellationRequested)
         {
-            RecordHandlerDuration(handlerStartedAt, "canceled");
+            RecordHandlerDuration(handlerStartedAt, "canceled", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.Canceled,
                 "canceled",
-                "Execution was canceled by the control plane, worker drain, or session fencing.");
+                "Execution was canceled by the control plane or attempt cancellation token.");
         }
-        catch (OperationCanceledException) when (!request.WorkerStoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutToken.IsCancellationRequested)
         {
-            RecordHandlerDuration(handlerStartedAt, "timed_out");
+            RecordHandlerDuration(handlerStartedAt, "timed_out", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.TimedOut,
                 "timeout",
                 $"Execution exceeded its {request.TimeoutSeconds} second timeout.");
         }
+        catch (OperationCanceledException ex)
+        {
+            // A handler may throw OperationCanceledException for its own
+            // downstream token or application logic. Do not call that a
+            // KubeJob timeout when none of the runtime cancellation sources
+            // fired; classify it as a retryable handler failure instead.
+            _logger.LogWarning(
+                ex,
+                "KubeJob attempt {AttemptId} threw OperationCanceledException without a runtime cancellation source",
+                request.AttemptId);
+            RecordHandlerDuration(handlerStartedAt, "failed", request.ExecutionKind);
+            return new WorkerExecutionResult(
+                JobAttemptOutcome.RetryableFailure,
+                "handler_operation_canceled",
+                ex.Message);
+        }
         catch (JsonException ex)
         {
-            RecordHandlerDuration(handlerStartedAt, "payload_invalid");
+            RecordHandlerDuration(handlerStartedAt, "payload_invalid", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.PermanentFailure,
                 "payload_invalid",
@@ -185,7 +216,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         catch (Exception ex)
         {
             _logger.LogError(ex, "KubeJob attempt {AttemptId} failed", request.AttemptId);
-            RecordHandlerDuration(handlerStartedAt, "failed");
+            RecordHandlerDuration(handlerStartedAt, "failed", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.RetryableFailure,
                 "handler_exception",
@@ -193,11 +224,17 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         }
     }
 
-    private void RecordHandlerDuration(long startedAt, string outcome)
+    private void RecordHandlerDuration(
+        long startedAt,
+        string outcome,
+        WorkerExecutionKind executionKind)
     {
         if (startedAt != 0)
         {
-            _metrics?.HandlerCompleted(Stopwatch.GetElapsedTime(startedAt), outcome);
+            _metrics?.HandlerCompleted(
+                Stopwatch.GetElapsedTime(startedAt),
+                outcome,
+                executionKind);
         }
     }
 }

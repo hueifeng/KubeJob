@@ -103,9 +103,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return new SubmitJobResult(existing, Existing: true);
         }
 
-        // PostgresManaged remains PostgreSQL-authoritative. This transactional
-        // outbox row is only a best-effort wake signal; workers still claim the
-        // durable Run from PostgreSQL and polling remains the correctness path.
+        // PostgresManaged remains PostgreSQL-authoritative. When a real wake
+        // notifier is configured, this transactional outbox row only shortens
+        // claim latency; polling remains the correctness path.
         await AddOutboxAsync(
             connection,
             transaction,
@@ -273,13 +273,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var results = new SubmitJobResult[count];
-        var workAvailableOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
+        var workAvailableOutboxItems = _emitWorkAvailableOutbox
+            ? new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count)
+            : null;
         for (var index = 0; index < count; index++)
         {
             if (inserted.TryGetValue(ids[index], out var run))
             {
                 results[index] = new SubmitJobResult(run, Existing: false);
-                workAvailableOutboxItems.Add((
+                workAvailableOutboxItems?.Add((
                     run.Queue,
                     JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
                     run.AvailableAt,
@@ -302,7 +304,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        if (workAvailableOutboxItems.Count > 0)
+        if (workAvailableOutboxItems is { Count: > 0 })
         {
             await AddOutboxBatchAsync(
                 connection,
@@ -314,70 +316,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await transaction.CommitAsync(cancellationToken);
         return results;
-    }
-
-    public async ValueTask<bool> RequeueWorkAvailableAsync(
-        string runId,
-        DateTimeOffset availableAt,
-        CancellationToken cancellationToken)
-    {
-        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _businessDataSource.OpenConnectionAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-        var state = await connection.QuerySingleOrDefaultAsync<WorkRequeueState>(new CommandDefinition(@"
-            SELECT Queue, ExecutionLane, ConsumerGroup, OrderingMode, Phase, CancelRequested, AvailableAt, ConcurrencyKey
-            FROM Kj2_JobRuns
-            WHERE Id = @RunId
-            FOR UPDATE;",
-            new { RunId = runId },
-            transaction,
-            cancellationToken: cancellationToken));
-
-        if (state is null
-            || state.CancelRequested
-            || state.Phase != (int)JobPhase.Pending)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return false;
-        }
-
-        var retryAt = state.AvailableAt > availableAt
-            ? state.AvailableAt
-            : availableAt;
-        await connection.ExecuteAsync(new CommandDefinition(@"
-            UPDATE Kj2_JobRuns
-            SET AvailableAt = @AvailableAt,
-                Version = Version + 1
-            WHERE Id = @RunId
-              AND Phase = @Pending
-              AND CancelRequested = FALSE;",
-            new
-            {
-                RunId = runId,
-                AvailableAt = retryAt,
-                Pending = (int)JobPhase.Pending
-            },
-            transaction,
-            cancellationToken: cancellationToken));
-
-        await AddOutboxAsync(
-            connection,
-            transaction,
-            state.Queue,
-            OutboxEventTypes.WorkAvailable,
-            JsonSerializer.Serialize(new { runId, queue = state.Queue }, SerializerOptions),
-            retryAt,
-            cancellationToken,
-            new DeliveryTarget(
-                ExecutionDeliveryProfile.Pull,
-                state.ExecutionLane,
-                null,
-                state.ConsumerGroup,
-                state.OrderingMode),
-            partitionKey: state.ConcurrencyKey);
-        await transaction.CommitAsync(cancellationToken);
-        return true;
     }
 
     public async ValueTask<CancelJobResult> RequestCancelAsync(
@@ -446,18 +384,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         // CancelRequested on lease renewal; no transport control message is involved.
         await transaction.CommitAsync(cancellationToken);
         return new CancelJobResult(true);
-    }
-
-    private sealed class WorkRequeueState
-    {
-        public int Phase { get; set; }
-        public bool CancelRequested { get; set; }
-        public DateTimeOffset AvailableAt { get; set; }
-        public string Queue { get; set; } = "default";
-        public string ExecutionLane { get; set; } = "default";
-        public string ConsumerGroup { get; set; } = "default";
-        public ExecutionOrderingMode OrderingMode { get; set; } = ExecutionOrderingMode.Parallel;
-        public string? ConcurrencyKey { get; set; }
     }
 
     public async ValueTask<JobRunRecord?> GetByIdempotencyKeyAsync(

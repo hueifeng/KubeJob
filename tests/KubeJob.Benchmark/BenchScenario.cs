@@ -32,9 +32,9 @@ public enum BenchScenario
     KeyOrderedHotKey,
 
     /// <summary>
-    /// <see cref="ExecutionOrderingMode.StrictFifo"/>: the entire queue/lane
-    /// is a single logical worker. Prefetch=1, SAC. Models use cases that
-    /// require total global ordering (e.g. ledger, sequential pipeline).
+    /// <see cref="ExecutionOrderingMode.StrictFifo"/>: the entire logical queue
+    /// is serialized. Models use cases that require total global ordering
+    /// (for example a ledger or sequential pipeline).
     /// </summary>
     StrictFifo
 }
@@ -53,9 +53,8 @@ public static class BenchScenarioExtensions
 
     /// <summary>
     /// Stable logical queue name per scenario. A fresh database is created per
-    /// scenario run, so a fixed queue name does not collide across runs; the
-    /// RabbitMQ consumer group is still made unique per run for topology
-    /// isolation and cleanup.
+    /// scenario run, so a fixed queue name does not collide across runs; any
+    /// optional RabbitMQ ingress topology is still isolated per run.
     /// </summary>
     public static string QueueName(this BenchScenario scenario) => scenario switch
     {
@@ -68,8 +67,8 @@ public static class BenchScenarioExtensions
 
     /// <summary>
     /// Resolves the <c>ConcurrencyKey</c> for one submitted Run under a scenario.
-    /// Returns <c>null</c> for the Parallel scenario (no key). Uniform uses a
-    /// distinct key per Run; HotKey cycles through a small key space.
+    /// Returns <c>null</c> for Parallel and StrictFifo. Uniform uses a distinct
+    /// key per Run by default; HotKey cycles through a small key space.
     /// </summary>
     public static string? ConcurrencyKey(
         this BenchScenario scenario,
@@ -86,7 +85,7 @@ public static class BenchScenarioExtensions
                 : $"k{runIndex % uniformKeyCardinality}",
             BenchScenario.KeyOrderedHotKey => $"k{runIndex % Math.Max(1, hotKeyCardinality)}",
             _ => throw new ArgumentOutOfRangeException(nameof(scenario))
-    };
+        };
     }
 
     public static string Label(this BenchScenario scenario) => scenario switch

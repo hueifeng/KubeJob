@@ -154,15 +154,50 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
-    public void Event_subscriptions_get_independent_queues_under_one_topic_exchange()
+    public void Event_subscriptions_get_independent_namespaced_queues_under_one_topic_exchange()
     {
         var options = new RabbitMqBrokerNativeOptions();
 
-        options.GetEventExchangeName("order.events").Should().Be("kubejob.order.events");
+        options.GetEventExchangeName("order.events")
+            .Should().Be("kubejob.eventx~order.events");
         options.GetEventSubscriptionQueueName("order.events", "order-business")
-            .Should().Be("kubejob.order.events.order-business");
+            .Should().Be("kubejob.eventsub~order.events~order-business");
         options.GetEventSubscriptionQueueName("order.events", "order-log")
-            .Should().Be("kubejob.order.events.order-log");
+            .Should().Be("kubejob.eventsub~order.events~order-log");
+    }
+
+    [Fact]
+    public void Job_and_event_physical_topologies_cannot_alias_each_other()
+    {
+        var options = new RabbitMqBrokerNativeOptions();
+
+        options.GetQueueName("order.audit")
+            .Should().NotBe(options.GetEventSubscriptionQueueName("order", "audit"));
+        options.GetEventExchangeName("jobs").Should().NotBe(options.ExchangeName);
+        options.GetEventSubscriptionQueueName("order", "audit")
+            .Should().NotBe(options.GetEventRetryQueueName("order", "audit"));
+        options.GetEventSubscriptionQueueName("order", "audit.retry")
+            .Should().NotBe(options.GetEventRetryQueueName("order", "audit"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Event_topology_boundary_is_reserved_from_job_physical_names(bool useQueuePrefix)
+    {
+        var options = new RabbitMqBrokerNativeOptions();
+        if (useQueuePrefix)
+        {
+            options.QueuePrefix = "company~jobs";
+        }
+        else
+        {
+            options.ExchangeName = "company~jobs";
+        }
+
+        options.Invoking(x => x.Validate())
+            .Should().Throw<InvalidOperationException>()
+            .WithMessage("*reserved for Event physical topology boundaries.*");
     }
 
     [Fact]

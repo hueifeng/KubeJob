@@ -14,7 +14,6 @@ public sealed class WorkerControlPlane
     private readonly IWorkerSessionStore _sessions;
     private readonly IJobClaimStore _claims;
     private readonly IJobCompletionStore _completions;
-    private readonly IJobSubmissionStore _submissions;
     private readonly CompletionBatcher? _completionBatcher;
     private readonly JobRuntimeOptions _options;
     private readonly QueueCatalog _queueCatalog;
@@ -23,7 +22,6 @@ public sealed class WorkerControlPlane
         IWorkerSessionStore sessions,
         IJobClaimStore claims,
         IJobCompletionStore completions,
-        IJobSubmissionStore submissions,
         IOptions<JobRuntimeOptions> options,
         QueueCatalog queueCatalog,
         CompletionBatcher? completionBatcher = null)
@@ -31,7 +29,6 @@ public sealed class WorkerControlPlane
         _sessions = sessions;
         _claims = claims;
         _completions = completions;
-        _submissions = submissions;
         _completionBatcher = completionBatcher;
         _options = options.Value;
         _queueCatalog = queueCatalog;
@@ -120,18 +117,6 @@ public sealed class WorkerControlPlane
         _completionBatcher is null
             ? _completions.CompleteAsync(request, _options.RetryPolicy, cancellationToken)
             : _completionBatcher.EnqueueAsync(request, cancellationToken);
-
-    public ValueTask<bool> RequeueExecutionAsync(
-        RequeueExecutionRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.RunId);
-        return _submissions.RequeueWorkAvailableAsync(
-            request.RunId,
-            request.AvailableAt,
-            cancellationToken);
-    }
 
     private static void ValidateRegistration(RegisterWorkerSessionRequest request)
     {

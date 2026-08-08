@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using KubeJob.Core.Transport;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -10,12 +11,14 @@ namespace KubeJob.Transport.RabbitMQ;
 /// Runtime code supplies logical Queue/Topic destinations; this adapter owns
 /// RabbitMQ exchanges, bindings, durability and publisher confirms.
 /// </summary>
-public sealed class RabbitMqBrokerNativePublisher : IMessageTransportPublisher, IDisposable
+public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublisher, IDisposable
 {
     public const string Id = "rabbitmq";
 
     private readonly RabbitMqBrokerNativeOptions _options;
     private readonly object _gate = new();
+    private readonly HashSet<string> _declaredJobQueues = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _declaredEventTopics = new(StringComparer.Ordinal);
     private IConnection? _connection;
     private IModel? _channel;
     private bool _disposed;
@@ -31,22 +34,32 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportPublisher, 
     public MessageTransportCapabilities Capabilities =>
         MessageTransportCapabilities.DurablePublish
         | MessageTransportCapabilities.DeadLetter
-        | MessageTransportCapabilities.ConsumerGroups
-        | MessageTransportCapabilities.OrderedDelivery;
+        | MessageTransportCapabilities.ConsumerGroups;
 
     public ValueTask PublishAsync(
         TransportPublishRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(request.Message);
-        cancellationToken.ThrowIfCancellationRequested();
+        return PublishBatchAsync(new[] { request }, cancellationToken);
+    }
 
-        if (request.NotBefore is not null)
+    public ValueTask PublishBatchAsync(
+        IReadOnlyList<TransportPublishRequest> requests,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        if (requests.Count == 0)
         {
-            throw new NotSupportedException(
-                "Generic delayed publish is not enabled for the RabbitMQ BrokerNative transport.");
+            return ValueTask.CompletedTask;
         }
+
+        foreach (var request in requests)
+        {
+            ValidateRequest(request);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
         {
@@ -54,147 +67,189 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportPublisher, 
             cancellationToken.ThrowIfCancellationRequested();
             EnsureChannel();
 
-            return request.Kind switch
+            var channel = _channel!;
+            var returnedMessageIds = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+
+            EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
             {
-                TransportMessageKind.Job => PublishJob(request),
-                TransportMessageKind.Event => PublishEvent(request),
-                _ => throw new InvalidOperationException(
-                    $"Unsupported transport message kind '{request.Kind}'.")
+                var messageId = args.BasicProperties.MessageId;
+                if (!string.IsNullOrWhiteSpace(messageId))
+                {
+                    // BasicReturn is delivered by the RabbitMQ connection
+                    // dispatch thread, not necessarily the caller that is
+                    // waiting for confirms, so this collection must be
+                    // thread-safe.
+                    returnedMessageIds.TryAdd(messageId, 0);
+                }
             };
-        }
-    }
 
-    private ValueTask PublishJob(TransportPublishRequest request)
-    {
-        var logicalQueue = Core.Queues.LogicalQueueName.Normalize(
-            request.Destination,
-            nameof(request.Destination));
-        var routingKey = string.IsNullOrWhiteSpace(request.RoutingKey)
-            ? logicalQueue
-            : request.RoutingKey.Trim();
-        var channel = _channel!;
-
-        RabbitMqBrokerNativeTopology.Declare(
-            channel,
-            _options,
-            new[] { logicalQueue });
-
-        BasicReturnEventArgs? returned = null;
-        EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
-        {
-            if (string.Equals(
-                    args.BasicProperties.MessageId,
-                    request.Message.MessageId,
-                    StringComparison.Ordinal))
+            channel.BasicReturn += returnHandler;
+            try
             {
-                returned = args;
+                foreach (var request in requests)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    PublishUnconfirmed(channel, request);
+                }
+
+                // RabbitMQ confirms are channel-ordered. Publishing the whole
+                // application batch first and waiting once removes one broker
+                // round trip per message while preserving publisher-confirm
+                // durability semantics. This is not an atomic transaction: a
+                // failure can still happen after RabbitMQ accepted a subset.
+                if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
+                {
+                    InvalidateChannel();
+                    throw new IOException(
+                        $"RabbitMQ did not confirm a BrokerNative publish batch of {requests.Count} message(s).");
+                }
+
+                if (!returnedMessageIds.IsEmpty)
+                {
+                    // A durable Job queue may have been deleted/reconfigured
+                    // outside this process after it was cached as declared.
+                    // Rebuild the channel so the next retry re-declares the
+                    // physical topology instead of repeatedly trusting a stale
+                    // cache entry.
+                    InvalidateChannel();
+                    throw new IOException(
+                        $"RabbitMQ could not route {returnedMessageIds.Count} BrokerNative message(s): " +
+                        string.Join(",", returnedMessageIds.Keys.Take(8)) +
+                        (returnedMessageIds.Count > 8 ? ",..." : string.Empty));
+                }
             }
-        };
-
-        channel.BasicReturn += returnHandler;
-        try
-        {
-            PublishConfirmed(
-                channel,
-                _options.ExchangeName,
-                routingKey,
-                mandatory: true,
-                request.Message);
-
-            if (returned is not null)
+            catch
             {
-                throw new IOException(
-                    $"RabbitMQ could not route BrokerNative message '{request.Message.MessageId}' " +
-                    $"to logical queue '{logicalQueue}'.");
+                if (_channel is { IsOpen: false })
+                {
+                    InvalidateChannel();
+                }
+
+                throw;
             }
-        }
-        finally
-        {
-            if (channel.IsOpen)
+            finally
             {
-                channel.BasicReturn -= returnHandler;
+                if (channel.IsOpen)
+                {
+                    channel.BasicReturn -= returnHandler;
+                }
             }
         }
 
         return ValueTask.CompletedTask;
     }
 
-    private ValueTask PublishEvent(TransportPublishRequest request)
+    private static void ValidateRequest(TransportPublishRequest request)
     {
-        var topic = Core.Queues.LogicalQueueName.Normalize(
-            request.Destination,
-            nameof(request.Destination));
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.RoutingKey);
-        var routingKey = request.RoutingKey.Trim();
-        var channel = _channel!;
-        var exchange = _options.GetEventExchangeName(topic);
-
-        // Publishers own only the Topic exchange. Subscription queues are
-        // declared by consumers. No subscription is a valid event topology, so
-        // Event publish deliberately does not use mandatory routing.
-        channel.ExchangeDeclare(
-            exchange,
-            ExchangeType.Topic,
-            durable: true,
-            autoDelete: false,
-            arguments: null);
-
-        PublishConfirmed(
-            channel,
-            exchange,
-            routingKey,
-            mandatory: false,
-            request.Message);
-        return ValueTask.CompletedTask;
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Message);
+        if (request.NotBefore is not null)
+        {
+            throw new NotSupportedException(
+                "Generic delayed publish is not enabled for the RabbitMQ BrokerNative transport.");
+        }
     }
 
-    private void PublishConfirmed(
+    private void PublishUnconfirmed(
+        IModel channel,
+        TransportPublishRequest request)
+    {
+        switch (request.Kind)
+        {
+            case TransportMessageKind.Job:
+            {
+                var logicalQueue = Core.Queues.LogicalQueueName.Normalize(
+                    request.Destination,
+                    nameof(request.Destination));
+                if (!_declaredJobQueues.Contains(logicalQueue))
+                {
+                    // Queue/exchange declaration is synchronous broker RPC.
+                    // Cache only successful declarations for this channel
+                    // lifetime instead of paying that RTT on every message.
+                    RabbitMqBrokerNativeTopology.Declare(
+                        channel,
+                        _options,
+                        new[] { logicalQueue });
+                    _declaredJobQueues.Add(logicalQueue);
+                }
+
+                var routingKey = string.IsNullOrWhiteSpace(request.RoutingKey)
+                    ? logicalQueue
+                    : request.RoutingKey.Trim();
+                PublishUnconfirmed(
+                    channel,
+                    _options.ExchangeName,
+                    routingKey,
+                    mandatory: true,
+                    request.Message);
+                break;
+            }
+
+            case TransportMessageKind.Event:
+            {
+                var topic = Core.Queues.LogicalQueueName.Normalize(
+                    request.Destination,
+                    nameof(request.Destination));
+                ArgumentException.ThrowIfNullOrWhiteSpace(request.RoutingKey);
+                var exchange = _options.GetEventExchangeName(topic);
+                if (!_declaredEventTopics.Contains(topic))
+                {
+                    // Publishers own only the Topic exchange. Subscription
+                    // queues are declared by consumers. Zero subscribers is a
+                    // valid pub/sub topology, so event publication is not
+                    // mandatory and does not manufacture a queue.
+                    channel.ExchangeDeclare(
+                        exchange,
+                        ExchangeType.Topic,
+                        durable: true,
+                        autoDelete: false,
+                        arguments: null);
+                    _declaredEventTopics.Add(topic);
+                }
+
+                PublishUnconfirmed(
+                    channel,
+                    exchange,
+                    request.RoutingKey.Trim(),
+                    mandatory: false,
+                    request.Message);
+                break;
+            }
+
+            default:
+                throw new InvalidOperationException(
+                    $"Unsupported transport message kind '{request.Kind}'.");
+        }
+    }
+
+    private static void PublishUnconfirmed(
         IModel channel,
         string exchange,
         string routingKey,
         bool mandatory,
         TransportMessage message)
     {
-        try
+        var properties = channel.CreateBasicProperties();
+        properties.Persistent = true;
+        properties.ContentType = "application/json";
+        properties.Type = message.MessageType;
+        properties.MessageId = message.MessageId;
+        properties.CorrelationId = message.CorrelationId;
+
+        if (message.Headers is { Count: > 0 })
         {
-            var properties = channel.CreateBasicProperties();
-            properties.Persistent = true;
-            properties.ContentType = "application/json";
-            properties.Type = message.MessageType;
-            properties.MessageId = message.MessageId;
-            properties.CorrelationId = message.CorrelationId;
-
-            if (message.Headers is { Count: > 0 })
-            {
-                properties.Headers = message.Headers.ToDictionary(
-                    pair => pair.Key,
-                    pair => (object)pair.Value,
-                    StringComparer.Ordinal);
-            }
-
-            channel.BasicPublish(
-                exchange,
-                routingKey,
-                mandatory,
-                properties,
-                message.Body);
-
-            if (!channel.WaitForConfirms(_options.PublisherConfirmTimeout))
-            {
-                InvalidateChannel();
-                throw new IOException(
-                    $"RabbitMQ did not confirm message '{message.MessageId}'.");
-            }
+            properties.Headers = message.Headers.ToDictionary(
+                pair => pair.Key,
+                pair => (object)pair.Value,
+                StringComparer.Ordinal);
         }
-        catch
-        {
-            if (_channel is { IsOpen: false })
-            {
-                InvalidateChannel();
-            }
 
-            throw;
-        }
+        channel.BasicPublish(
+            exchange,
+            routingKey,
+            mandatory,
+            properties,
+            message.Body);
     }
 
     private void EnsureChannel()
@@ -240,6 +295,8 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportPublisher, 
 
         _channel = null;
         _connection = null;
+        _declaredJobQueues.Clear();
+        _declaredEventTopics.Clear();
     }
 
     private void ThrowIfDisposed()

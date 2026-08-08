@@ -27,6 +27,29 @@ public sealed class WorkerExecutionEngineTests
     }
 
     [Fact]
+    public void Managed_worker_reuses_the_registered_transport_neutral_execution_engine()
+    {
+        var customEngine = new StubExecutionEngine();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IWorkerExecutionEngine>(customEngine);
+        services.AddKubeJobWorker(options =>
+        {
+            options.WorkerId = "worker-managed-shared-engine";
+            options.Queues = new List<string> { "default" };
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var worker = provider.GetRequiredService<WorkerRuntimeService>();
+        var field = typeof(WorkerRuntimeService).GetField(
+            "_executionEngine",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        field.Should().NotBeNull();
+        field!.GetValue(worker).Should().BeSameAs(customEngine);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_invokes_registered_handler_and_returns_success()
     {
         var services = new ServiceCollection();
@@ -90,6 +113,102 @@ public sealed class WorkerExecutionEngineTests
         result.FailureMessage.Should().Contain("handler failed");
     }
 
+    [Fact]
+    public async Task Handler_operation_canceled_without_runtime_token_is_not_misclassified_as_timeout()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new OperationCanceledInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+
+        var result = await engine.ExecuteAsync(CreateRequest("order.created"));
+
+        result.Outcome.Should().Be(JobAttemptOutcome.RetryableFailure);
+        result.FailureCode.Should().Be("handler_operation_canceled");
+    }
+
+    [Fact]
+    public async Task Runtime_timeout_is_classified_as_timed_out()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new WaitForCancellationInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+
+        var result = await engine.ExecuteAsync(CreateRequest("order.created") with
+        {
+            TimeoutSeconds = 1
+        });
+
+        result.Outcome.Should().Be(JobAttemptOutcome.TimedOut);
+        result.FailureCode.Should().Be("timeout");
+    }
+
+    [Fact]
+    public async Task Worker_shutdown_is_rethrown_instead_of_persisted_as_job_outcome()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new WaitForCancellationInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+        using var stopping = new CancellationTokenSource();
+        stopping.Cancel();
+
+        var act = async () => await engine.ExecuteAsync(
+            CreateRequest("order.created") with
+            {
+                WorkerStoppingToken = stopping.Token
+            });
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task Worker_shutdown_wins_when_attempt_cancel_is_also_set()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new WaitForCancellationInvoker("order.created")
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+        using var stopping = new CancellationTokenSource();
+        using var attempt = new CancellationTokenSource();
+        stopping.Cancel();
+        attempt.Cancel();
+
+        var act = async () => await engine.ExecuteAsync(
+            CreateRequest("order.created") with
+            {
+                AttemptCancellationToken = attempt.Token,
+                WorkerStoppingToken = stopping.Token
+            });
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     private static WorkerExecutionRequest CreateRequest(string jobKey) =>
         new(
             "run-1",
@@ -107,6 +226,12 @@ public sealed class WorkerExecutionEngineTests
             CancellationToken.None,
             CancellationToken.None,
             ConsumerIndex: 0);
+
+    private sealed class StubExecutionEngine : IWorkerExecutionEngine
+    {
+        public ValueTask<WorkerExecutionResult> ExecuteAsync(WorkerExecutionRequest request) =>
+            ValueTask.FromResult(new WorkerExecutionResult(JobAttemptOutcome.Succeeded));
+    }
 
     private sealed class RecordingInvoker : IJobHandlerInvoker
     {
@@ -152,5 +277,45 @@ public sealed class WorkerExecutionEngineTests
             JobExecutionContext context,
             CancellationToken cancellationToken) =>
             ValueTask.FromException(new InvalidOperationException("handler failed"));
+    }
+
+    private sealed class OperationCanceledInvoker : IJobHandlerInvoker
+    {
+        public OperationCanceledInvoker(string jobKey)
+        {
+            JobKey = jobKey;
+        }
+
+        public string JobKey { get; }
+
+        public Type PayloadType => typeof(object);
+
+        public ValueTask InvokeAsync(
+            IServiceProvider serviceProvider,
+            string payloadJson,
+            JobExecutionContext context,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromException(new OperationCanceledException("downstream canceled its own operation"));
+    }
+
+    private sealed class WaitForCancellationInvoker : IJobHandlerInvoker
+    {
+        public WaitForCancellationInvoker(string jobKey)
+        {
+            JobKey = jobKey;
+        }
+
+        public string JobKey { get; }
+
+        public Type PayloadType => typeof(object);
+
+        public async ValueTask InvokeAsync(
+            IServiceProvider serviceProvider,
+            string payloadJson,
+            JobExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
     }
 }

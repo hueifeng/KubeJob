@@ -389,10 +389,6 @@ public sealed class WorkerAndDashboardHardeningTests
             CompleteAttemptRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(
             new CompleteAttemptResponse(true, JobPhase.Succeeded, false));
-
-        public ValueTask<bool> RequeueExecutionAsync(
-            RequeueExecutionRequest request,
-            CancellationToken cancellationToken) => ValueTask.FromResult(false);
     }
 
     /// <summary>
@@ -436,11 +432,6 @@ public sealed class WorkerAndDashboardHardeningTests
             CompleteAttemptRequest request,
             CancellationToken cancellationToken) =>
             _inner.CompleteAsync(request, cancellationToken);
-
-        public ValueTask<bool> RequeueExecutionAsync(
-            RequeueExecutionRequest request,
-            CancellationToken cancellationToken) =>
-            _inner.RequeueExecutionAsync(request, cancellationToken);
     }
 
     private sealed class UncooperativeInvoker : IJobHandlerInvoker
