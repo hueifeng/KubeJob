@@ -16,6 +16,8 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
     private readonly RabbitMqBrokerNativeOptions _options;
     private readonly object _gate = new();
+    private readonly HashSet<string> _declaredJobQueues = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _declaredEventTopics = new(StringComparer.Ordinal);
     private IConnection? _connection;
     private IModel? _channel;
     private bool _disposed;
@@ -31,8 +33,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
     public MessageTransportCapabilities Capabilities =>
         MessageTransportCapabilities.DurablePublish
         | MessageTransportCapabilities.DeadLetter
-        | MessageTransportCapabilities.ConsumerGroups
-        | MessageTransportCapabilities.OrderedDelivery;
+        | MessageTransportCapabilities.ConsumerGroups;
 
     public ValueTask PublishAsync(
         TransportPublishRequest request,
@@ -77,6 +78,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
             .Select(request => request.Message.MessageId)
             .ToHashSet(StringComparer.Ordinal);
         var returnedMessageIds = new HashSet<string>(StringComparer.Ordinal);
+        var returnedGate = new object();
 
         EventHandler<BasicReturnEventArgs> returnHandler = (_, args) =>
         {
@@ -84,7 +86,10 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
             if (!string.IsNullOrWhiteSpace(messageId)
                 && mandatoryMessageIds.Contains(messageId))
             {
-                returnedMessageIds.Add(messageId);
+                lock (returnedGate)
+                {
+                    returnedMessageIds.Add(messageId);
+                }
             }
         };
 
@@ -104,11 +109,19 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                     $"RabbitMQ did not confirm a BrokerNative publish batch of {requests.Count} message(s).");
             }
 
-            if (returnedMessageIds.Count > 0)
+            string[] returned;
+            lock (returnedGate)
+            {
+                returned = returnedMessageIds
+                    .OrderBy(id => id, StringComparer.Ordinal)
+                    .ToArray();
+            }
+
+            if (returned.Length > 0)
             {
                 throw new IOException(
                     "RabbitMQ could not route BrokerNative message(s): " +
-                    string.Join(",", returnedMessageIds.OrderBy(id => id, StringComparer.Ordinal)));
+                    string.Join(",", returned));
             }
         }
         catch
@@ -133,17 +146,19 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
         IModel channel,
         IReadOnlyList<TransportPublishRequest> requests)
     {
-        var jobQueues = requests
+        var newJobQueues = requests
             .Where(request => request.Kind == TransportMessageKind.Job)
             .Select(request => Core.Queues.LogicalQueueName.Normalize(
                 request.Destination,
                 nameof(request.Destination)))
             .Distinct(StringComparer.Ordinal)
+            .Where(queue => !_declaredJobQueues.Contains(queue))
             .ToArray();
 
-        if (jobQueues.Length > 0)
+        if (newJobQueues.Length > 0)
         {
-            RabbitMqBrokerNativeTopology.Declare(channel, _options, jobQueues);
+            RabbitMqBrokerNativeTopology.Declare(channel, _options, newJobQueues);
+            _declaredJobQueues.UnionWith(newJobQueues);
         }
 
         foreach (var topic in requests
@@ -151,7 +166,8 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                      .Select(request => Core.Queues.LogicalQueueName.Normalize(
                          request.Destination,
                          nameof(request.Destination)))
-                     .Distinct(StringComparer.Ordinal))
+                     .Distinct(StringComparer.Ordinal)
+                     .Where(topic => !_declaredEventTopics.Contains(topic)))
         {
             // Publishers own only the Topic exchange. Subscription queues are
             // declared by consumers. No subscription is a valid event topology.
@@ -161,6 +177,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                 durable: true,
                 autoDelete: false,
                 arguments: null);
+            _declaredEventTopics.Add(topic);
         }
     }
 
@@ -287,6 +304,8 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
 
         _channel = null;
         _connection = null;
+        _declaredJobQueues.Clear();
+        _declaredEventTopics.Clear();
     }
 
     private void ThrowIfDisposed()
