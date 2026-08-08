@@ -24,6 +24,23 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
+    /// Adds the RabbitMQ-authoritative BrokerNative data plane. Pair this with
+    /// AddKubeJobBrokerNativeWorker, not AddKubeJobWorker: no control-plane
+    /// runtime client or Managed Claim/Lease loop is required for consumption.
+    /// One physical execution queue is declared per logical worker queue and
+    /// all replicas configured for that queue compete for its deliveries.
+    /// </summary>
+    public static IServiceCollection AddRabbitMqKubeJobBrokerNativeConsumer(
+        this IServiceCollection services,
+        Action<RabbitMqBrokerNativeOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        services.Configure(configure);
+        services.AddHostedService<RabbitMqBrokerNativeConsumerService>();
+        return services;
+    }
+
+    /// <summary>
     /// Replaces the default polling notifier on a control-plane process.
     /// PostgreSQL remains authoritative and the transactional Outbox drives
     /// publication retries.
