@@ -3,31 +3,25 @@ using System.Text.Json;
 namespace KubeJob.Core.Runtime;
 
 /// <summary>
-/// A non-authoritative hint that a KubeJob queue may have claimable work.
-/// Workers must still claim from the control plane before executing anything.
+/// A non-authoritative hint that a KubeJob logical queue may have claimable
+/// PostgresManaged work. Workers must still claim from the control plane before
+/// executing anything; this signal never carries execution authority, ordering
+/// partitions, or worker-eligibility dimensions.
 /// </summary>
-/// <remarks>
-/// <see cref="PartitionKey"/> threads the run's ConcurrencyKey through to the
-/// transport adapter so same-key runs can co-locate on a physical lane queue;
-/// a null value resolves to lane 0.
-/// </remarks>
 public sealed record WorkAvailableSignal
 {
     public int SchemaVersion { get; init; }
     public required string EventId { get; init; }
     public required string Queue { get; init; }
-    public required string ExecutionLane { get; init; }
-    public required string ConsumerGroup { get; init; }
     public required string RunId { get; init; }
-    public string? PartitionKey { get; init; }
 
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     public static WorkAvailableSignal FromOutbox(OutboxMessageRecord message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        if (!string.Equals(message.EventType, "work-available", StringComparison.Ordinal))
+        if (!string.Equals(message.EventType, OutboxEventTypes.WorkAvailable, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Outbox message '{message.Id}' is not a work-available signal.");
@@ -51,10 +45,7 @@ public sealed record WorkAvailableSignal
             SchemaVersion = CurrentSchemaVersion,
             EventId = message.Id,
             Queue = message.Queue,
-            ExecutionLane = message.ExecutionLane,
-            RunId = payload.RunId,
-            ConsumerGroup = message.ConsumerGroup,
-            PartitionKey = message.PartitionKey
+            RunId = payload.RunId
         };
     }
 
