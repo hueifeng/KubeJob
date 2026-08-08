@@ -1,7 +1,5 @@
-using KubeJob.Core.Runtime;
 using KubeJob.Core.Transport;
 using KubeJob.ControlPlane.Runtime;
-using KubeJob.Transport.RabbitMQ.Telemetry;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -11,8 +9,9 @@ namespace KubeJob.Transport.RabbitMQ;
 public static class RabbitMqNotificationExtensions
 {
     /// <summary>
-    /// Adds a durable RabbitMQ business-message consumer. The control plane
-    /// must be registered first so the adapter can ACK only after submission.
+    /// Adds a durable RabbitMQ business-message ingress consumer. This is an
+    /// optional integration surface and is separate from KubeJob execution
+    /// delivery authority.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobIngress(
         this IServiceCollection services,
@@ -70,9 +69,8 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
-    /// Replaces the default polling notifier on a control-plane process.
-    /// PostgreSQL remains authoritative and the transactional Outbox drives
-    /// publication retries.
+    /// Optional wake notification for PostgresManaged workers. PostgreSQL
+    /// remains the queue authority; losing RabbitMQ only falls back to polling.
     /// </summary>
     public static IServiceCollection UseRabbitMqKubeJobNotifications(
         this IServiceCollection services,
@@ -85,51 +83,9 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
-    /// Registers RabbitMQ as the legacy V2 internal execution-envelope adapter.
-    /// Kept only while PostgresManaged/BrokerDispatch compatibility is retired.
+    /// Optional wake notification consumer for PostgresManaged workers. This
+    /// never carries execution ownership and is independent of BrokerNative.
     /// </summary>
-    public static IServiceCollection UseRabbitMqKubeJobExecutionDispatcher(
-        this IServiceCollection services,
-        Action<RabbitMqExecutionOptions> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        services.Configure(configure);
-        services.AddMetrics();
-        services.TryAddSingleton<KubeJobRabbitMqMetrics>();
-        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExecutionTransport, RabbitMqExecutionDispatcher>());
-        return services;
-    }
-
-    /// <summary>
-    /// Adds the legacy RabbitMQ Execution Envelope consumer to a Managed worker.
-    /// New high-throughput queues should use AddRabbitMqKubeJobBrokerNativeConsumer.
-    /// </summary>
-    public static IServiceCollection AddRabbitMqKubeJobExecutionConsumer(
-        this IServiceCollection services,
-        Action<RabbitMqExecutionOptions> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        services.Configure(configure);
-        services.AddMetrics();
-        services.TryAddSingleton<KubeJobRabbitMqMetrics>();
-        services.TryAddSingleton<QueueCatalog>();
-        services.AddSingleton<RabbitMqTopologyProvisioner>();
-        services.AddHostedService(services => services.GetRequiredService<RabbitMqTopologyProvisioner>());
-        services.AddHostedService<RabbitMqExecutionConsumerService>();
-        return services;
-    }
-
-    public static IServiceCollection UseRabbitMqKubeJobCancelPublisher(
-        this IServiceCollection services,
-        Action<RabbitMqExecutionOptions> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        services.Configure<RabbitMqExecutionOptions>(options => options.EnableCancelQueue = true);
-        services.Configure(configure);
-        services.Replace(ServiceDescriptor.Singleton<ICancelPublisher, RabbitMqCancelPublisher>());
-        return services;
-    }
-
     public static IServiceCollection AddRabbitMqKubeJobWorkerNotifications(
         this IServiceCollection services,
         Action<RabbitMqNotificationOptions> configure)
