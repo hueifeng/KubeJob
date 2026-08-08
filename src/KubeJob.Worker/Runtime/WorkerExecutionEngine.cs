@@ -23,7 +23,8 @@ public sealed record WorkerExecutionRequest(
     WorkerExecutionInfo Worker,
     CancellationToken AttemptCancellationToken,
     CancellationToken WorkerStoppingToken,
-    int? ConsumerIndex = null);
+    int? ConsumerIndex = null,
+    WorkerExecutionKind ExecutionKind = WorkerExecutionKind.Pull);
 
 /// <summary>
 /// Normalized handler result. It intentionally contains no lease, database,
@@ -154,7 +155,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                     JobAttemptOutcome.TimedOut => "timed_out",
                     JobAttemptOutcome.Canceled => "canceled",
                     _ => "failed"
-                });
+                }, request.ExecutionKind);
 
                 return new WorkerExecutionResult(
                     context.Outcome.Value,
@@ -162,7 +163,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                     context.FailureMessage ?? "Outcome set by execution middleware.");
             }
 
-            RecordHandlerDuration(handlerStartedAt, "succeeded");
+            RecordHandlerDuration(handlerStartedAt, "succeeded", request.ExecutionKind);
             return new WorkerExecutionResult(JobAttemptOutcome.Succeeded);
         }
         catch (OperationCanceledException) when (request.WorkerStoppingToken.IsCancellationRequested)
@@ -174,7 +175,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         }
         catch (OperationCanceledException) when (request.AttemptCancellationToken.IsCancellationRequested)
         {
-            RecordHandlerDuration(handlerStartedAt, "canceled");
+            RecordHandlerDuration(handlerStartedAt, "canceled", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.Canceled,
                 "canceled",
@@ -182,7 +183,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         }
         catch (OperationCanceledException) when (timeoutToken.IsCancellationRequested)
         {
-            RecordHandlerDuration(handlerStartedAt, "timed_out");
+            RecordHandlerDuration(handlerStartedAt, "timed_out", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.TimedOut,
                 "timeout",
@@ -198,7 +199,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                 ex,
                 "KubeJob attempt {AttemptId} threw OperationCanceledException without a runtime cancellation source",
                 request.AttemptId);
-            RecordHandlerDuration(handlerStartedAt, "failed");
+            RecordHandlerDuration(handlerStartedAt, "failed", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.RetryableFailure,
                 "handler_operation_canceled",
@@ -206,7 +207,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         }
         catch (JsonException ex)
         {
-            RecordHandlerDuration(handlerStartedAt, "payload_invalid");
+            RecordHandlerDuration(handlerStartedAt, "payload_invalid", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.PermanentFailure,
                 "payload_invalid",
@@ -215,7 +216,7 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         catch (Exception ex)
         {
             _logger.LogError(ex, "KubeJob attempt {AttemptId} failed", request.AttemptId);
-            RecordHandlerDuration(handlerStartedAt, "failed");
+            RecordHandlerDuration(handlerStartedAt, "failed", request.ExecutionKind);
             return new WorkerExecutionResult(
                 JobAttemptOutcome.RetryableFailure,
                 "handler_exception",
@@ -223,11 +224,17 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
         }
     }
 
-    private void RecordHandlerDuration(long startedAt, string outcome)
+    private void RecordHandlerDuration(
+        long startedAt,
+        string outcome,
+        WorkerExecutionKind executionKind)
     {
         if (startedAt != 0)
         {
-            _metrics?.HandlerCompleted(Stopwatch.GetElapsedTime(startedAt), outcome);
+            _metrics?.HandlerCompleted(
+                Stopwatch.GetElapsedTime(startedAt),
+                outcome,
+                executionKind);
         }
     }
 }
