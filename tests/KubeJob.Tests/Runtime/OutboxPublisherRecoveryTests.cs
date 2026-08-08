@@ -8,8 +8,9 @@ using Microsoft.Extensions.Options;
 namespace KubeJob.Tests.Runtime;
 
 /// <summary>
-/// Verifies that managed outbox publication commits each wake hint independently
-/// and retries a notifier failure without reverting earlier publications.
+/// Verifies that the retained durable delayed/recovery outbox commits each wake
+/// hint independently and retries a notifier failure without reverting earlier
+/// publications.
 /// </summary>
 public sealed class OutboxPublisherRecoveryTests
 {
@@ -44,7 +45,7 @@ public sealed class OutboxPublisherRecoveryTests
     {
         for (var index = 0; index < count; index++)
         {
-            await store.SubmitAsync(
+            var run = (await store.SubmitAsync(
                 new SubmitJobCommand(
                     "recovery.job",
                     $"{{\"i\":{index}}}",
@@ -56,7 +57,12 @@ public sealed class OutboxPublisherRecoveryTests
                     MaxAttempts: 1,
                     TimeoutSeconds: 30,
                     DeliveryTarget: ManagedTarget),
-                CancellationToken.None);
+                CancellationToken.None)).Run;
+
+            (await store.RequeueWorkAvailableAsync(
+                run.Id,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None)).Should().BeTrue();
         }
     }
 
@@ -68,7 +74,6 @@ public sealed class OutboxPublisherRecoveryTests
         var publisher = new OutboxPublisherService(
             store,
             notifier,
-            new OutboxPublisherSignal(),
             Options.Create(new JobRuntimeOptions
             {
                 OutboxPollInterval = TimeSpan.FromMilliseconds(10),
@@ -87,7 +92,7 @@ public sealed class OutboxPublisherRecoveryTests
             await Task.Delay(10, cancellation.Token);
         }
 
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
         await publisher.StopAsync(CancellationToken.None);
     }
 
