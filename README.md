@@ -1,70 +1,81 @@
 # KubeJob
 
-[中文指南](./docs/v2/getting-started.zh-CN.md) · [Getting Started](./docs/v2/getting-started.md) · [本地开发环境](./docs/v2/local-development.zh-CN.md) · [Local Development](./docs/v2/local-development.md) · [Architecture](./docs/v2/architecture.md) · [Hardening Review](./docs/v2/hardening-review.md)
+[中文](./README_zh.md) · [V3 Getting Started](./docs/v3/getting-started.md) · [V3 Architecture](./docs/v3/architecture.md) · [中文使用指南](./docs/v3/getting-started.zh-CN.md) · [中文架构](./docs/v3/architecture.zh-CN.md)
 
 KubeJob is a typed, embeddable, distributed background-job runtime for .NET.
-It uses logical Runs, physical Attempts, PostgreSQL-managed workers with
-expiring leases and session fencing, transactional wake-up hints, and
-independent cron Schedule resources. A deployment may additionally select the
-BrokerNative RabbitMQ transport for queues or event subscriptions; that path
-owns delivery, retry, acknowledgement, and dead-letter handling without using
-the managed Run/lease path.
 
-KubeJob provides **at-least-once execution**. It does not claim exactly-once
-external side effects.
+V3 is built around **Single Authority** semantics: each logical Job Queue is either `PostgresManaged` or `BrokerNative`. KubeJob provides at-least-once execution and does not claim exactly-once external side effects.
+
+## Runtime modes
+
+| Runtime | Execution authority | Durable Run/Attempt | Strong status/cancel | Normal execution DB dependency |
+| --- | --- | --- | --- | --- |
+| `PostgresManaged` | PostgreSQL | Yes | Yes | Yes |
+| `BrokerNative` | Message transport | No | No | No |
+
+`PostgresManaged` owns Claim, Attempt, Lease, Fencing, durable retry/cancellation and database ordering. An optional work-available notifier may reduce claim latency, but PostgreSQL polling remains the correctness path.
+
+`BrokerNative` publishes a self-contained message directly to the configured transport. The worker executes it through the shared `WorkerExecutionEngine` and the transport owns ACK/redelivery/retry/DLQ. The normal BrokerNative path does not create or claim a PostgreSQL Run.
+
+RabbitMQ is the first implemented BrokerNative adapter. Kafka, SQS, Redis Streams and other transports are extension targets, not currently implemented features.
 
 ## Run locally
 
-The repository includes a development stack for PostgreSQL and RabbitMQ. It
-automatically supports Docker Compose, `podman compose`, and `podman-compose`:
+Start the development PostgreSQL/RabbitMQ stack:
 
 ```bash
 bash scripts/dev-stack.sh up
 ```
 
-Run the unified sample against the real PostgreSQL store with one command:
+Run the unified PostgresManaged sample:
 
 ```bash
 bash scripts/run-unified-sample.sh
 ```
 
-On Windows, use `pwsh scripts/dev-stack.ps1 -Action up` or
-`pwsh scripts/run-unified-sample.ps1`. The sample Dashboard is available at
-`http://localhost:5041/admin/jobs`; RabbitMQ management is available at
-`http://localhost:15672`. The included credentials are development-only.
+On Windows use the equivalent `scripts/*.ps1` commands. The sample Dashboard is available at `http://localhost:5041/admin/jobs` and RabbitMQ management at `http://localhost:15672`. Included credentials are development-only.
 
-## Define a typed job
+## Define a typed Job
 
 ```csharp
 public sealed record SendEmail(string To, string Subject, string Body);
 
-[KubeJob("mail.send")]
 public sealed class SendEmailJob : IKubeJob<SendEmail>
 {
-    private readonly IEmailSender _sender;
-
-    public SendEmailJob(IEmailSender sender) => _sender = sender;
-
     public ValueTask ExecuteAsync(
         SendEmail payload,
         JobExecutionContext context,
-        CancellationToken cancellationToken) =>
-        _sender.SendAsync(payload, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        // business logic
+        return ValueTask.CompletedTask;
+    }
 }
+
+var sendEmail = new JobKey<SendEmail>("mail.send");
+services.AddKubeJobHandler<SendEmailJob, SendEmail>(sendEmail);
 ```
 
-The source generator creates a strongly typed key such as `Jobs.SendEmail`.
-Business dependencies use constructor injection. `JobExecutionContext` exposes
-a scoped `IServiceProvider` for middleware and runtime resolution, but does not
-expose a repository, lease token, or fencing token.
+## PostgresManaged
 
-## Register and enqueue
+A unified host can keep the control plane and Managed worker in one process without localhost HTTP:
 
 ```csharp
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
+services.AddKubeJob(
+    server => server.UsePostgreSql(connectionString),
+    worker =>
+    {
+        worker.WorkerId = "mail-worker";
+        worker.Queues = new List<string> { "mail" };
+        worker.MaxConcurrentJobs = 32;
+    });
+```
 
-await jobs.EnqueueAsync(
-    Jobs.SendEmail,
+Submit and observe a durable Run:
+
+```csharp
+var handle = await jobs.EnqueueAsync(
+    sendEmail,
     new SendEmail("user@example.com", "Welcome", "Hello"),
     new JobEnqueueOptions
     {
@@ -73,190 +84,117 @@ await jobs.EnqueueAsync(
         MaxAttempts = 5,
         Timeout = TimeSpan.FromMinutes(2)
     });
+
+var status = await jobs.GetStatusAsync(handle.JobId);
+await jobs.CancelAsync(handle.JobId, "no longer needed");
 ```
 
-`[KubeJob]` declares only the stable handler key. Queue, priority, retry,
-timeout, idempotency, concurrency, scheduling, placement, batching, sharding,
-and broadcast behavior belong to submissions or dedicated resources.
+## RabbitMQ BrokerNative
 
-## Unified deployment
-
-The control plane and worker can share one process without localhost HTTP:
+Route a Queue to RabbitMQ in producer/control-plane composition:
 
 ```csharp
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
-builder.Services.ConfigureKubeJobQueueRouting(routing =>
+services.AddKubeJobServer();
+services.ConfigureKubeJobQueueRuntimes(options =>
 {
-    // This minimal in-process sample does not register RabbitMQ, so keep its
-    // logical queue on the database Pull profile explicitly.
-    routing.Queues["mail"] = new QueueDefinition
+    options.Queues["mail-fast"] = new QueueRuntimeRoute
     {
-        Profile = ExecutionDeliveryProfile.Pull
+        Mode = QueueRuntimeMode.BrokerNative,
+        TransportId = RabbitMqBrokerNativePublisher.Id
     };
 });
-builder.Services.AddKubeJob(
-    configureServer: server => server.UsePostgreSql(connectionString),
-    configureWorker: worker =>
-    {
-        worker.WorkerId = Environment.MachineName;
-        worker.MaxConcurrentJobs = 16;
-        worker.Queues = new List<string> { "mail" };
-        worker.BuildId = "mailer-2026.07";
-    });
-
-builder.Services.AddKubeJobDashboard(options =>
+services.AddRabbitMqKubeJobBrokerNativeTransport(options =>
 {
-    options.RoutePrefix = "admin/jobs";
-    options.AuthorizationPolicy = "KubeJobDashboard";
-});
-
-var app = builder.Build();
-app.InitializeKubeJobDatabase();
-app.UseAuthentication();
-app.UseAuthorization();
-app.MapControllers();
-app.Run();
-```
-
-The host owns authentication and defines the named authorization policy. The
-in-process transport preserves the same Attempt, lease, retry, cancellation,
-and fencing semantics as distributed deployment.
-
-## Distributed deployment
-
-Control plane:
-
-```csharp
-builder.Services.AddKubeJobServer(options =>
-    options.UsePostgreSql(connectionString));
-builder.Services.AddKubeJobDashboard();
-```
-
-Worker:
-
-```csharp
-builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
-builder.Services.AddKubeJobWorker(options =>
-{
-    options.ServerEndpoint = "https://jobs.internal";
-    options.WorkerId = Environment.MachineName;
-    options.MaxConcurrentJobs = 32;
-    options.Queues = new List<string> { "mail" };
-    options.BuildId = "mailer-2026.07";
+    options.ConnectionString = rabbitMqConnectionString;
 });
 ```
 
-Workers request work only when they have free slots. PostgreSQL atomically
-creates an Attempt and lease with `FOR UPDATE SKIP LOCKED`. The server derives
-capacity from active Attempts and validates claims against the queues and
-capabilities registered by the Worker Session.
-
-## Independent schedules
+Register the BrokerNative worker data plane:
 
 ```csharp
-await schedules.UpsertCronAsync(
-    "daily-report",
-    Jobs.GenerateReport,
-    new GenerateReport("daily"),
-    "0 2 * * *",
-    new CronScheduleOptions
-    {
-        TimeZoneId = "Asia/Tokyo",
-        Queue = "reports",
-        MisfirePolicy = MisfirePolicy.FireOnce,
-        ConcurrencyPolicy = ScheduleConcurrencyPolicy.SkipIfRunning
-    });
+services.AddKubeJobBrokerNativeWorker(options =>
+{
+    options.WorkerId = "mail-fast-worker";
+    options.Queues = new List<string> { "mail-fast" };
+    options.MaxConcurrentJobs = 128;
+});
+services.AddKubeJobHandler<SendEmailJob, SendEmail>(sendEmail);
+services.AddRabbitMqKubeJobBrokerNativeConsumer(options =>
+{
+    options.ConnectionString = rabbitMqConnectionString;
+});
 ```
 
-Multiple control-plane replicas reconcile schedules through expiring claims
-and optimistic versions. Cursor advancement, Run creation, and Outbox creation
-occur in one PostgreSQL transaction.
+Business code still uses `IJobClient.EnqueueAsync`. For BrokerNative, `JobHandle.JobId` is the transport MessageId rather than a durable Run id.
 
-## Runtime model
+BrokerNative is at-least-once. `IdempotencyKey` is transported as metadata, but V3 does **not** currently provide a BrokerNative deduplication store. Make external side effects idempotent.
+
+`IJobClient.GetStatusAsync` and `CancelAsync` currently provide the strong PostgresManaged contract only; V3 does not yet contain a BrokerNative history projection or queued-cancel protocol.
+
+## Batch submission
+
+`EnqueueBatchAsync` deliberately has runtime-specific guarantees:
+
+- PostgresManaged: one bounded database transaction.
+- BrokerNative: non-atomic broker publication. A capable transport can publish the application batch behind one durability confirmation for throughput, but an error can occur after some or all messages were accepted.
+
+A BrokerNative batch retry must therefore be treated as at-least-once.
+
+## Event Pub/Sub
+
+Jobs and Events have different semantics. A Job Queue is competing-consumer work; an Event Topic fans out to independent Subscriptions.
 
 ```text
-JobSchedule ──creates──> JobRun ──contains──> JobAttempt
-
-Worker ──starts──> WorkerSession ──temporarily owns──> JobAttempt
+order.events / order.created
+       |
+       +-- business -> queue -> worker replicas
+       +-- audit    -> queue -> worker replicas
+       +-- cleanup  -> queue -> worker replicas
 ```
 
-A retry or reassignment creates another Attempt under the same logical Run.
-Completion is accepted only from the current unexpired Attempt and active
-Worker Session. Stale workers cannot overwrite newer sessions.
+Each Subscription owns independent retry/DLQ state. A failing subscriber never republishes the Topic and therefore does not replay already-successful sibling subscriptions.
+
+```csharp
+var orderCreated = EventKey<OrderCreated>.Create("order.events", "order.created");
+
+services.AddKubeJobEventHandler<OrderCreated, AuditOrderCreated>(
+    orderCreated,
+    subscription: "audit");
+
+await eventBus.PublishAsync(orderCreated, new OrderCreated(orderId));
+```
 
 ## Dashboard
 
-`AddKubeJobDashboard()` provides V2-native operational pages:
+`AddKubeJobDashboard()` provides operational views for Managed Runs/Attempts, workers, queues and schedules. It is read-only by default and hides payloads by default. Bind it to an application authorization policy before production use.
 
-- runtime overview and Outbox backlog;
-- logical Run filtering and pagination;
-- Run detail with a complete Attempt timeline;
-- Worker Session state, epoch, capacity, queues, capabilities, labels, and heartbeat;
-- independent Schedule state, policies, and next/last fire time.
+BrokerNative transport topology is deliberately not modeled as PostgreSQL Run state.
 
-The Dashboard deliberately does not expose lease or fencing credentials. It is
-**read-only by default**, serialized job payloads are **hidden by default**, and
-its embedded UI has no public CDN dependency. Production hosts should bind it
-to their normal authorization policy:
+## Current capability boundary
 
-```csharp
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("KubeJobDashboard", policy =>
-        policy.RequireRole("KubeJobOperator"));
-});
+Implemented:
 
-builder.Services.AddKubeJobDashboard(options =>
-{
-    options.RoutePrefix = "admin/jobs";
-    options.AuthorizationPolicy = "KubeJobDashboard";
-    options.ShowPayloads = false;
-    options.AllowMutatingActions = false;
-    options.MaximumWorkerSessions = 250;
-    options.MaximumSchedules = 250;
-});
-```
+- PostgresManaged Run / Attempt / Claim / Lease / Fencing
+- durable Managed status, cancellation, retry and ordering
+- RabbitMQ BrokerNative Job runtime
+- RabbitMQ Event Topic / Subscription runtime
+- publisher confirms, retry handoff and DLQ
+- BrokerNative producer batch-publish optimization
+- schedules routed to either runtime authority
 
-Set `ShowPayloads` only when the route is protected and payload disclosure is
-acceptable. Set `AllowMutatingActions` to enable Run cancellation and Schedule
-enable/disable controls.
+Not implemented:
 
-## HTTP diagnostics
+- Kafka/SQS/Redis/Pulsar transport adapters
+- BrokerNative strong history/status projection
+- BrokerNative queued cancellation
+- built-in BrokerNative idempotency/deduplication store
+- a general application-database transactional Outbox package
 
-```text
-GET  /api/kubejob/jobs/{runId}
-GET  /api/kubejob/jobs/{runId}/attempts
-POST /api/kubejob/jobs/{runId}/cancel
+See [V3 Getting Started](./docs/v3/getting-started.md), [V3 Architecture](./docs/v3/architecture.md), and ADR 015. `docs/v2` is retained as historical design material and is not the current runtime contract.
 
-PUT    /api/kubejob/schedules/{scheduleId}
-GET    /api/kubejob/schedules/{scheduleId}
-POST   /api/kubejob/schedules/{scheduleId}/enabled
-DELETE /api/kubejob/schedules/{scheduleId}
-```
+## PostgreSQL schema compatibility
 
-Attempt history is the authoritative answer to which Worker Session executed a
-job; retries may move between nodes.
-
-## PostgreSQL schema
-
-```text
-Kj2_JobRuns
-Kj2_JobAttempts
-Kj2_WorkerSessions
-Kj2_JobSchedules
-Kj2_Outbox
-```
-
-PostgreSQL is the source of truth for PostgresManaged queues. The transactional
-Outbox publishes only a best-effort `work-available` wake-up hint; workers still
-claim Runs, acquire leases, and complete Attempts in PostgreSQL. BrokerNative
-queues bypass the managed Outbox and publish self-contained transport messages
-through their configured adapter. Duplicate or missing wake-up messages cannot
-grant execution ownership.
-
-Authorization policies are optional for backward compatibility. Production
-deployments should configure separate client, worker, and Dashboard policies;
-without them the corresponding endpoints may be anonymous.
+The current schema still contains compatibility fields such as `DeliveryProfile` and `TransportId`. New PostgresManaged writes normalize these to Pull/null; active runtime selection is controlled by `QueueRuntimeMode`. These columns can be removed later through an explicit schema migration.
 
 ## License
 
