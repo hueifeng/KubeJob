@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.Core.Transport;
