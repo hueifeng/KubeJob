@@ -23,15 +23,15 @@ public sealed class NoopWorkAvailableNotifier : IWorkAvailableNotifier
 }
 
 /// <summary>
-/// Publishes PostgresManaged work-available wake signals from the transactional
-/// outbox. BrokerNative jobs bypass this service entirely and publish directly
-/// through IMessageTransportPublisher.
+/// Publishes the lower-frequency durable PostgresManaged wake rows retained for
+/// delayed and recovery scenarios. Immediate submissions use
+/// <see cref="ManagedWorkAvailableDispatcher"/> instead. BrokerNative jobs
+/// bypass this service entirely.
 /// </summary>
 public sealed class OutboxPublisherService : BackgroundService
 {
     private readonly IOutboxStore _store;
     private readonly IWorkAvailableNotifier _notifier;
-    private readonly OutboxPublisherSignal _wake;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<OutboxPublisherService> _logger;
     private readonly KubeJobControlPlaneMetrics? _metrics;
@@ -39,14 +39,12 @@ public sealed class OutboxPublisherService : BackgroundService
     public OutboxPublisherService(
         IOutboxStore store,
         IWorkAvailableNotifier notifier,
-        OutboxPublisherSignal wake,
         IOptions<JobRuntimeOptions> options,
         ILogger<OutboxPublisherService> logger,
         KubeJobControlPlaneMetrics? metrics = null)
     {
         _store = store;
         _notifier = notifier;
-        _wake = wake;
         _options = options.Value;
         _logger = logger;
         _metrics = metrics;
@@ -92,26 +90,16 @@ public sealed class OutboxPublisherService : BackgroundService
             {
                 try
                 {
-                    await WaitForWakeOrTimeoutAsync(_options.OutboxPollInterval, stoppingToken);
+                    // Durable outbox rows are now limited to delayed/recovery
+                    // paths, so simple periodic polling is sufficient. The old
+                    // in-process OutboxPublisherSignal had no producer after the
+                    // immediate submission path moved to ManagedWorkAvailableDispatcher.
+                    await Task.Delay(_options.OutboxPollInterval, stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }
-            }
-        }
-    }
-
-    private async Task WaitForWakeOrTimeoutAsync(TimeSpan timeout, CancellationToken cancellationToken)
-    {
-        var delay = Task.Delay(timeout, cancellationToken);
-        var wake = _wake.Reader.WaitToReadAsync(cancellationToken).AsTask();
-        var first = await Task.WhenAny(wake, delay).ConfigureAwait(false);
-
-        if (first == wake && wake.IsCompletedSuccessfully && wake.Result)
-        {
-            while (_wake.Reader.TryRead(out _))
-            {
             }
         }
     }
