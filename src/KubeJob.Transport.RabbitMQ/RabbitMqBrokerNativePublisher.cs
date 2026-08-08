@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using KubeJob.Core.Transport;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -65,7 +66,7 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
             EnsureChannel();
 
             var channel = _channel!;
-            var returnedMessageIds = new HashSet<string>(StringComparer.Ordinal);
+            var returnedMessageIds = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
             var declaredJobQueues = new HashSet<string>(StringComparer.Ordinal);
             var declaredEventTopics = new HashSet<string>(StringComparer.Ordinal);
 
@@ -74,7 +75,11 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                 var messageId = args.BasicProperties.MessageId;
                 if (!string.IsNullOrWhiteSpace(messageId))
                 {
-                    returnedMessageIds.Add(messageId);
+                    // BasicReturn is delivered by the RabbitMQ connection
+                    // dispatch thread, not necessarily the caller that is
+                    // waiting for confirms, so this collection must be
+                    // thread-safe.
+                    returnedMessageIds.TryAdd(messageId, 0);
                 }
             };
 
@@ -103,11 +108,11 @@ public sealed class RabbitMqBrokerNativePublisher : IMessageTransportBatchPublis
                         $"RabbitMQ did not confirm a BrokerNative publish batch of {requests.Count} message(s).");
                 }
 
-                if (returnedMessageIds.Count > 0)
+                if (!returnedMessageIds.IsEmpty)
                 {
                     throw new IOException(
                         $"RabbitMQ could not route {returnedMessageIds.Count} BrokerNative message(s): " +
-                        string.Join(",", returnedMessageIds.Take(8)) +
+                        string.Join(",", returnedMessageIds.Keys.Take(8)) +
                         (returnedMessageIds.Count > 8 ? ",..." : string.Empty));
                 }
             }
