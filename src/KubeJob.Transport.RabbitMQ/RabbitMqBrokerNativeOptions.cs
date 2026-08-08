@@ -11,6 +11,8 @@ namespace KubeJob.Transport.RabbitMQ;
 /// </summary>
 public sealed class RabbitMqBrokerNativeOptions
 {
+    private const int RabbitMqNameByteLimit = 255;
+
     public string ConnectionString { get; set; } = "amqp://guest:guest@localhost:5672/";
 
     /// <summary>
@@ -75,67 +77,76 @@ public sealed class RabbitMqBrokerNativeOptions
                 "RabbitMQ BrokerNative PublisherConfirmTimeout must be positive.");
         }
 
-        var maximumLogicalName = new string('q', LogicalQueueName.MaximumLength);
-        var longestGeneratedName = new[]
-        {
-            ExchangeName,
-            GetRetryExchangeName(),
-            GetRetryQueueName(),
-            GetDeadLetterExchangeName(),
-            GetDeadLetterQueueName(),
-            GetQueueName(maximumLogicalName),
-            GetEventExchangeName(maximumLogicalName),
-            GetEventSubscriptionQueueName(maximumLogicalName, maximumLogicalName),
-            GetEventRetryExchangeName(maximumLogicalName),
-            GetEventRetryQueueName(maximumLogicalName, maximumLogicalName),
-            GetEventDeadLetterExchangeName(maximumLogicalName),
-            GetEventDeadLetterQueueName(maximumLogicalName, maximumLogicalName)
-        }.MaxBy(name => Encoding.UTF8.GetByteCount(name))!;
+        ValidateTopologyName(ExchangeName, nameof(ExchangeName));
+        _ = GetRetryExchangeName();
+        _ = GetRetryQueueName();
+        _ = GetDeadLetterExchangeName();
+        _ = GetDeadLetterQueueName();
 
-        if (Encoding.UTF8.GetByteCount(longestGeneratedName) >= 255)
-        {
-            throw new InvalidOperationException(
-                "RabbitMQ BrokerNative topology names must be shorter than 255 UTF-8 bytes. " +
-                "Shorten QueuePrefix when using long Topic/Subscription names.");
-        }
+        // Logical queue/topic/subscription names are validated when a concrete
+        // topology name is generated. Validating the theoretical combination
+        // of two maximum-length logical names here would reject every default
+        // configuration even when the application only uses short names.
     }
 
     public string GetQueueName(string logicalQueue)
     {
         var queue = LogicalQueueName.Normalize(logicalQueue, nameof(logicalQueue));
-        return $"{QueuePrefix}.{queue}";
+        return ValidateTopologyName($"{QueuePrefix}.{queue}", "job queue");
     }
 
-    public string GetRetryExchangeName() => $"{ExchangeName}.retry";
+    public string GetRetryExchangeName()
+        => ValidateTopologyName($"{ExchangeName}.retry", "job retry exchange");
 
-    public string GetRetryQueueName() => $"{ExchangeName}.retry.queue";
+    public string GetRetryQueueName()
+        => ValidateTopologyName($"{ExchangeName}.retry.queue", "job retry queue");
 
-    public string GetDeadLetterExchangeName() => $"{ExchangeName}.dlx";
+    public string GetDeadLetterExchangeName()
+        => ValidateTopologyName($"{ExchangeName}.dlx", "job dead-letter exchange");
 
-    public string GetDeadLetterQueueName() => $"{ExchangeName}.dlq";
+    public string GetDeadLetterQueueName()
+        => ValidateTopologyName($"{ExchangeName}.dlq", "job dead-letter queue");
 
     public string GetEventExchangeName(string topic)
     {
         var normalized = LogicalQueueName.Normalize(topic, nameof(topic));
-        return $"{QueuePrefix}.{normalized}";
+        return ValidateTopologyName($"{QueuePrefix}.{normalized}", "event exchange");
     }
 
     public string GetEventSubscriptionQueueName(string topic, string subscription)
     {
         var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
         var normalizedSubscription = LogicalQueueName.Normalize(subscription, nameof(subscription));
-        return $"{QueuePrefix}.{normalizedTopic}.{normalizedSubscription}";
+        return ValidateTopologyName(
+            $"{QueuePrefix}.{normalizedTopic}.{normalizedSubscription}",
+            "event subscription queue");
     }
 
     public string GetEventRetryExchangeName(string topic)
-        => $"{GetEventExchangeName(topic)}.retry";
+        => ValidateTopologyName($"{GetEventExchangeName(topic)}.retry", "event retry exchange");
 
     public string GetEventRetryQueueName(string topic, string subscription)
-        => $"{GetEventSubscriptionQueueName(topic, subscription)}.retry";
+        => ValidateTopologyName(
+            $"{GetEventSubscriptionQueueName(topic, subscription)}.retry",
+            "event retry queue");
 
     public string GetEventDeadLetterExchangeName(string topic)
-        => $"{GetEventExchangeName(topic)}.dlx";
+        => ValidateTopologyName($"{GetEventExchangeName(topic)}.dlx", "event dead-letter exchange");
 
     public string GetEventDeadLetterQueueName(string topic, string subscription)
-        => $"{GetEventSubscriptionQueueName(topic, subscription)}.dlq";
+        => ValidateTopologyName(
+            $"{GetEventSubscriptionQueueName(topic, subscription)}.dlq",
+            "event dead-letter queue");
+
+    private static string ValidateTopologyName(string name, string kind)
+    {
+        if (Encoding.UTF8.GetByteCount(name) >= RabbitMqNameByteLimit)
+        {
+            throw new InvalidOperationException(
+                $"RabbitMQ {kind} name must be shorter than {RabbitMqNameByteLimit} UTF-8 bytes. " +
+                "Shorten QueuePrefix or the logical queue/topic/subscription name.");
+        }
+
+        return name;
+    }
 }
