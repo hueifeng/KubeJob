@@ -22,26 +22,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken: cancellationToken));
     }
 
-    public async ValueTask<IReadOnlyList<JobRunRecord>> GetRunsAsync(
-        IReadOnlyList<string> runIds,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(runIds);
-        if (runIds.Count == 0)
-        {
-            return Array.Empty<JobRunRecord>();
-        }
-
-        await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
-        await using var connection = await _backgroundDataSource.OpenConnectionAsync(cancellationToken);
-        return (await connection.QueryAsync<JobRunRecord>(new CommandDefinition(@"
-            SELECT *
-            FROM Kj2_JobRuns
-            WHERE Id = ANY(@RunIds);",
-            new { RunIds = runIds.ToArray() },
-            cancellationToken: cancellationToken))).ToArray();
-    }
-
     public async ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(
         string runId,
         CancellationToken cancellationToken)

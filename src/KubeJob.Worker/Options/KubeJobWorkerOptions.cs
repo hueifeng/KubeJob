@@ -18,14 +18,13 @@ public sealed class KubeJobWorkerOptions
     public string WorkerId { get; set; } = Environment.MachineName;
 
     /// <summary>
-    /// Legacy PostgresManaged/BrokerDispatch consumer-group identity. Event
-    /// subscriptions have their own explicit Subscription names.
+    /// Managed worker-group identity. Event subscriptions have their own
+    /// explicit subscription names.
     /// </summary>
     public string ConsumerGroup { get; set; } = "default";
 
     /// <summary>
-    /// Legacy PostgresManaged/BrokerDispatch execution lane. BrokerNative
-    /// ordering uses explicit transport partitions instead.
+    /// Managed execution lane used for worker eligibility and ordering.
     /// </summary>
     public string ExecutionLane { get; set; } = "default";
 

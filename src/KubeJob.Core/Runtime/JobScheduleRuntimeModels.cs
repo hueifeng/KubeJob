@@ -11,8 +11,8 @@ public sealed class JobScheduleRecord
     public string TimeZoneId { get; init; } = "UTC";
     public required string Queue { get; init; }
 
-    // Legacy V2 Managed metadata retained for storage/schema compatibility.
-    // New BrokerNative schedule dispatch resolves QueueRuntimeMode at fire time.
+    // Managed metadata retained for storage/schema compatibility. BrokerNative
+    // schedule dispatch resolves QueueRuntimeMode at fire time.
     public string ExecutionLane { get; init; } = "default";
     public ExecutionDeliveryProfile DeliveryProfile { get; init; } = ExecutionDeliveryProfile.Pull;
     public string ConsumerGroup { get; init; } = "default";

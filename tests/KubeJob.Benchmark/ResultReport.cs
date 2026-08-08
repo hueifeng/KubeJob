@@ -81,15 +81,13 @@ public static class ResultTable
         Console.WriteLine();
         Console.WriteLine("KubeJob throughput benchmark");
         Console.WriteLine($"  mode={opts.SubmissionMode} jobs={opts.JobCount} warmup={opts.Warmup} work-ms={opts.JobWorkMs}");
-        Console.WriteLine($"  submitters={opts.SubmitterConcurrency} worker-concurrency={opts.WorkerMaxConcurrency} "
-            + $"prefetch={opts.PrefetchCount} dispatch-concurrency={opts.ConsumerDispatchConcurrency}");
-        Console.WriteLine($"  outbox-concurrency={opts.OutboxPublishConcurrency} outbox-batch={opts.OutboxBatchSize} "
-            + $"publisher-concurrency={opts.PublisherConcurrency}");
+        Console.WriteLine($"  submitters={opts.SubmitterConcurrency} worker-concurrency={opts.WorkerMaxConcurrency}");
+        Console.WriteLine($"  outbox-concurrency={opts.OutboxPublishConcurrency} outbox-batch={opts.OutboxBatchSize}");
         Console.WriteLine($"  hotkey-count={opts.HotKeyCardinality} uniform-keys={(opts.UniformKeyCardinality == 0 ? "distinct" : opts.UniformKeyCardinality)}");
         Console.WriteLine($"  lane-sweep=[{string.Join(",", opts.LaneCountSweep)}]");
         Console.WriteLine($"  poll-ms={opts.PollIntervalMs} status-parallelism={opts.StatusPollParallelism} "
             + $"metrics-ms={opts.MetricsIntervalMs} cpu={(opts.CpuSamplingEnabled ? "on" : "off")} "
-            + $"delivery={opts.DeliveryProfile}");
+            + "delivery=PostgresManaged");
         Console.WriteLine();
     }
 
@@ -123,11 +121,11 @@ public static class ResultTable
         sb.AppendLine("# KubeJob throughput benchmark");
         sb.AppendLine();
         sb.AppendLine($"- mode: `{opts.SubmissionMode}` | jobs: {opts.JobCount} | warmup: {opts.Warmup} | work-ms: {opts.JobWorkMs}");
-        sb.AppendLine($"- submitters: {opts.SubmitterConcurrency} | worker-concurrency: {opts.WorkerMaxConcurrency} | prefetch: {opts.PrefetchCount} | dispatch-concurrency: {opts.ConsumerDispatchConcurrency}");
-        sb.AppendLine($"- outbox-concurrency: {opts.OutboxPublishConcurrency} | outbox-batch: {opts.OutboxBatchSize} | publisher-concurrency: {opts.PublisherConcurrency}");
+        sb.AppendLine($"- submitters: {opts.SubmitterConcurrency} | worker-concurrency: {opts.WorkerMaxConcurrency}");
+        sb.AppendLine($"- outbox-concurrency: {opts.OutboxPublishConcurrency} | outbox-batch: {opts.OutboxBatchSize}");
         sb.AppendLine($"- hotkey-count: {opts.HotKeyCardinality} | uniform-keys: {(opts.UniformKeyCardinality == 0 ? "distinct" : opts.UniformKeyCardinality.ToString(CultureInfo.InvariantCulture))}");
         sb.AppendLine($"- lane-sweep: [{string.Join(",", opts.LaneCountSweep)}]");
-        sb.AppendLine($"- poll-ms: {opts.PollIntervalMs} | status-parallelism: {opts.StatusPollParallelism} | metrics-ms: {opts.MetricsIntervalMs} | cpu: {(opts.CpuSamplingEnabled ? "on" : "off")} | delivery: {opts.DeliveryProfile}");
+        sb.AppendLine($"- poll-ms: {opts.PollIntervalMs} | status-parallelism: {opts.StatusPollParallelism} | metrics-ms: {opts.MetricsIntervalMs} | cpu: {(opts.CpuSamplingEnabled ? "on" : "off")} | delivery: PostgresManaged");
         sb.AppendLine();
         sb.AppendLine("| Scenario | Mode | Lanes | Jobs | Succeeded | Ingest TPS | E2E TPS (server) | E2E TPS (wall) | P50 ms | P95 ms | P99 ms | Max ms | DB conn max | Rabbit ready max | Rabbit unacked max | CPU avg % | Heap max MB | RSS max MB | Alloc MB | Alloc KB/job | Gen0 | Gen1 | Gen2 | Thr(proc) | Thr(pool) | Duration s |");
         sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");

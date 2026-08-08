@@ -8,7 +8,7 @@ namespace KubeJob.Benchmark;
 /// <summary>
 /// Minimal payload for the benchmark job. Fields are intentionally trivial so
 /// serialization and deserialization cost stay constant across scenarios; the
-/// measured load is the durable pipeline (outbox, broker dispatch, admission,
+/// measured load is the durable managed pipeline (outbox, claim/lease,
 /// completion), not payload handling.
 /// </summary>
 public sealed record BenchPayload(int Value = 0);

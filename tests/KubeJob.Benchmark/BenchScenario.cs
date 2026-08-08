@@ -13,7 +13,7 @@ public enum BenchScenario
 {
     /// <summary>
     /// No <c>ConcurrencyKey</c>; the queue runs <see cref="ExecutionOrderingMode.Parallel"/>.
-    /// Every admitted Run can execute concurrently up to worker capacity.
+    /// Every accepted Run can execute concurrently up to worker capacity.
     /// </summary>
     Parallel,
 

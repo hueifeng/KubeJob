@@ -175,7 +175,7 @@ public sealed class JobControlPlane
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-        var result = await _submissions.RequestCancelAsync(runId, reason, null, cancellationToken);
+        var result = await _submissions.RequestCancelAsync(runId, reason, cancellationToken);
         return result.Requested;
     }
 

@@ -380,19 +380,6 @@ public sealed class WorkerAndDashboardHardeningTests
             CancellationToken cancellationToken) => ValueTask.FromResult(
             new ClaimJobsResponse(Array.Empty<ClaimedJob>()));
 
-        public ValueTask<AdmitExecutionResponse> AdmitAsync(
-            AdmitExecutionRequest request,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-            new AdmitExecutionResponse(ExecutionAdmissionStatus.Retry));
-
-        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-            AdmitExecutionBatchRequest request,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-            new AdmitExecutionBatchResponse(
-                request.RunIds.Select(runId => new AdmitExecutionResult(
-                    runId,
-                    ExecutionAdmissionStatus.Retry)).ToArray()));
-
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
             RenewLeasesRequest request,
             CancellationToken cancellationToken) => ValueTask.FromResult(
@@ -439,16 +426,6 @@ public sealed class WorkerAndDashboardHardeningTests
             ClaimJobsRequest request,
             CancellationToken cancellationToken) =>
             _inner.ClaimAsync(request, cancellationToken);
-
-        public ValueTask<AdmitExecutionResponse> AdmitAsync(
-            AdmitExecutionRequest request,
-            CancellationToken cancellationToken) =>
-            _inner.AdmitAsync(request, cancellationToken);
-
-        public ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-            AdmitExecutionBatchRequest request,
-            CancellationToken cancellationToken) =>
-            _inner.AdmitBatchAsync(request, cancellationToken);
 
         public ValueTask<RenewLeasesResponse> RenewLeasesAsync(
             RenewLeasesRequest request,

@@ -383,7 +383,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
     public async ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,
-        string? consumerGroup,
         CancellationToken cancellationToken)
     {
         await using var databasePermit = await AcquireDatabaseOperationAsync(cancellationToken);
@@ -405,7 +404,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         if (state is null)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return new CancelJobResult(false, null, null);
+            return new CancelJobResult(false);
         }
 
         if (state.CancelRequested
@@ -415,7 +414,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 or (int)JobPhase.Dead)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return new CancelJobResult(false, state.Queue, null);
+            return new CancelJobResult(false);
         }
 
         var databaseNow = await GetDatabaseNowAsync(connection, transaction, cancellationToken);
@@ -444,9 +443,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken: cancellationToken));
 
         // Managed cancellation is durable database state. Running workers see
-        // CancelRequested on lease renewal; no broker cancel queue is involved.
+        // CancelRequested on lease renewal; no transport control message is involved.
         await transaction.CommitAsync(cancellationToken);
-        return new CancelJobResult(true, state.Queue, null);
+        return new CancelJobResult(true);
     }
 
     private sealed class WorkRequeueState

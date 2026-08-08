@@ -287,7 +287,7 @@ public sealed class ScheduleControlPlane
         {
             throw new ControlPlaneValidationException(
                 "broker_native_schedule_policy_unsupported",
-                $"BrokerNative schedule queue '{queue}' does not use legacy ConcurrencyKey; ordering is a Queue partition policy.");
+                $"BrokerNative schedule queue '{queue}' does not use managed ConcurrencyKey; ordering is a Queue partition policy.");
         }
 
         if (request.RetryPolicy is not null)

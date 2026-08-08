@@ -13,64 +13,14 @@ namespace KubeJob.Tests.Runtime;
 /// <summary>
 /// Locks in the behavior of the H/M-tier fixes that don't already have
 /// dedicated coverage:
-///   H4  AdmitAsync's worker_not_capable fallback returns Retry so the broker
-///       rebalances the envelope instead of dropping it.
 ///   M4  CompletionBatcher restarts its loop and a fresh channel after the
 ///       previous loop has exited, so a transient store failure doesn't strand
 ///       later callers.
-///   M6  The default no-op notifier and cancel publisher are wired by default
-///       so Pull deployments don't depend on a transport package being loaded.
+///   M6  The default no-op notifier is wired by default so PostgresManaged
+///       deployments don't depend on a transport package being loaded.
 /// </summary>
 public sealed class HardeningRegressionTests
 {
-    [Fact]
-    public async Task Admission_returns_retry_when_worker_lacks_the_required_capability()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddKubeJobServer();
-        await using var provider = services.BuildServiceProvider();
-        var jobs = provider.GetRequiredService<JobControlPlane>();
-        var workers = provider.GetRequiredService<WorkerControlPlane>();
-
-        var receipt = await jobs.SubmitAsync(
-            new EnqueueJobRequest(
-                "order-push-3",
-                "{\"orderId\":\"O-2001\"}",
-                "orders.push",
-                IdempotencyKey: "order-event:2001"));
-
-        // The session advertises both queues/capabilities (broad), so the
-        // targeted ClaimAsync filter doesn't drop the row on its own. The
-        // envelope's request then reports a narrower capability set, which
-        // is the broker mis-routing signal we want the fallback path to
-        // detect.
-        var session = await workers.RegisterAsync(
-            new RegisterWorkerSessionRequest(
-                "worker-broad",
-                "session-broad",
-                "test",
-                "localhost",
-                1,
-                new[] { "orders.push", "reports.generate" },
-                new[] { "order-push-3", "report.generate" },
-                new Dictionary<string, string>()));
-
-        var admission = await workers.AdmitAsync(new AdmitExecutionRequest(
-            session.WorkerId,
-            session.SessionId,
-            session.SessionEpoch,
-            1,
-            receipt.Handle.JobId,
-            // request queues/capabilities do NOT cover order-push-3,
-            // simulating the broker handing us an envelope we can't run.
-            new[] { "reports.generate" },
-            new[] { "report.generate" }));
-
-        admission.Status.Should().Be(ExecutionAdmissionStatus.Retry);
-        admission.Reason.Should().Be("worker_not_capable");
-    }
-
     [Fact]
     public async Task Completion_batcher_restarts_after_the_loop_exits()
     {
@@ -110,7 +60,7 @@ public sealed class HardeningRegressionTests
     }
 
     [Fact]
-    public void Default_di_wires_noop_notifier_and_cancel_publisher()
+    public void Default_di_wires_noop_notifier()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -119,8 +69,6 @@ public sealed class HardeningRegressionTests
 
         provider.GetRequiredService<IWorkAvailableNotifier>()
             .Should().BeOfType<NoopWorkAvailableNotifier>();
-        provider.GetRequiredService<ICancelPublisher>()
-            .Should().BeOfType<NoopCancelPublisher>();
     }
 
     private static CompleteAttemptRequest NewCompletion(string runId) =>

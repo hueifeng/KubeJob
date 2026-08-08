@@ -134,13 +134,13 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var commands = new List<SubmitJobCommand>(202);
         for (var index = 0; index < 200; index++)
         {
-            commands.Add(NewSubmission(idempotencyKey: $"batch:{index}", deliveryTarget: BrokerDispatchTarget()));
+            commands.Add(NewSubmission(idempotencyKey: $"batch:{index}", deliveryTarget: ManagedTarget()));
         }
 
         // Duplicate idempotency keys must resolve to the first occurrence with
         // Existing=true and must not write a second outbox row.
-        commands.Add(NewSubmission(idempotencyKey: "batch:0", deliveryTarget: BrokerDispatchTarget()));
-        commands.Add(NewSubmission(idempotencyKey: "batch:5", deliveryTarget: BrokerDispatchTarget()));
+        commands.Add(NewSubmission(idempotencyKey: "batch:0", deliveryTarget: ManagedTarget()));
+        commands.Add(NewSubmission(idempotencyKey: "batch:5", deliveryTarget: ManagedTarget()));
 
         var results = await store.SubmitBatchAsync(commands, CancellationToken.None);
 
@@ -476,7 +476,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PostgreSql_broker_reconciliation_requeues_pending_run_only()
+    public async Task PostgreSql_work_reconciliation_requeues_pending_run_only()
     {
         if (!Enabled) return;
         var store = _store!;
@@ -494,12 +494,11 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             CancellationToken.None);
 
         scheduled.Should().BeTrue();
-        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(1);
+        messages.Count(message => message.PayloadJson.Contains(run.Id)).Should().Be(2);
 
         var canceled = await store.RequestCancelAsync(
             run.Id,
             "cancel before reconciliation",
-            null,
             CancellationToken.None);
         var scheduledAfterCancel = await store.RequeueWorkAvailableAsync(
             run.Id,
@@ -520,7 +519,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         await store.CreateIfAbsentAsync(schedule, CancellationToken.None);
         var idempotencyKey = $"schedule:{schedule.Id}:{scheduledFor.UtcTicks}";
         var conflicting = (await store.SubmitAsync(
-            NewSubmission(idempotencyKey: idempotencyKey, deliveryTarget: BrokerDispatchTarget()),
+            NewSubmission(idempotencyKey: idempotencyKey, deliveryTarget: ManagedTarget()),
             CancellationToken.None)).Run;
 
         var claim = (await store.ClaimDueAsync(
@@ -665,7 +664,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         (await store.RequestCancelAsync(
             canceledRun.Id,
             "cancel while batch completes",
-            null,
             CancellationToken.None)).Requested.Should().BeTrue();
 
         var requests = new[]
@@ -779,7 +777,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         (await store.RequestCancelAsync(
             run.Id,
             "cancel while handler is finishing",
-            null,
             CancellationToken.None)).Requested.Should().BeTrue();
 
         var response = (await store.CompleteBatchAsync(
@@ -869,7 +866,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         (await store.RequestCancelAsync(
             cancelRun.Id,
             "cancel before lease expiry",
-            null,
             CancellationToken.None)).Requested.Should().BeTrue();
 
         await Task.Delay(150);
@@ -991,7 +987,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(deliveryTarget: BrokerDispatchTarget()), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(deliveryTarget: ManagedTarget()), CancellationToken.None);
         var first = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMilliseconds(100),
@@ -1014,7 +1010,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     {
         if (!Enabled) return;
         var store = _store!;
-        await store.SubmitAsync(NewSubmission(deliveryTarget: BrokerDispatchTarget()), CancellationToken.None);
+        await store.SubmitAsync(NewSubmission(deliveryTarget: ManagedTarget()), CancellationToken.None);
         var first = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMilliseconds(100),
@@ -1052,10 +1048,10 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         if (!Enabled) return;
         var store = _store!;
         await store.SubmitAsync(
-            NewSubmission(idempotencyKey: "outbox-batch:one", deliveryTarget: BrokerDispatchTarget()),
+            NewSubmission(idempotencyKey: "outbox-batch:one", deliveryTarget: ManagedTarget()),
             CancellationToken.None);
         await store.SubmitAsync(
-            NewSubmission(idempotencyKey: "outbox-batch:two", deliveryTarget: BrokerDispatchTarget()),
+            NewSubmission(idempotencyKey: "outbox-batch:two", deliveryTarget: ManagedTarget()),
             CancellationToken.None);
         var claimed = (await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
@@ -1082,7 +1078,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Targeted_claim_admits_only_the_requested_run()
+    public async Task Targeted_claim_returns_only_the_requested_run()
     {
         if (!Enabled) return;
         var store = _store!;
@@ -1251,7 +1247,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Batch_claim_admits_only_the_requested_limit_and_leaves_remainder_pending()
+    public async Task Batch_claim_respects_the_requested_limit_and_leaves_remainder_pending()
     {
         if (!Enabled) return;
         var store = _store!;
@@ -1291,7 +1287,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Batch_claim_admits_candidates_in_descending_priority_order()
+    public async Task Batch_claim_returns_candidates_in_descending_priority_order()
     {
         if (!Enabled) return;
         var store = _store!;
@@ -1323,7 +1319,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Batch_claim_admits_only_one_run_per_concurrency_key()
+    public async Task Batch_claim_returns_only_one_run_per_concurrency_key()
     {
         if (!Enabled) return;
         var store = _store!;
@@ -1525,8 +1521,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .CurrentWorkerId.Should().Be(soloWorker.WorkerId);
     }
 
-    private static DeliveryTarget BrokerDispatchTarget() =>
-        new(ExecutionDeliveryProfile.BrokerDispatch, "default", "rabbitmq", "default");
+    private static DeliveryTarget ManagedTarget() =>
+        new(ExecutionDeliveryProfile.Pull, "default", null, "default");
 
     private static SubmitJobCommand NewSubmission(
         string? idempotencyKey = null,
@@ -1555,7 +1551,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         CronExpression = "*/5 * * * *",
         TimeZoneId = "UTC",
         Queue = "default",
-        TransportId = "rabbitmq",
+        TransportId = null,
         MisfirePolicy = MisfirePolicy.FireOnce,
         ConcurrencyPolicy = ScheduleConcurrencyPolicy.Allow,
         MaxAttempts = 3,
@@ -1608,7 +1604,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         if (!Enabled) return;
         var store = _store!;
         var unkeyedRun = (await store.SubmitAsync(
-            NewSubmission(deliveryTarget: BrokerDispatchTarget()),
+            NewSubmission(deliveryTarget: ManagedTarget()),
             CancellationToken.None)).Run;
         var keyedRun = (await store.SubmitAsync(
             NewSubmission(idempotencyKey: "maintenance-retain-me"),
@@ -1644,6 +1640,102 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         terminalDeleted.Should().Be(1);
         (await store.GetRunAsync(unkeyedRun.Id, CancellationToken.None)).Should().BeNull();
         (await store.GetRunAsync(keyedRun.Id, CancellationToken.None)).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task V10_schema_fixture_upgrades_to_v11_without_losing_existing_runs()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        var databaseName = "kubejob_migration_" + Guid.NewGuid().ToString("N");
+        var databaseBuilder = new NpgsqlConnectionStringBuilder(_testConnectionString!)
+        {
+            Database = databaseName,
+            Pooling = false
+        };
+        var connectionString = databaseBuilder.ConnectionString;
+
+        await using (var admin = new NpgsqlConnection(_adminConnectionString!))
+        {
+            await admin.OpenAsync();
+            await using var create = admin.CreateCommand();
+            create.CommandText = $"CREATE DATABASE \"{databaseName}\"";
+            await create.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            new DbInitializer(connectionString).Initialize();
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var insert = connection.CreateCommand();
+                insert.CommandText = @"
+                    INSERT INTO Kj2_JobRuns
+                        (Id, JobKey, PayloadJson, Queue, Phase, AvailableAt, CreatedAt, MaxAttempts, TimeoutSeconds)
+                    VALUES
+                        ('migration-fixture-run', 'migration.job', '{}', 'default', 0,
+                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 60);";
+                await insert.ExecuteNonQueryAsync();
+
+                await using var downgrade = connection.CreateCommand();
+                downgrade.CommandText = @"
+                    DROP INDEX IF EXISTS IX_Kj2_JobRuns_ParentRelation;
+                    ALTER TABLE Kj2_JobRuns
+                        DROP COLUMN IF EXISTS ParentRunId,
+                        DROP COLUMN IF EXISTS RelationKind;
+                    ALTER TABLE Kj2_JobSchedules
+                        DROP COLUMN IF EXISTS ConcurrencyKey,
+                        DROP COLUMN IF EXISTS RetryPolicyJson,
+                        DROP COLUMN IF EXISTS ContinuationJson,
+                        DROP COLUMN IF EXISTS CompensationJson;
+                    DELETE FROM Kj2_SchemaMigrations;
+                    INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt)
+                    VALUES (10, CURRENT_TIMESTAMP);";
+                await downgrade.ExecuteNonQueryAsync();
+            }
+
+            new DbInitializer(connectionString).Initialize();
+
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var version = connection.CreateCommand();
+                version.CommandText = "SELECT MAX(Version) FROM Kj2_SchemaMigrations;";
+                Convert.ToInt32(await version.ExecuteScalarAsync())
+                    .Should().Be(DbInitializer.CurrentSchemaVersion);
+
+                await using var columns = connection.CreateCommand();
+                columns.CommandText = @"
+                    SELECT COUNT(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND ((table_name = 'kj2_jobruns' AND column_name IN ('parentrunid', 'relationkind'))
+                        OR (table_name = 'kj2_jobschedules' AND column_name IN
+                            ('concurrencykey', 'retrypolicyjson', 'continuationjson', 'compensationjson')));";
+                Convert.ToInt32(await columns.ExecuteScalarAsync()).Should().Be(6);
+
+                await using var preserved = connection.CreateCommand();
+                preserved.CommandText = "SELECT JobKey FROM Kj2_JobRuns WHERE Id = 'migration-fixture-run';";
+                (await preserved.ExecuteScalarAsync()).Should().Be("migration.job");
+            }
+        }
+        finally
+        {
+            await using var admin = new NpgsqlConnection(_adminConnectionString!);
+            await admin.OpenAsync();
+            await using var terminate = admin.CreateCommand();
+            terminate.CommandText = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = @database AND pid <> pg_backend_pid();";
+            terminate.Parameters.AddWithValue("database", databaseName);
+            await terminate.ExecuteNonQueryAsync();
+
+            await using var drop = admin.CreateCommand();
+            drop.CommandText = $"DROP DATABASE IF EXISTS \"{databaseName}\"";
+            await drop.ExecuteNonQueryAsync();
+        }
     }
 
     private static ClaimJobsRequest Claim(WorkerSessionRecord session) => new(

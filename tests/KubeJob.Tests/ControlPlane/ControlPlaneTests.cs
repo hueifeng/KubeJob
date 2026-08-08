@@ -37,10 +37,7 @@ public sealed class ControlPlaneTests
     [Fact]
     public async Task Job_submission_persists_the_canonical_queue_returned_by_routing()
     {
-        var options = new QueueDeliveryOptions
-        {
-            Defaults = { Profile = ExecutionDeliveryProfile.Pull }
-        };
+        var options = new QueueDeliveryOptions();
         var optionsWrapper = Options.Create(options);
         var store = new InMemoryJobRuntimeStore();
         var controlPlane = new JobControlPlane(
@@ -58,15 +55,13 @@ public sealed class ControlPlaneTests
     }
 
     [Fact]
-    public async Task Cancel_uses_the_run_persisted_delivery_profile_after_routing_changes()
+    public async Task Cancel_is_database_authoritative_and_does_not_enqueue_transport_control_messages()
     {
         var options = new QueueDeliveryOptions
         {
             Defaults =
             {
-                Profile = ExecutionDeliveryProfile.BrokerDispatch,
-                ConsumerGroup = "orders-workers",
-                TransportId = "rabbitmq"
+                ConsumerGroup = "orders-workers"
             }
         };
         var store = new InMemoryJobRuntimeStore();
@@ -80,21 +75,18 @@ public sealed class ControlPlaneTests
         var receipt = await controlPlane.SubmitAsync(
             new EnqueueJobRequest("sample.data", "{}"));
 
-        options.Defaults.Profile = ExecutionDeliveryProfile.Pull;
-        options.Defaults.TransportId = null;
-
         (await controlPlane.RequestCancelAsync(receipt.Handle.JobId, "route changed"))
             .Should().BeTrue();
 
+        (await store.GetRunAsync(receipt.Handle.JobId, CancellationToken.None))!
+            .CancelRequested.Should().BeTrue();
         var outbox = await store.ClaimPendingAsync(
             DateTimeOffset.UtcNow.AddSeconds(1),
             TimeSpan.FromMinutes(1),
             10,
             CancellationToken.None);
-        outbox.Should().Contain(message =>
-            message.EventType == OutboxEventTypes.Cancel
-            && message.Queue == "orders-workers"
-            && message.PayloadJson.Contains(receipt.Handle.JobId, StringComparison.Ordinal));
+        outbox.Should().OnlyContain(message =>
+            message.EventType == OutboxEventTypes.WorkAvailable);
     }
 
     [Fact]

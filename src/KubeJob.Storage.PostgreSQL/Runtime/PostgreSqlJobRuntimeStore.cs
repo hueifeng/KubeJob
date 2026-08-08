@@ -184,43 +184,6 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     }
 
     /// <summary>
-    /// Persists a per-group cancel signal as an outbox row. The cancel
-    /// exchange is per-group, so the row's <c>Queue</c> column carries the
-    /// group identifier (not the logical queue).
-    /// </summary>
-    internal static async ValueTask AddCancelOutboxAsync(
-        IDbConnection connection,
-        IDbTransaction transaction,
-        string group,
-        string runId,
-        DateTimeOffset availableAt,
-        CancellationToken cancellationToken)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(group);
-        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-        var command = new CommandDefinition(@"
-            INSERT INTO Kj2_Outbox
-                (Id, Queue, EventType, PayloadJson, State, PublishAttempts,
-                 AvailableAt, CreatedAt)
-            VALUES
-                (@Id, @Queue, @EventType, CAST(@PayloadJson AS jsonb),
-                 @State, 0, GREATEST(@AvailableAt, clock_timestamp()),
-                 clock_timestamp());",
-            new
-            {
-                Id = NewId(),
-                Queue = group,
-                EventType = OutboxEventTypes.Cancel,
-                PayloadJson = JsonSerializer.Serialize(new { runId }, SerializerOptions),
-                State = (int)OutboxDeliveryState.Pending,
-                AvailableAt = availableAt.ToUniversalTime()
-            },
-            transaction,
-            cancellationToken: cancellationToken);
-        await connection.ExecuteAsync(command);
-    }
-
-    /// <summary>
     /// Maps <c>*Json</c> columns to their unsuffixed CLR properties
     /// (e.g. <c>ContinuationJson</c> → <see cref="JobRunRecord.Continuation"/>),
     /// which Dapper's default name matching cannot do. JSON cell decoding is

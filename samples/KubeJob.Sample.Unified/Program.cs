@@ -43,7 +43,7 @@ builder.Services.AddKubeJob(
         options.WorkerId = workerId;
         options.MaxConcurrentJobs = maxConcurrentJobs;
         options.Queues = new List<string> { "sample.data", "sample.dashboard-demo" };
-        options.BuildId = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev";
+        options.BuildId = typeof(DashboardDemoJob).Assembly.GetName().Version?.ToString() ?? "dev";
         options.Labels["env"] = builder.Environment.EnvironmentName.ToLowerInvariant();
         options.Labels["app"] = "unified-sample";
         options.ConsumerGroup = "unified-sample";

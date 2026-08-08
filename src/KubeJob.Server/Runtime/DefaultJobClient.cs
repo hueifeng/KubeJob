@@ -283,7 +283,7 @@ public sealed class DefaultJobClient : IJobClient
         if (!string.IsNullOrWhiteSpace(options.ConcurrencyKey))
         {
             throw new NotSupportedException(
-                $"BrokerNative queue '{queue}' does not use the legacy ConcurrencyKey. " +
+                $"BrokerNative queue '{queue}' does not use managed ConcurrencyKey. " +
                 "Use PartitionKey/partitioned routing when ordering is enabled for that Queue.");
         }
 

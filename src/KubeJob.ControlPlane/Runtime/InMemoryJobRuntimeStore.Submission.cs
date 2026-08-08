@@ -146,7 +146,6 @@ public sealed partial class InMemoryJobRuntimeStore
     public ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,
-        string? consumerGroup,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -155,12 +154,12 @@ public sealed partial class InMemoryJobRuntimeStore
         {
             if (!_runs.TryGetValue(runId, out var run))
             {
-                return ValueTask.FromResult(new CancelJobResult(false, null, null));
+                return ValueTask.FromResult(new CancelJobResult(false));
             }
 
             if (IsTerminal(run.Phase) || run.CancelRequested)
             {
-                return ValueTask.FromResult(new CancelJobResult(false, run.Queue, consumerGroup));
+                return ValueTask.FromResult(new CancelJobResult(false));
             }
 
             run.CancelRequested = true;
@@ -176,8 +175,8 @@ public sealed partial class InMemoryJobRuntimeStore
 
             // PostgresManaged cancellation is database-authoritative. Running
             // workers observe cancel state through the normal managed runtime;
-            // no broker cancel queue or outbox message is produced.
-            return ValueTask.FromResult(new CancelJobResult(true, run.Queue, consumerGroup));
+            // no transport control message or outbox row is produced.
+            return ValueTask.FromResult(new CancelJobResult(true));
         }
     }
 

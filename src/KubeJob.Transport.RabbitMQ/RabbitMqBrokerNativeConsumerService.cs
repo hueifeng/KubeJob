@@ -12,7 +12,7 @@ namespace KubeJob.Transport.RabbitMQ;
 
 /// <summary>
 /// RabbitMQ-authoritative BrokerNative consumer. Deliveries execute directly
-/// through <see cref="BrokerNativeJobProcessor"/>; no control-plane admission,
+/// through <see cref="BrokerNativeJobProcessor"/>; no control-plane claim,
 /// Run lookup, lease, or completion database write occurs on this path.
 /// Multiple worker replicas consume the same physical queue competitively.
 /// </summary>
