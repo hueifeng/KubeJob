@@ -51,10 +51,11 @@ public sealed class RabbitMqBrokerNativeOptions
         ArgumentException.ThrowIfNullOrWhiteSpace(ExchangeName);
         ArgumentException.ThrowIfNullOrWhiteSpace(QueuePrefix);
 
-        if (QueuePrefix.Contains(TopologyBoundary))
+        if (QueuePrefix.Contains(TopologyBoundary)
+            || ExchangeName.Contains(TopologyBoundary))
         {
             throw new InvalidOperationException(
-                $"RabbitMQ BrokerNative QueuePrefix cannot contain '{TopologyBoundary}' because it is reserved for physical topology boundaries.");
+                $"RabbitMQ BrokerNative QueuePrefix and ExchangeName cannot contain '{TopologyBoundary}' because it is reserved for Event physical topology boundaries.");
         }
 
         if (PrefetchCount == 0)
