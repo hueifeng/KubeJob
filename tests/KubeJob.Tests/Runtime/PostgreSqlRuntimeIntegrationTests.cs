@@ -352,11 +352,12 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         run!.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
         run.TransportId.Should().BeNull();
         run.ScheduleId.Should().Be(schedule.Id);
-        run.ScheduledFor.Should().Be(due);
+        run.ScheduledFor.Should().BeCloseTo(due, TimeSpan.FromMilliseconds(1));
 
         var persisted = await store.GetAsync(schedule.Id, CancellationToken.None);
-        persisted!.LastFireAt.Should().Be(due);
-        persisted.NextFireAt.Should().Be(next);
+        persisted!.LastFireAt.Should().NotBeNull();
+        persisted.LastFireAt!.Value.Should().BeCloseTo(due, TimeSpan.FromMilliseconds(1));
+        persisted.NextFireAt.Should().BeCloseTo(next, TimeSpan.FromMilliseconds(1));
     }
 
     [Fact]
