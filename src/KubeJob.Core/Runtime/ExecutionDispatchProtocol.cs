@@ -11,29 +11,21 @@ public enum ExecutionDeliveryProfile
 }
 
 /// <summary>
-/// Controls the execution ordering contract for a logical queue.  Ordering is
-/// enforced by the control plane, rather than by a broker-specific consumer
-/// setting, so it survives redelivery and worker failover.
+/// Controls the execution ordering contract for a logical queue. Ordering is
+/// enforced by the control plane for PostgresManaged execution.
 /// </summary>
 public enum ExecutionOrderingMode
 {
     Parallel = 0,
     KeyOrdered = 1,
-    /// <summary>
-    /// Strict global FIFO: the entire queue (or lane) is processed one
-    /// message at a time. The next message is NEVER dispatched while the
-    /// current message is inflight. Equivalent to prefetch=1 on every
-    /// consumer for this queue.
-    /// PostgreSQL KeyOrdered gate logic also applies: the control plane
-    /// verifies OrderingSequence monotonicity even in StrictFifo mode.
-    /// </summary>
     StrictFifo = 2
 }
 
 /// <summary>
-/// A durable, transport-neutral destination selected by deployment policy when
-/// a Run is created. An execution lane is a logical Worker eligibility and
-/// isolation boundary; it is not a RabbitMQ, Kafka, or RocketMQ group name.
+/// Legacy PostgresManaged delivery metadata retained for schema compatibility
+/// while BrokerNative queues use QueueRuntimeMode plus IMessageTransport.
+/// Pull is the only supported managed execution authority; any stale transport
+/// metadata is discarded at construction time.
 /// </summary>
 public sealed record DeliveryTarget
 {
@@ -53,7 +45,7 @@ public sealed record DeliveryTarget
         this.Profile = Profile;
         this.ExecutionLane = ExecutionLane;
         this.ConsumerGroup = ConsumerGroup;
-        this.TransportId = TransportId;
+        this.TransportId = Profile == ExecutionDeliveryProfile.Pull ? null : TransportId;
         this.OrderingMode = OrderingMode;
     }
 
@@ -76,11 +68,6 @@ public sealed record DeliveryTarget
 
         if (Profile == ExecutionDeliveryProfile.Pull)
         {
-            if (!string.IsNullOrWhiteSpace(TransportId))
-            {
-                throw new InvalidOperationException("Pull delivery cannot specify a transport ID.");
-            }
-
             return;
         }
 
@@ -94,15 +81,9 @@ public sealed record DeliveryTarget
 }
 
 /// <summary>
-/// A transport-neutral carrier for an already accepted logical Run. The
-/// envelope is not execution authority; the Worker still needs admission and
-/// a valid lease from the control plane.
+/// Legacy V2 carrier for a previously accepted managed Run. New broker-owned
+/// execution uses BrokerNativeJobMessage instead and never performs admission.
 /// </summary>
-/// <remarks>
-/// <see cref="PartitionKey"/> carries the run's ConcurrencyKey so transport
-/// adapters can hash it to a fixed-N physical lane queue; a null value
-/// resolves to lane 0.
-/// </remarks>
 public sealed record ExecutionEnvelope
 {
     public int SchemaVersion { get; init; }
@@ -133,9 +114,8 @@ public sealed record ExecutionEnvelope
 }
 
 /// <summary>
-/// Publishes execution envelopes for one named transport. Adapter packages own
-/// physical topics, queues, confirms, commits, and retry mechanics; they never
-/// own KubeJob Run, Attempt, lease, or completion state.
+/// Legacy V2 execution transport contract. New transports implement
+/// IMessageTransportPublisher for BrokerNative execution.
 /// </summary>
 public interface IExecutionTransport
 {
@@ -145,13 +125,6 @@ public interface IExecutionTransport
         ExecutionEnvelope envelope,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Resolves the physical queue names a logical queue maps to on this
-    /// transport (for example one dispatch queue per lane plus shared retry and
-    /// dead-letter queues). Used by operational surfaces such as the Dashboard
-    /// queue inventory. Adapters without a physical queue concept return an
-    /// empty list.
-    /// </summary>
     IReadOnlyList<string> ResolvePhysicalQueueNames(string logicalQueue)
         => Array.Empty<string>();
 }
