@@ -18,10 +18,6 @@ public sealed class HttpWorkerRuntimeClient : IWorkerRuntimeClient, IDisposable
         workerOptions.Validate();
         var handler = new SocketsHttpHandler
         {
-            // Without a bounded lifetime, this singleton client would keep
-            // reusing connections to a control-plane endpoint that has since
-            // moved (pod restart/rescale behind a load balancer), silently
-            // failing claims/heartbeats/lease renewals until process restart.
             PooledConnectionLifetime = TimeSpan.FromMinutes(5)
         };
         _httpClient = new HttpClient(handler)
@@ -65,32 +61,6 @@ public sealed class HttpWorkerRuntimeClient : IWorkerRuntimeClient, IDisposable
             cancellationToken);
         response.EnsureSuccessStatusCode();
         return await ReadRequiredAsync<ClaimJobsResponse>(response, cancellationToken);
-    }
-
-    public async ValueTask<AdmitExecutionResponse> AdmitAsync(
-        AdmitExecutionRequest request,
-        CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.PostAsJsonAsync(
-            "api/kubejob/runtime/admissions",
-            request,
-            SerializerOptions,
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await ReadRequiredAsync<AdmitExecutionResponse>(response, cancellationToken);
-    }
-
-    public async ValueTask<AdmitExecutionBatchResponse> AdmitBatchAsync(
-        AdmitExecutionBatchRequest request,
-        CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.PostAsJsonAsync(
-            "api/kubejob/runtime/admissions/batch",
-            request,
-            SerializerOptions,
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await ReadRequiredAsync<AdmitExecutionBatchResponse>(response, cancellationToken);
     }
 
     public async ValueTask<RenewLeasesResponse> RenewLeasesAsync(

@@ -5,20 +5,14 @@ using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.Dashboard;
 
-/// <summary>
-/// One logical queue as seen by operations: the resolved delivery target
-/// (profile/lane/group/transport/ordering) and the physical queues it maps to
-/// on the configured transport.
-/// </summary>
 public sealed record QueueInventoryEntry(
     string LogicalQueue,
-    ExecutionDeliveryProfile Profile,
-    string ExecutionLane,
-    string ConsumerGroup,
+    QueueRuntimeMode RuntimeMode,
     string? TransportId,
-    ExecutionOrderingMode OrderingMode,
-    int ActiveWorkerCount,
-    IReadOnlyList<string> PhysicalQueueNames);
+    string? ExecutionLane,
+    string? ConsumerGroup,
+    ExecutionOrderingMode? OrderingMode,
+    int ActiveWorkerCount);
 
 public sealed record DashboardQueuesViewModel(
     IReadOnlyList<QueueInventoryEntry> Entries,
@@ -26,27 +20,29 @@ public sealed record DashboardQueuesViewModel(
     DateTimeOffset ObservedAt);
 
 /// <summary>
-/// Composes the queue catalog, worker session state, and the registered
-/// execution transports into the operational queue inventory shown on the
-/// Dashboard. Queues appear when they are explicitly configured in
-/// <see cref="QueueDeliveryOptions"/> or registered by a worker session.
+/// Product-level queue inventory. Broker-specific exchange/queue/retry/DLQ
+/// topology is deliberately hidden; operations see the logical Queue and its
+/// single execution authority.
 /// </summary>
 public sealed class QueueInventoryService
 {
-    private readonly IOptions<QueueDeliveryOptions> _options;
-    private readonly QueueCatalog _catalog;
-    private readonly IExecutionTransportRegistry _transports;
+    private readonly IOptions<QueueDeliveryOptions> _managedOptions;
+    private readonly IOptions<QueueRuntimeOptions> _runtimeOptions;
+    private readonly QueueCatalog _managedCatalog;
+    private readonly IQueueRuntimeResolver _runtimeResolver;
     private readonly IJobRuntimeDashboardStore _dashboard;
 
     public QueueInventoryService(
-        IOptions<QueueDeliveryOptions> options,
-        QueueCatalog catalog,
-        IExecutionTransportRegistry transports,
+        IOptions<QueueDeliveryOptions> managedOptions,
+        IOptions<QueueRuntimeOptions> runtimeOptions,
+        QueueCatalog managedCatalog,
+        IQueueRuntimeResolver runtimeResolver,
         IJobRuntimeDashboardStore dashboard)
     {
-        _options = options;
-        _catalog = catalog;
-        _transports = transports;
+        _managedOptions = managedOptions;
+        _runtimeOptions = runtimeOptions;
+        _managedCatalog = managedCatalog;
+        _runtimeResolver = runtimeResolver;
         _dashboard = dashboard;
     }
 
@@ -63,11 +59,15 @@ public sealed class QueueInventoryService
             .Distinct(StringComparer.Ordinal)
             .ToHashSet(StringComparer.Ordinal);
 
-        var options = _options.Value;
         var queues = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var key in options.Queues.Keys)
+        foreach (var key in _managedOptions.Value.Queues.Keys)
         {
-            queues.Add(key);
+            queues.Add(key.Trim());
+        }
+
+        foreach (var key in _runtimeOptions.Value.Queues.Keys)
+        {
+            queues.Add(key.Trim());
         }
 
         foreach (var workerQueue in workerQueues)
@@ -78,40 +78,21 @@ public sealed class QueueInventoryService
         var entries = new List<QueueInventoryEntry>(queues.Count);
         foreach (var logicalQueue in queues)
         {
-            var route = _catalog.Resolve(logicalQueue);
-            var physicalQueues = ResolvePhysicalQueues(logicalQueue, route.Target);
+            var runtime = _runtimeResolver.Resolve(logicalQueue);
+            DeliveryTarget? managed = runtime.Mode == QueueRuntimeMode.PostgresManaged
+                ? _managedCatalog.Resolve(logicalQueue).Target
+                : null;
+
             entries.Add(new QueueInventoryEntry(
                 logicalQueue,
-                route.Target.Profile,
-                route.Target.ExecutionLane,
-                route.Target.ConsumerGroup,
-                route.Target.TransportId,
-                route.Target.OrderingMode,
-                activeWorkers.Count(worker => worker.Queues.Contains(logicalQueue, StringComparer.Ordinal)),
-                physicalQueues));
+                runtime.Mode,
+                runtime.TransportId,
+                managed?.ExecutionLane,
+                managed?.ConsumerGroup,
+                managed?.OrderingMode,
+                activeWorkers.Count(worker => worker.Queues.Contains(logicalQueue, StringComparer.Ordinal))));
         }
 
         return new DashboardQueuesViewModel(entries, activeWorkers.Length, DateTimeOffset.UtcNow);
-    }
-
-    private IReadOnlyList<string> ResolvePhysicalQueues(
-        string logicalQueue,
-        DeliveryTarget target)
-    {
-        if (string.IsNullOrWhiteSpace(target.TransportId))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            return _transports.Resolve(target.TransportId).ResolvePhysicalQueueNames(logicalQueue);
-        }
-        catch (InvalidOperationException)
-        {
-            // The transport for this queue is not registered on this host
-            // (e.g. a control-plane replica without the RabbitMQ extensions).
-            return Array.Empty<string>();
-        }
     }
 }

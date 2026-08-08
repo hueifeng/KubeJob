@@ -1,4 +1,3 @@
-using System.Text.Json;
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 
@@ -89,10 +88,10 @@ public sealed partial class InMemoryJobRuntimeStore
             JobKey = command.JobKey,
             PayloadJson = command.PayloadJson,
             Queue = command.Queue,
-            DeliveryProfile = target.Profile,
+            DeliveryProfile = ExecutionDeliveryProfile.Pull,
             ExecutionLane = target.ExecutionLane,
             ConsumerGroup = target.ConsumerGroup,
-            TransportId = target.TransportId,
+            TransportId = null,
             Priority = command.Priority,
             AvailableAt = command.AvailableAt.ToUniversalTime(),
             CreatedAt = now,
@@ -175,46 +174,32 @@ public sealed partial class InMemoryJobRuntimeStore
                 run.CompletedAt = DateTimeOffset.UtcNow;
             }
 
-            if (run.DeliveryProfile == ExecutionDeliveryProfile.BrokerDispatch
-                && string.Equals(consumerGroup, run.ConsumerGroup, StringComparison.Ordinal)
-                && !string.IsNullOrWhiteSpace(consumerGroup))
-            {
-                var message = new OutboxMessageRecord
-                {
-                    Id = NewId(),
-                    Queue = consumerGroup!,
-                    ConsumerGroup = consumerGroup!,
-                    EventType = OutboxEventTypes.Cancel,
-                    PayloadJson = JsonSerializer.Serialize(new { runId = run.Id }),
-                    AvailableAt = DateTimeOffset.UtcNow,
-                    CreatedAt = DateTimeOffset.UtcNow,
-                    State = OutboxDeliveryState.Pending
-                };
-                _outbox.Add(message.Id, message);
-            }
-
+            // PostgresManaged cancellation is database-authoritative. Running
+            // workers observe cancel state through the normal managed runtime;
+            // no broker cancel queue or outbox message is produced.
             return ValueTask.FromResult(new CancelJobResult(true, run.Queue, consumerGroup));
         }
     }
 
     public ValueTask<JobRunRecord?> GetByIdempotencyKeyAsync(
-            string idempotencyKey,
-            CancellationToken cancellationToken)
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
         {
-            lock (_gate)
+            foreach (var run in _runs.Values)
             {
-                foreach (var run in _runs.Values)
+                if (string.Equals(run.IdempotencyKey, idempotencyKey, StringComparison.Ordinal)
+                    && run.Phase != JobPhase.Canceled
+                    && run.Phase != JobPhase.Failed
+                    && run.Phase != JobPhase.Succeeded
+                    && run.Phase != JobPhase.Dead)
                 {
-                    if (string.Equals(run.IdempotencyKey, idempotencyKey, StringComparison.Ordinal) &&
-                        run.Phase != JobPhase.Canceled &&
-                        run.Phase != JobPhase.Failed &&
-                        run.Phase != JobPhase.Succeeded &&
-                        run.Phase != JobPhase.Dead)
-                    {
-                        return ValueTask.FromResult<JobRunRecord?>(run);
-                    }
+                    return ValueTask.FromResult<JobRunRecord?>(run);
                 }
-                return ValueTask.FromResult<JobRunRecord?>(null);
             }
+
+            return ValueTask.FromResult<JobRunRecord?>(null);
         }
     }
+}
