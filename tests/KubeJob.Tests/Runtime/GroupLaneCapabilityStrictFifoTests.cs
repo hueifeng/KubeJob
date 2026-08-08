@@ -1,8 +1,6 @@
 using FluentAssertions;
 using KubeJob.Core.Runtime;
 using KubeJob.ControlPlane.Runtime;
-using KubeJob.Server.Runtime;
-using KubeJob.Transport.RabbitMQ;
 using KubeJob.Worker.Options;
 using Microsoft.Extensions.Options;
 
@@ -11,16 +9,17 @@ namespace KubeJob.Tests.Runtime;
 public sealed class GroupLaneCapabilityStrictFifoTests
 {
     [Fact]
-    public void Delivery_target_keeps_logical_lane_separate_from_consumer_group()
+    public void Managed_delivery_target_keeps_worker_lane_separate_from_consumer_group()
     {
         var target = new DeliveryTarget(
-            ExecutionDeliveryProfile.BrokerDispatch,
+            ExecutionDeliveryProfile.Pull,
             "billing-lane",
-            "rabbitmq",
+            null,
             "default");
 
         target.ExecutionLane.Should().Be("billing-lane");
         target.ConsumerGroup.Should().Be("default");
+        target.TransportId.Should().BeNull();
 
         var explicitlyGrouped = target with { ConsumerGroup = "billing-workers" };
         explicitlyGrouped.ExecutionLane.Should().Be("billing-lane");
@@ -28,7 +27,7 @@ public sealed class GroupLaneCapabilityStrictFifoTests
     }
 
     [Fact]
-    public void Queue_catalog_resolves_lane_and_consumer_group_independently()
+    public void Queue_catalog_resolves_managed_lane_and_consumer_group_independently()
     {
         var options = new QueueDeliveryOptions
         {
@@ -41,20 +40,23 @@ public sealed class GroupLaneCapabilityStrictFifoTests
         options.Queues["orders.push"] = new QueueDefinition
         {
             ExecutionLane = "lane-orders",
-            ConsumerGroup = "group-orders"
+            ConsumerGroup = "group-orders",
+            OrderingMode = ExecutionOrderingMode.StrictFifo
         };
 
         var catalog = new QueueCatalog(Options.Create(options));
 
         var route = catalog.Resolve("orders.push");
 
+        route.Target.Profile.Should().Be(ExecutionDeliveryProfile.Pull);
         route.Target.ExecutionLane.Should().Be("lane-orders");
         route.Target.ConsumerGroup.Should().Be("group-orders");
+        route.Target.OrderingMode.Should().Be(ExecutionOrderingMode.StrictFifo);
         route.Target.ExecutionLane.Should().NotBe(route.Target.ConsumerGroup);
     }
 
     [Fact]
-    public void Worker_profile_requires_and_normalizes_group_and_lane()
+    public void Managed_worker_profile_requires_and_normalizes_group_and_lane()
     {
         var options = new KubeJobWorkerOptions
         {
@@ -67,45 +69,5 @@ public sealed class GroupLaneCapabilityStrictFifoTests
 
         options.ConsumerGroup.Should().Be("group-orders");
         options.ExecutionLane.Should().Be("lane-orders");
-    }
-
-    [Fact]
-    public void Strict_fifo_requires_single_active_consumer_and_prefetch_one()
-    {
-        var options = new RabbitMqExecutionOptions
-        {
-            PrefetchCount = 16,
-            UseSingleActiveConsumer = false
-        };
-
-        var action = () => RabbitMqTopologyProvisioner.ValidateStrictFifoPolicy(
-            ExecutionOrderingMode.StrictFifo,
-            options);
-
-        action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*StrictFifo*");
-    }
-
-    [Fact]
-    public void Strict_fifo_policy_accepts_rabbitmq_safe_settings()
-    {
-        var options = new RabbitMqExecutionOptions
-        {
-            PrefetchCount = 1,
-            UseSingleActiveConsumer = true
-        };
-
-        var action = () => RabbitMqTopologyProvisioner.ValidateStrictFifoPolicy(
-            ExecutionOrderingMode.StrictFifo,
-            options);
-
-        action.Should().NotThrow();
-    }
-
-    [Fact]
-    public void Stable_hash_matches_the_documented_fnv1a_vector()
-    {
-        ExecutionLaneRouter.StableHash("hello")
-            .Should().Be(0x4f9f2cabU);
     }
 }
