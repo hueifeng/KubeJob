@@ -103,9 +103,9 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return new SubmitJobResult(existing, Existing: true);
         }
 
-        // PostgresManaged remains PostgreSQL-authoritative. This transactional
-        // outbox row is only a best-effort wake signal; workers still claim the
-        // durable Run from PostgreSQL and polling remains the correctness path.
+        // PostgresManaged remains PostgreSQL-authoritative. When a real wake
+        // notifier is configured, this transactional outbox row only shortens
+        // claim latency; polling remains the correctness path.
         await AddOutboxAsync(
             connection,
             transaction,
@@ -273,13 +273,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         var results = new SubmitJobResult[count];
-        var workAvailableOutboxItems = new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count);
+        var workAvailableOutboxItems = _emitWorkAvailableOutbox
+            ? new List<(string Queue, string PayloadJson, DateTimeOffset AvailableAt, DeliveryTarget Target, string? PartitionKey)>(count)
+            : null;
         for (var index = 0; index < count; index++)
         {
             if (inserted.TryGetValue(ids[index], out var run))
             {
                 results[index] = new SubmitJobResult(run, Existing: false);
-                workAvailableOutboxItems.Add((
+                workAvailableOutboxItems?.Add((
                     run.Queue,
                     JsonSerializer.Serialize(new { runId = run.Id, queue = run.Queue }, SerializerOptions),
                     run.AvailableAt,
@@ -302,7 +304,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
-        if (workAvailableOutboxItems.Count > 0)
+        if (workAvailableOutboxItems is { Count: > 0 })
         {
             await AddOutboxBatchAsync(
                 connection,
