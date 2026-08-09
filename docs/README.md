@@ -9,5 +9,5 @@
 - [Local development](v3/local-development.md)
 - [Benchmarking](v3/benchmarking.md)
 
-`docs/v2/`, ADRs, plans, and dated review reports are historical material. They
-explain prior decisions but do not override the V3 contracts or current source.
+`docs/v2/`, ADRs, and plans are historical material. They explain prior
+decisions but do not override the V3 contracts or current source.

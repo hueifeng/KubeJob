@@ -26,4 +26,4 @@ dotnet run --project tests/KubeJob.MetaPackageSmoke/KubeJob.MetaPackageSmoke.csp
   --no-build \
   -p:KubeJobSmokeVersion="$smoke_version"
 
-printf '\nKubeJob V2 core completion validation succeeded.\n'
+printf '\nKubeJob full validation succeeded.\n'

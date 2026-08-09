@@ -1,4 +1,4 @@
-name: Full Validation
+name: Full Runtime Validation
 
 on:
   pull_request:
@@ -79,7 +79,7 @@ jobs:
               `${success ? '✅' : '❌'} **${process.env.OUTCOME}**\n\n` +
               `This validation covers:\n` +
               `- Release solution build and unit/API tests\n` +
-              `- V2 Dashboard routing, authorization, Razor rendering, and credential redaction\n` +
+              `- Dashboard routing, authorization, Razor rendering, and credential redaction\n` +
               `- real PostgreSQL claim/session/schedule/outbox/idempotency races\n` +
               `- unified typed-job end-to-end execution\n` +
               `- source-generator positive, typed-handler enforcement, and duplicate-key negative cases\n` +

@@ -1,17 +1,15 @@
 # KubeJob 中文文档
 
-KubeJob 当前是 **V2-only** 的强类型 .NET 分布式后台任务运行时。
+KubeJob 是面向 .NET 的持久化任务与 BrokerNative 事件运行时。当前版本提供
+两种互相隔离的执行权威：PostgreSQL 管理任务生命周期，消息 Broker 管理原生投递。
 
-请使用以下最新文档：
-
-- [中文使用指南](./docs/v2/getting-started.zh-CN.md)
-- [V2 架构说明](./docs/v2/architecture.md)
-- [Dashboard 与安全边界](./docs/v2/security.md)
 - [英文首页](./README.md)
+- [V3 运行模型](./docs/v3/runtime-model.md)
+- [V3 传输模型](./docs/v3/transport.md)
+- [V3 事件订阅](./docs/v3/events.md)
+- [本地开发环境](./docs/v3/local-development.md)
+- [基准测试方法](./docs/v3/benchmarking.md)
+- [历史 V2 教程与架构资料](./docs/v2/README.md)
 
-当前运行时使用 `IKubeJob<TPayload>`、逻辑 Run、物理 Attempt、Pull 或
-BrokerDispatch Worker、Worker Session fencing、PostgreSQL 事务、Outbox 和独立
-Schedule。默认交付档是 `BrokerDispatch`，部署可以按逻辑 Queue 显式切回 `Pull`。
-
-旧的非泛型 Handler、Push Dispatcher、JobSpec、WorkerNode、旧数据库表和旧 Dashboard
-已经删除，不提供兼容模式。
+快速开始、示例代码、安全默认值和能力边界请以英文首页为准；V2 文档仅用于查阅
+历史设计，不代表当前 V3 契约。

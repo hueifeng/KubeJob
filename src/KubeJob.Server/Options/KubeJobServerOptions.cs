@@ -3,7 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace KubeJob.Server.Options;
 
 /// <summary>
-/// Configuration options for the KubeJob V2 control plane.
+/// Configuration options for the KubeJob control plane.
 /// </summary>
 public sealed class KubeJobServerOptions
 {
@@ -30,12 +30,12 @@ public sealed class KubeJobServerOptions
 
     /// <summary>
     /// Storage providers replace the reference in-memory state machine by
-    /// registering the V2 runtime store interfaces.
+    /// registering the runtime store interfaces.
     /// </summary>
     public Action<IServiceCollection>? StorageConfigurator { get; set; }
 
     /// <summary>
-    /// Uses the reference in-memory V2 state machine. This is already the
+    /// Uses the reference in-memory state machine. This is already the
     /// default and is intended for tests, samples, and single-process hosts.
     /// </summary>
     public KubeJobServerOptions UseInMemory()

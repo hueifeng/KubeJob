@@ -6,9 +6,12 @@ $Project = Join-Path $RepoRoot "samples/KubeJob.Sample.Unified/KubeJob.Sample.Un
 & $StackScript -Action up
 $connectionString = (& $StackScript -Action connection-string | Out-String).Trim()
 $env:ConnectionStrings__KubeJob = $connectionString
+if ([string]::IsNullOrWhiteSpace($env:ConnectionStrings__RabbitMQ)) {
+    $env:ConnectionStrings__RabbitMQ = "amqp://kubejob:kubejob-dev@localhost:5672/"
+}
 
 Write-Host ""
-Write-Host "Starting the unified sample with PostgreSQL persistence."
+Write-Host "Starting the unified sample with PostgreSQL persistence and RabbitMQ wake notifications."
 Write-Host "Dashboard: http://localhost:5041/admin/jobs"
 Write-Host "After startup, seed real success/failure/retry/timeout scenarios with:"
 Write-Host "  pwsh scripts/seed-dashboard-demo.ps1"

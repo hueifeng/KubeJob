@@ -1,6 +1,9 @@
 # Post-Runtime Roadmap
 
-The current runtime includes typed submission, logical Run/Attempt state, pull
+> Historical V2 roadmap. It is retained for design context and is not a list of
+> current V3 commitments.
+
+The V2 runtime included typed submission, logical Run/Attempt state, pull
 scheduling, leases/fencing, Worker Sessions, independent schedules,
 transactional Outbox delivery, in-process/HTTP worker transports, optional
 RabbitMQ notification acceleration, and a V2-native operator Dashboard.

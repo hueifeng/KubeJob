@@ -2,7 +2,6 @@ using KubeJob;
 using KubeJob.Core.Client;
 using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
-using KubeJob.Sample.RemoteWorker.Jobs;
 using KubeJob.Sample.Unified.Jobs;
 using KubeJob.Server.Extensions;
 using KubeJob.Storage.PostgreSQL.Extensions;

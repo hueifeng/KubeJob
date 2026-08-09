@@ -1,5 +1,8 @@
 # KubeJob Runtime Architecture
 
+> Historical V2 architecture. For supported V3 behavior, see the
+> [V3 runtime model](../v3/runtime-model.md).
+
 ## Product boundary
 
 KubeJob is a typed, PostgreSQL-first distributed background-job runtime for

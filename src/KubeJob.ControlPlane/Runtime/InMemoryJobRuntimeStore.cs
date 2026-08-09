@@ -5,7 +5,7 @@ using KubeJob.Core.Runtime;
 namespace KubeJob.ControlPlane.Runtime;
 
 /// <summary>
-/// Development and test reference state machine for the V2 runtime.
+/// Development and test reference state machine for the KubeJob runtime.
 /// </summary>
 public sealed partial class InMemoryJobRuntimeStore :
     IJobSubmissionStore,

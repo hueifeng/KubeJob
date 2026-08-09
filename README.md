@@ -6,6 +6,7 @@
 [Samples](#run-samples) ·
 [Documentation](docs/README.md) ·
 [Benchmarking](docs/v3/benchmarking.md) ·
+[中文入口](README_zh.md) ·
 [V2 tutorial archive](docs/v2/README.md)
 
 KubeJob is a .NET runtime for durable jobs and broker-native events. A logical

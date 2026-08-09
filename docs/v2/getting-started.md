@@ -1,7 +1,12 @@
 # KubeJob Getting Started
 
-KubeJob is a V2-only typed distributed job runtime. Applications define typed
-handlers, submit logical Runs, and optionally create independent cron Schedules.
+> Historical V2 tutorial. For the supported runtime, start with the
+> [V3 runtime model](../v3/runtime-model.md) and the root
+> [README](../../README.md).
+
+This guide describes the former V2 typed distributed job runtime. Applications
+defined typed handlers, submitted logical Runs, and optionally created
+independent cron Schedules.
 Workers, Attempts, leases, fencing, and Outbox delivery remain runtime concerns.
 
 ## 1. Define a typed handler

@@ -23,7 +23,7 @@
 - [Post-Runtime Roadmap](./roadmap.md)
 - [Architecture Decision Records](../adr/)
 
-The current runtime is V2-only. Typed handlers, logical Runs, physical Attempts,
-Worker Sessions, independent Schedules, the transactional Outbox, and the
-operator Dashboard use the `Kj2_*` schema and V2 contracts. The previous legacy
-runtime is not retained as a compatibility mode.
+The documents in this directory describe the former V2 contracts, including
+typed handlers, logical Runs, physical Attempts, Worker Sessions, independent
+Schedules, the transactional Outbox, and the operator Dashboard. They are kept
+for historical context only and are not a compatibility mode for V3.

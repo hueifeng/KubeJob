@@ -58,4 +58,4 @@ if [ -n "${KUBEJOB_TEST_POSTGRES:-}" ]; then
     --logger "console;verbosity=detailed"
 fi
 
-printf '\nKubeJob V2 validation completed successfully.\n'
+printf '\nKubeJob validation completed successfully.\n'
