@@ -1,47 +1,96 @@
 # KubeJob V3 Runtime Model
 
-KubeJob V3 separates two execution models.
+KubeJob V3 separates two execution models. They share handler abstractions but have different execution authorities.
 
 ## Managed Runtime
 
-Managed Runtime is designed for business jobs that require lifecycle management.
+Managed Runtime is designed for business tasks that require lifecycle management.
+
+Authority:
+
+```
+PostgreSQL
+```
+
+Lifecycle:
+
+```
+Submit
+ |
+JobRun
+ |
+Attempt
+ |
+Lease
+ |
+Execute
+ |
+Complete
+```
 
 Characteristics:
 
-- PostgreSQL is the execution authority.
-- Runs, Attempts and leases are persisted.
-- Retry, cancellation and audit history are managed by KubeJob.
-- Workers claim work only when capacity is available.
+- persistent execution state
+- retry and cancellation management
+- worker fencing
+- operational query capability
+- recovery after worker failure
 
 Typical scenarios:
 
-- Order processing
-- Settlement tasks
-- Scheduled business jobs
-- Long-running workflows
+- order processing
+- settlement tasks
+- scheduled business jobs
+- long-running workflows
 
 ## BrokerNative Runtime
 
-BrokerNative is designed for high-throughput events.
+BrokerNative is designed for event-driven workloads with high throughput requirements.
+
+Authority:
+
+```
+Message Broker
+```
+
+Lifecycle:
+
+```
+Publish
+ |
+Exchange
+ |
+Queue
+ |
+Consumer
+ |
+Handler
+ |
+ACK
+```
 
 Characteristics:
 
-- Message broker owns delivery semantics.
-- Worker consumes messages directly.
-- ACK, retry and dead-letter behavior belong to the transport adapter.
-- No managed Run/Attempt lease path is involved.
+- high throughput delivery
+- independent subscribers
+- transport controlled retry/dead-letter behavior
+- no managed Run/Attempt lease path
 
 Typical scenarios:
 
-- Domain events
-- Logging pipelines
-- Data synchronization
-- Notifications
+- domain events
+- logging pipelines
+- data synchronization
+- notifications
 
-## Design rule
+## Design Rule
 
-Managed Runtime answers: "what is the state of this business task?"
+Managed Runtime answers:
 
-BrokerNative answers: "how do we deliver this event efficiently?"
+> What is the state of this business task?
 
-The two models share handler abstractions but do not share execution authority.
+BrokerNative answers:
+
+> How do we deliver this event efficiently?
+
+The two models are complementary and should coexist in one platform.
