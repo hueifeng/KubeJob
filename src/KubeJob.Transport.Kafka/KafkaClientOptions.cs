@@ -10,8 +10,8 @@ internal static class KafkaClientOptions
         Acks = Acks.All,
         EnableIdempotence = true,
         MessageTimeoutMs = 30_000,
-        SecurityProtocol = ParseSecurityProtocol(options.SecurityProtocol),
-        SaslMechanism = ParseSaslMechanism(options.SaslMechanism),
+        SecurityProtocol = KafkaBrokerNativeOptions.ParseOptionalEnum<SecurityProtocol>(options.SecurityProtocol, nameof(options.SecurityProtocol)),
+        SaslMechanism = KafkaBrokerNativeOptions.ParseOptionalEnum<SaslMechanism>(options.SaslMechanism, nameof(options.SaslMechanism)),
         SaslUsername = options.SaslUsername,
         SaslPassword = options.SaslPassword
     };
@@ -26,8 +26,8 @@ internal static class KafkaClientOptions
         MaxPollIntervalMs = options.MaxPollIntervalMs,
         SessionTimeoutMs = options.SessionTimeoutMs,
         PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky,
-        SecurityProtocol = ParseSecurityProtocol(options.SecurityProtocol),
-        SaslMechanism = ParseSaslMechanism(options.SaslMechanism),
+        SecurityProtocol = KafkaBrokerNativeOptions.ParseOptionalEnum<SecurityProtocol>(options.SecurityProtocol, nameof(options.SecurityProtocol)),
+        SaslMechanism = KafkaBrokerNativeOptions.ParseOptionalEnum<SaslMechanism>(options.SaslMechanism, nameof(options.SaslMechanism)),
         SaslUsername = options.SaslUsername,
         SaslPassword = options.SaslPassword
     };
@@ -35,15 +35,9 @@ internal static class KafkaClientOptions
     public static AdminClientConfig CreateAdminConfig(KafkaBrokerNativeOptions options) => new()
     {
         BootstrapServers = options.BootstrapServers,
-        SecurityProtocol = ParseSecurityProtocol(options.SecurityProtocol),
-        SaslMechanism = ParseSaslMechanism(options.SaslMechanism),
+        SecurityProtocol = KafkaBrokerNativeOptions.ParseOptionalEnum<SecurityProtocol>(options.SecurityProtocol, nameof(options.SecurityProtocol)),
+        SaslMechanism = KafkaBrokerNativeOptions.ParseOptionalEnum<SaslMechanism>(options.SaslMechanism, nameof(options.SaslMechanism)),
         SaslUsername = options.SaslUsername,
         SaslPassword = options.SaslPassword
     };
-
-    private static SecurityProtocol? ParseSecurityProtocol(string? value) =>
-        Enum.TryParse<SecurityProtocol>(value, ignoreCase: true, out var parsed) ? parsed : null;
-
-    private static SaslMechanism? ParseSaslMechanism(string? value) =>
-        Enum.TryParse<SaslMechanism>(value, ignoreCase: true, out var parsed) ? parsed : null;
 }

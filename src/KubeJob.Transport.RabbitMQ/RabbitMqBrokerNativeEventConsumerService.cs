@@ -23,6 +23,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
     private readonly RabbitMqBrokerNativeOptions _options;
     private readonly KubeJobWorkerOptions _worker;
     private readonly BrokerNativeEventProcessor _processor;
+    private readonly IEventInboxStore _inbox;
     private readonly ILogger<RabbitMqBrokerNativeEventConsumerService> _logger;
     private readonly SubscriptionGroup[] _groups;
     private readonly SemaphoreSlim _executionSlots;
@@ -31,12 +32,14 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
         IOptions<RabbitMqBrokerNativeOptions> options,
         IOptions<KubeJobWorkerOptions> worker,
         BrokerNativeEventProcessor processor,
+        IEventInboxStore inbox,
         IEnumerable<EventSubscriptionDefinition> subscriptions,
         ILogger<RabbitMqBrokerNativeEventConsumerService> logger)
     {
         _options = options.Value;
         _worker = worker.Value;
         _processor = processor;
+        _inbox = inbox;
         _logger = logger;
         _options.Validate();
         _worker.ValidateEventWorker();
@@ -210,6 +213,12 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                 return;
             }
 
+            if (await _inbox.IsProcessedAsync(message.EventId, group.Subscription, stoppingToken))
+            {
+                Ack(consumeChannel, consumeChannelGate, delivery.DeliveryTag);
+                return;
+            }
+
             BrokerNativeEventProcessingResult result;
             try
             {
@@ -227,6 +236,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
             switch (result.Disposition)
             {
                 case BrokerNativeMessageDisposition.Ack:
+                    await _inbox.MarkProcessedAsync(message.EventId, group.Subscription, stoppingToken);
                     Ack(consumeChannel, consumeChannelGate, delivery.DeliveryTag);
                     break;
 

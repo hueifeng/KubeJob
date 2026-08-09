@@ -1,9 +1,11 @@
 using KubeJob.ControlPlane.Data;
 using KubeJob.ControlPlane.Runtime;
+using KubeJob.Core.Events;
 using KubeJob.Storage.PostgreSQL.Data;
 using KubeJob.Storage.PostgreSQL.Runtime;
 using KubeJob.Storage.PostgreSQL.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Npgsql;
 
@@ -67,6 +69,8 @@ public static class KubeJobPostgresExtensions
         services.AddSingleton<IOutboxStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
         services.AddSingleton<IJobRuntimeDashboardStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
         services.AddSingleton<IJobRuntimeMaintenanceStore>(sp => sp.GetRequiredService<PostgreSqlJobRuntimeStore>());
+        services.Replace(ServiceDescriptor.Singleton<IEventInboxStore>(sp => new PostgreSqlEventInboxStore(
+            sp.GetRequiredKeyedService<NpgsqlDataSource>(PostgreSqlDataSourceKind.Business))));
         return services;
     }
 }

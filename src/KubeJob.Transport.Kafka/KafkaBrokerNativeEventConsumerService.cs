@@ -21,6 +21,7 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
     private readonly KafkaBrokerNativeOptions _options;
     private readonly KubeJobWorkerOptions _worker;
     private readonly BrokerNativeEventProcessor _processor;
+    private readonly IEventInboxStore _inbox;
     private readonly ILogger<KafkaBrokerNativeEventConsumerService> _logger;
     private readonly SubscriptionGroup[] _groups;
     private readonly IProducer<string, byte[]> _producer;
@@ -29,12 +30,14 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
         IOptions<KafkaBrokerNativeOptions> options,
         IOptions<KubeJobWorkerOptions> worker,
         BrokerNativeEventProcessor processor,
+        IEventInboxStore inbox,
         IEnumerable<EventSubscriptionDefinition> subscriptions,
         ILogger<KafkaBrokerNativeEventConsumerService> logger)
     {
         _options = options.Value;
         _worker = worker.Value;
         _processor = processor;
+        _inbox = inbox;
         _logger = logger;
         _options.Validate();
         _worker.ValidateEventWorker();
@@ -90,51 +93,18 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
 
     private async Task ConsumeGroupAsync(SubscriptionGroup group, CancellationToken stoppingToken)
     {
-        using var consumer = new ConsumerBuilder<string, byte[]>(
-                KafkaClientOptions.CreateConsumerConfig(_options, _options.GetEventConsumerGroup(group.Capability)))
-            .Build();
-        consumer.Subscribe([_options.EventTopic, _options.GetEventRetryTopic(group.Capability)]);
-        var dispatcher = new KafkaPartitionDispatcher<DeliveryResult>(_worker.MaxConcurrentJobs);
-
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await dispatcher.DrainCompletedAsync(consumer, CommitAsync, Recover);
-                var record = consumer.Consume(TimeSpan.FromMilliseconds(100));
-                if (record is null || record.IsPartitionEOF)
-                {
-                    continue;
-                }
-
-                if (!dispatcher.TryDispatch(record, (delivery, token) => ProcessAsync(group, delivery, token), stoppingToken))
-                {
-                    throw new InvalidOperationException($"Kafka partition '{record.TopicPartition}' was consumed while paused.");
-                }
-
-                consumer.Pause([record.TopicPartition]);
-            }
-        }
-        finally
-        {
-            try { await dispatcher.DrainAsync(); } catch (OperationCanceledException) { }
-            consumer.Close();
-        }
-
-        Task CommitAsync(ConsumeResult<string, byte[]> record, DeliveryResult result)
-        {
-            consumer.Commit(record);
-            return Task.CompletedTask;
-        }
-
-        void Recover(ConsumeResult<string, byte[]> record, Exception exception)
-        {
-            _logger.LogError(exception, "Kafka Event transport failure at {TopicPartitionOffset}; seeking for redelivery", record.TopicPartitionOffset);
-            consumer.Seek(record.TopicPartitionOffset);
-        }
+        await KafkaConsumerLoop.RunAsync(
+            _options,
+            _options.GetEventConsumerGroup(group.Capability),
+            [_options.EventTopic, _options.GetEventRetryTopic(group.Capability)],
+            _worker.MaxConcurrentJobs,
+            (delivery, token) => ProcessAsync(group, delivery, token),
+            _logger,
+            $"Event capability {group.Capability}",
+            stoppingToken);
     }
 
-    private async Task<DeliveryResult> ProcessAsync(
+    private async Task ProcessAsync(
         SubscriptionGroup group,
         ConsumeResult<string, byte[]> record,
         CancellationToken stoppingToken)
@@ -152,7 +122,7 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
         {
             _logger.LogWarning(exception, "Kafka Event delivery {TopicPartitionOffset} is malformed; sending to {Capability} DLQ", record.TopicPartitionOffset, group.Capability);
             await PublishAsync(record, _options.GetEventDeadLetterTopic(group.Capability), stoppingToken);
-            return DeliveryResult.DeadLetter;
+            return;
         }
 
         if (!group.ByEventKey.TryGetValue(EventKey(message.Topic, message.RoutingKey), out var subscription))
@@ -160,13 +130,23 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
             // A shared topic replaces exchange bindings. An event that does not
             // belong to this capability is intentionally ignored and committed;
             // it remains independently available to the other capability groups.
-            return DeliveryResult.Ignored;
+            return;
+        }
+
+        if (await _inbox.IsProcessedAsync(message.EventId, group.Capability, stoppingToken))
+        {
+            _logger.LogDebug(
+                "Kafka Event {EventId} was already processed by capability {Capability}; committing duplicate delivery",
+                message.EventId,
+                group.Capability);
+            return;
         }
 
         var result = await _processor.ProcessAsync(message, subscription, CancellationToken.None, stoppingToken);
         if (result.Disposition == BrokerNativeMessageDisposition.Ack)
         {
-            return DeliveryResult.Ack;
+            await _inbox.MarkProcessedAsync(message.EventId, group.Capability, stoppingToken);
+            return;
         }
 
         if (result.Disposition == BrokerNativeMessageDisposition.Retry && result.RetryMessage is not null)
@@ -177,11 +157,11 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
                 stoppingToken,
                 JsonSerializer.SerializeToUtf8Bytes(result.RetryMessage, SerializerOptions),
                 DateTimeOffset.UtcNow + _options.GetRetryDelay(result.RetryMessage.RetryPolicy, message.Attempt));
-            return DeliveryResult.Retry;
+            return;
         }
 
         await PublishAsync(record, _options.GetEventDeadLetterTopic(group.Capability), stoppingToken);
-        return DeliveryResult.DeadLetter;
+        return;
     }
 
     private async Task PublishAsync(
@@ -228,8 +208,6 @@ public sealed class KafkaBrokerNativeEventConsumerService : BackgroundService
     }
 
     private static string EventKey(string topic, string routingKey) => $"{topic}\n{routingKey}";
-
-    private enum DeliveryResult { Ack, Retry, DeadLetter, Ignored }
 
     private sealed record SubscriptionGroup(
         string Capability,

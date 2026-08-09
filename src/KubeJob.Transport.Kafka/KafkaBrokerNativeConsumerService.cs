@@ -73,56 +73,23 @@ public sealed class KafkaBrokerNativeConsumerService : BackgroundService
 
     private async Task ConsumeAsync(CancellationToken stoppingToken)
     {
-        using var consumer = new ConsumerBuilder<string, byte[]>(
-                KafkaClientOptions.CreateConsumerConfig(_options, _options.GetJobConsumerGroup()))
-            .Build();
         var sources = _worker.Queues.SelectMany(queue => new[]
         {
             _options.GetJobTopic(queue),
             _options.GetJobRetryTopic(queue)
         }).ToArray();
-        consumer.Subscribe(sources);
-        var dispatcher = new KafkaPartitionDispatcher<DeliveryResult>(_worker.MaxConcurrentJobs);
-
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await dispatcher.DrainCompletedAsync(consumer, CommitAsync, Recover);
-                var record = consumer.Consume(TimeSpan.FromMilliseconds(100));
-                if (record is null || record.IsPartitionEOF)
-                {
-                    continue;
-                }
-
-                if (!dispatcher.TryDispatch(record, ProcessAsync, stoppingToken))
-                {
-                    throw new InvalidOperationException($"Kafka partition '{record.TopicPartition}' was consumed while paused.");
-                }
-
-                consumer.Pause([record.TopicPartition]);
-            }
-        }
-        finally
-        {
-            try { await dispatcher.DrainAsync(); } catch (OperationCanceledException) { }
-            consumer.Close();
-        }
-
-        Task CommitAsync(ConsumeResult<string, byte[]> record, DeliveryResult result)
-        {
-            consumer.Commit(record);
-            return Task.CompletedTask;
-        }
-
-        void Recover(ConsumeResult<string, byte[]> record, Exception exception)
-        {
-            _logger.LogError(exception, "Kafka Job transport failure at {TopicPartitionOffset}; seeking for redelivery", record.TopicPartitionOffset);
-            consumer.Seek(record.TopicPartitionOffset);
-        }
+        await KafkaConsumerLoop.RunAsync(
+            _options,
+            _options.GetJobConsumerGroup(),
+            sources,
+            _worker.MaxConcurrentJobs,
+            ProcessAsync,
+            _logger,
+            "Job",
+            stoppingToken);
     }
 
-    private async Task<DeliveryResult> ProcessAsync(ConsumeResult<string, byte[]> record, CancellationToken stoppingToken)
+    private async Task ProcessAsync(ConsumeResult<string, byte[]> record, CancellationToken stoppingToken)
     {
         await WaitForRetryDueAsync(record.Message.Headers, stoppingToken);
         var isRetry = record.Topic.EndsWith(".retry", StringComparison.Ordinal);
@@ -131,7 +98,7 @@ public sealed class KafkaBrokerNativeConsumerService : BackgroundService
         if (queue is null)
         {
             await PublishAsync(record, _options.GetJobDeadLetterTopic(_worker.Queues[0]), stoppingToken);
-            return DeliveryResult.DeadLetter;
+            return;
         }
 
         BrokerNativeJobMessage message;
@@ -150,13 +117,13 @@ public sealed class KafkaBrokerNativeConsumerService : BackgroundService
         {
             _logger.LogWarning(exception, "Kafka Job delivery {TopicPartitionOffset} is malformed; sending to DLQ", record.TopicPartitionOffset);
             await PublishAsync(record, _options.GetJobDeadLetterTopic(queue), stoppingToken);
-            return DeliveryResult.DeadLetter;
+            return;
         }
 
         var result = await _processor.ProcessAsync(message, CancellationToken.None, stoppingToken);
         if (result.Disposition == BrokerNativeMessageDisposition.Ack)
         {
-            return DeliveryResult.Ack;
+            return;
         }
 
         if (result.Disposition == BrokerNativeMessageDisposition.Retry && result.RetryMessage is not null)
@@ -167,11 +134,11 @@ public sealed class KafkaBrokerNativeConsumerService : BackgroundService
                 stoppingToken,
                 JsonSerializer.SerializeToUtf8Bytes(result.RetryMessage, SerializerOptions),
                 DateTimeOffset.UtcNow + _options.GetRetryDelay(result.RetryMessage.RetryPolicy, message.Attempt));
-            return DeliveryResult.Retry;
+            return;
         }
 
         await PublishAsync(record, _options.GetJobDeadLetterTopic(queue), stoppingToken);
-        return DeliveryResult.DeadLetter;
+        return;
     }
 
     private async Task PublishAsync(
@@ -201,5 +168,4 @@ public sealed class KafkaBrokerNativeConsumerService : BackgroundService
         }
     }
 
-    private enum DeliveryResult { Ack, Retry, DeadLetter }
 }

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using FluentAssertions;
 using KubeJob.Core.Client;
+using KubeJob.Core.Events;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.ControlPlane.Runtime;
@@ -123,6 +124,19 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var version = Convert.ToInt32(await command.ExecuteScalarAsync());
 
         version.Should().Be(DbInitializer.CurrentSchemaVersion);
+    }
+
+    [Fact]
+    public async Task Event_inbox_is_durable_per_capability()
+    {
+        if (!Enabled) return;
+        var inbox = new PostgreSqlEventInboxStore(_dataSource!);
+
+        (await inbox.IsProcessedAsync("event-001", "data")).Should().BeFalse();
+        await inbox.MarkProcessedAsync("event-001", "data");
+
+        (await inbox.IsProcessedAsync("event-001", "data")).Should().BeTrue();
+        (await inbox.IsProcessedAsync("event-001", "log")).Should().BeFalse();
     }
 
     [Fact]
@@ -1658,7 +1672,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task V10_schema_fixture_upgrades_to_v11_without_losing_existing_runs()
+    public async Task V10_schema_fixture_upgrades_without_losing_existing_runs_and_removes_workflow_columns()
     {
         if (!Enabled)
         {
@@ -1731,7 +1745,9 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
                       AND ((table_name = 'kj2_jobruns' AND column_name IN ('parentrunid', 'relationkind'))
                         OR (table_name = 'kj2_jobschedules' AND column_name IN
                             ('concurrencykey', 'retrypolicyjson', 'continuationjson', 'compensationjson')));";
-                Convert.ToInt32(await columns.ExecuteScalarAsync()).Should().Be(6);
+                // V11 queue metadata remains, while the V2 migration removes
+                // workflow lineage and terminal-action columns.
+                Convert.ToInt32(await columns.ExecuteScalarAsync()).Should().Be(2);
 
                 await using var preserved = connection.CreateCommand();
                 preserved.CommandText = "SELECT JobKey FROM Kj2_JobRuns WHERE Id = 'migration-fixture-run';";

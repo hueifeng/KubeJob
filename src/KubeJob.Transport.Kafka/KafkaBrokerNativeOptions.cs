@@ -79,6 +79,29 @@ public sealed class KafkaBrokerNativeOptions
         {
             throw new InvalidOperationException("Kafka topic partition and replication counts must be positive.");
         }
+
+        var securityProtocol = ParseOptionalEnum<Confluent.Kafka.SecurityProtocol>(SecurityProtocol, nameof(SecurityProtocol));
+        var saslMechanism = ParseOptionalEnum<Confluent.Kafka.SaslMechanism>(SaslMechanism, nameof(SaslMechanism));
+        if (saslMechanism is not null && securityProtocol is not (Confluent.Kafka.SecurityProtocol.SaslPlaintext or Confluent.Kafka.SecurityProtocol.SaslSsl))
+        {
+            throw new InvalidOperationException("Kafka SaslMechanism requires SecurityProtocol to be SaslPlaintext or SaslSsl.");
+        }
+
+        if (securityProtocol is Confluent.Kafka.SecurityProtocol.SaslPlaintext or Confluent.Kafka.SecurityProtocol.SaslSsl)
+        {
+            if (saslMechanism is null
+                || string.IsNullOrWhiteSpace(SaslUsername)
+                || string.IsNullOrWhiteSpace(SaslPassword))
+            {
+                throw new InvalidOperationException(
+                    "Kafka SASL security requires SaslMechanism, SaslUsername, and SaslPassword.");
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(SaslUsername) || !string.IsNullOrWhiteSpace(SaslPassword))
+        {
+            throw new InvalidOperationException(
+                "Kafka SaslUsername and SaslPassword require a SASL SecurityProtocol.");
+        }
     }
 
     public string GetJobTopic(string logicalQueue)
@@ -104,9 +127,9 @@ public sealed class KafkaBrokerNativeOptions
     /// delay up to one visible, bounded retry tier rather than pretending to
     /// support arbitrary delayed delivery.
     /// </summary>
-    public TimeSpan GetRetryDelay(RetryPolicy? policy, int completedAttempt)
+    public TimeSpan GetRetryDelay(RetryPolicy? policy, int failedAttempt)
     {
-        var requested = policy?.ComputeDelay(Math.Max(1, completedAttempt - 1))
+        var requested = policy?.ComputeDelay(Math.Max(1, failedAttempt))
             ?? SupportedRetryDelays[0];
         return SupportedRetryDelays.FirstOrDefault(delay => delay >= requested, SupportedRetryDelays[^1]);
     }
@@ -128,5 +151,21 @@ public sealed class KafkaBrokerNativeOptions
         }
 
         return value;
+    }
+
+    internal static TEnum? ParseOptionalEnum<TEnum>(string? value, string optionName)
+        where TEnum : struct, Enum
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!Enum.TryParse<TEnum>(value, ignoreCase: true, out var parsed))
+        {
+            throw new InvalidOperationException($"Kafka {optionName} value '{value}' is invalid.");
+        }
+
+        return parsed;
     }
 }

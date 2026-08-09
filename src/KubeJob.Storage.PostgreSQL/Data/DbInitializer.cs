@@ -6,7 +6,7 @@ namespace KubeJob.Storage.PostgreSQL.Data;
 
 public sealed class DbInitializer : IStorageInitializer
 {
-    public const int CurrentSchemaVersion = 14;
+    public const int CurrentSchemaVersion = 15;
 
     private readonly string _connectionString;
 
@@ -287,6 +287,16 @@ public sealed class DbInitializer : IStorageInitializer
                 ON Kj2_Outbox (PublishedAt, Id)
                 WHERE State = 2 AND PublishedAt IS NOT NULL;
 
+            CREATE TABLE IF NOT EXISTS Kj2_EventInbox (
+                EventId VARCHAR(64) NOT NULL,
+                ConsumerName VARCHAR(200) NOT NULL,
+                ProcessedAt TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (EventId, ConsumerName)
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_EventInbox_ProcessedAt
+                ON Kj2_EventInbox (ProcessedAt);
+
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_TerminalRetention
                 ON Kj2_JobRuns (CompletedAt, Id)
                 WHERE Phase IN (2, 3, 4, 5)
@@ -472,6 +482,20 @@ public sealed class DbInitializer : IStorageInitializer
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (14, CURRENT_TIMESTAMP);");
             }
+            if (appliedVersion < 15)
+            {
+                connection.Execute(@"
+                    CREATE TABLE IF NOT EXISTS Kj2_EventInbox (
+                        EventId VARCHAR(64) NOT NULL,
+                        ConsumerName VARCHAR(200) NOT NULL,
+                        ProcessedAt TIMESTAMPTZ NOT NULL,
+                        PRIMARY KEY (EventId, ConsumerName)
+                    );
+                    CREATE INDEX IF NOT EXISTS IX_Kj2_EventInbox_ProcessedAt
+                        ON Kj2_EventInbox (ProcessedAt);");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (15, CURRENT_TIMESTAMP);");
+            }
             if (appliedVersion > CurrentSchemaVersion)
             {
                 throw new InvalidOperationException(
@@ -518,7 +542,10 @@ public sealed class DbInitializer : IStorageInitializer
                 ('Kj2_Outbox', 'ExecutionLane'),
                 ('Kj2_Outbox', 'OrderingMode'),
                 ('Kj2_Outbox', 'ClaimToken'),
-                ('Kj2_Outbox', 'PartitionKey')) AS expected(table_name, column_name)
+                ('Kj2_Outbox', 'PartitionKey'),
+                ('Kj2_EventInbox', 'EventId'),
+                ('Kj2_EventInbox', 'ConsumerName'),
+                ('Kj2_EventInbox', 'ProcessedAt')) AS expected(table_name, column_name)
             LEFT JOIN information_schema.columns columns
                 ON columns.table_schema = current_schema()
                AND lower(columns.table_name) = lower(expected.table_name)

@@ -7,7 +7,7 @@ namespace KubeJob.Transport.Kafka;
 /// partitions to execute in parallel. The consumer thread remains responsible
 /// for pause/resume and offset commits, avoiding concurrent consumer access.
 /// </summary>
-internal sealed class KafkaPartitionDispatcher<T>
+internal sealed class KafkaPartitionDispatcher
 {
     private readonly SemaphoreSlim _slots;
     private readonly Dictionary<TopicPartition, Pending> _pending = [];
@@ -19,7 +19,7 @@ internal sealed class KafkaPartitionDispatcher<T>
 
     public bool TryDispatch(
         ConsumeResult<string, byte[]> record,
-        Func<ConsumeResult<string, byte[]>, CancellationToken, Task<T>> handler,
+        Func<ConsumeResult<string, byte[]>, CancellationToken, Task> handler,
         CancellationToken stoppingToken)
     {
         if (_pending.ContainsKey(record.TopicPartition))
@@ -33,7 +33,7 @@ internal sealed class KafkaPartitionDispatcher<T>
 
     public async Task DrainCompletedAsync(
         IConsumer<string, byte[]> consumer,
-        Func<ConsumeResult<string, byte[]>, T, Task> commit,
+        Func<ConsumeResult<string, byte[]>, Task> commit,
         Action<ConsumeResult<string, byte[]>, Exception> recover)
     {
         var completed = _pending
@@ -47,8 +47,8 @@ internal sealed class KafkaPartitionDispatcher<T>
             _pending.Remove(partition);
             try
             {
-                var result = await pending.Operation;
-                await commit(pending.Record, result);
+                await pending.Operation;
+                await commit(pending.Record);
             }
             catch (Exception exception)
             {
@@ -67,15 +67,15 @@ internal sealed class KafkaPartitionDispatcher<T>
         _pending.Clear();
     }
 
-    private async Task<T> ExecuteAsync(
+    private async Task ExecuteAsync(
         ConsumeResult<string, byte[]> record,
-        Func<ConsumeResult<string, byte[]>, CancellationToken, Task<T>> handler,
+        Func<ConsumeResult<string, byte[]>, CancellationToken, Task> handler,
         CancellationToken stoppingToken)
     {
         await _slots.WaitAsync(stoppingToken);
         try
         {
-            return await handler(record, stoppingToken);
+            await handler(record, stoppingToken);
         }
         finally
         {
@@ -83,5 +83,5 @@ internal sealed class KafkaPartitionDispatcher<T>
         }
     }
 
-    private sealed record Pending(ConsumeResult<string, byte[]> Record, Task<T> Operation);
+    private sealed record Pending(ConsumeResult<string, byte[]> Record, Task Operation);
 }

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Collections.Concurrent;
 using KubeJob.Core.Events;
 using KubeJob.Core.Transport;
 using KubeJob.Server.Runtime;
@@ -26,6 +27,7 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
         var suffix = Guid.NewGuid().ToString("N");
         var prefix = $"kubejob.test.events.{suffix}";
         var probe = new EventProbe();
+        var inbox = new InMemoryEventInboxStore();
         var transportOptions = new RabbitMqBrokerNativeOptions
         {
             ConnectionString = connectionString,
@@ -45,6 +47,7 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
             {
                 services.AddLogging();
                 services.AddSingleton(probe);
+                services.AddSingleton<IEventInboxStore>(inbox);
                 services.AddKubeJobBrokerNativeWorker(options =>
                 {
                     options.WorkerId = $"event-worker-{suffix}";
@@ -274,6 +277,20 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
         {
             _probe.IncrementLog();
             _probe.LogCompleted.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class InMemoryEventInboxStore : IEventInboxStore
+    {
+        private readonly ConcurrentDictionary<(string EventId, string ConsumerName), byte> _entries = [];
+
+        public ValueTask<bool> IsProcessedAsync(string eventId, string consumerName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(_entries.ContainsKey((eventId, consumerName)));
+
+        public ValueTask MarkProcessedAsync(string eventId, string consumerName, CancellationToken cancellationToken = default)
+        {
+            _entries.TryAdd((eventId, consumerName), 0);
             return ValueTask.CompletedTask;
         }
     }

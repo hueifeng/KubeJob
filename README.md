@@ -154,6 +154,12 @@ builder.Services.AddRabbitMqKubeJobBrokerNativeConsumer(options =>
     options.ConnectionString = rabbitMqConnectionString);
 ```
 
+BrokerNative event consumers additionally need PostgreSQL for their durable
+Inbox. Configure the server with `server.UsePostgreSql(connectionString)` and
+initialize its schema before starting the consumer. The Inbox records a
+successful `(EventId, capability)` before broker acknowledgement, preventing a
+redelivery after that write from invoking the same capability again.
+
 Kafka keeps the same Core contract, but maps a job queue to a Kafka topic and
 maps the fixed event capabilities to three consumer groups. Replicas in the
 same group distribute partitions horizontally:
@@ -197,6 +203,8 @@ the topic, queue, retry, and dead-letter rules.
   development and tests. Do not enable them on a public or shared network.
 - Initialize the PostgreSQL schema before starting managed workers. The sample
   does this with `InitializeKubeJobDatabase()`.
+- Event consumers use the same PostgreSQL schema for their durable Inbox; they
+  fail at startup if no durable Inbox is configured.
 - Keep the RabbitMQ BrokerNative `RetryDelay` at least as high as any custom
   `RetryPolicy.MaxDelay`; the retry queue has a queue-level TTL for backward
   compatibility.

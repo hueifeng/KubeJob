@@ -1,4 +1,5 @@
 using KubeJob.Core.Transport;
+using KubeJob.Core.Events;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -41,6 +42,7 @@ public static class KafkaServiceCollectionExtensions
         Action<KafkaBrokerNativeOptions> configure)
     {
         services.AddKafkaKubeJobBrokerNativeTransport(configure);
+        services.TryAddSingleton<IEventInboxStore, MissingEventInboxStore>();
         services.AddHostedService<KafkaBrokerNativeEventConsumerService>();
         return services;
     }

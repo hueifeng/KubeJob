@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Collections.Concurrent;
 using Confluent.Kafka;
 using KubeJob.Core.Events;
 using KubeJob.Core.Client;
@@ -88,6 +89,7 @@ public sealed class KafkaEventRuntimeIntegrationTests
     {
         var suffix = Guid.NewGuid().ToString("N");
         var probe = new EventProbe();
+        var inbox = new InMemoryEventInboxStore();
         var bootstrapServers = KafkaTestEnvironment.GetRequiredBootstrapServers();
         var eventTopic = $"kubejob.test.events.{suffix}";
 
@@ -96,6 +98,7 @@ public sealed class KafkaEventRuntimeIntegrationTests
             {
                 services.AddLogging();
                 services.AddSingleton(probe);
+                services.AddSingleton<IEventInboxStore>(inbox);
                 services.AddKubeJobBrokerNativeWorker(options =>
                 {
                     options.WorkerId = $"event-worker-{suffix}";
@@ -144,6 +147,108 @@ public sealed class KafkaEventRuntimeIntegrationTests
         finally
         {
             await host.StopAsync();
+        }
+    }
+
+    [KafkaFact]
+    public async Task Event_fans_out_to_all_capabilities_and_same_capability_replicas_share_partitions()
+    {
+        const int eventCount = 36;
+        var suffix = Guid.NewGuid().ToString("N");
+        var bootstrapServers = KafkaTestEnvironment.GetRequiredBootstrapServers();
+        var eventTopic = $"kubejob.test.scale.{suffix}";
+        var probe = new DistributionProbe();
+        var inbox = new InMemoryEventInboxStore();
+
+        using var firstHost = CreateDistributionHost($"event-worker-a-{suffix}", includeAllCapabilities: true);
+        using var secondHost = CreateDistributionHost($"event-worker-b-{suffix}", includeAllCapabilities: false);
+        await firstHost.StartAsync();
+        try
+        {
+            await EventuallyAsync(
+                () => TopicExists(bootstrapServers, eventTopic),
+                attempts: 80,
+                delayMilliseconds: 100);
+            await secondHost.StartAsync();
+            try
+            {
+                // Give the shared data group time to complete its cooperative rebalance.
+                await Task.Delay(500);
+                var eventBus = firstHost.Services.GetRequiredService<IEventBus>();
+                foreach (var orderId in Enumerable.Range(1, eventCount))
+                {
+                    await eventBus.PublishAsync(
+                        OrderCreated,
+                        new OrderCreatedEvent(orderId, FailBusinessFirstAttempt: false),
+                        new EventPublishOptions
+                        {
+                            MaxAttempts = 1,
+                            Timeout = TimeSpan.FromSeconds(10),
+                            PartitionKey = $"order:{orderId}"
+                        });
+                }
+
+                await EventuallyAsync(
+                    () => probe.DataExecutions >= eventCount
+                        && probe.LogExecutions >= eventCount
+                        && probe.NotifyExecutions >= eventCount,
+                    attempts: 160,
+                    delayMilliseconds: 100);
+
+                probe.DataWorkerIds.Count.Should().BeGreaterThanOrEqualTo(2,
+                    "two data replicas in one consumer group should be assigned different partitions");
+                probe.LogExecutions.Should().Be(eventCount);
+                probe.NotifyExecutions.Should().Be(eventCount);
+            }
+            finally
+            {
+                await secondHost.StopAsync();
+            }
+        }
+        finally
+        {
+            await firstHost.StopAsync();
+        }
+
+        IHost CreateDistributionHost(string workerId, bool includeAllCapabilities)
+        {
+            return new HostBuilder()
+                .ConfigureServices(services =>
+                {
+                    services.AddLogging();
+                    services.AddSingleton(probe);
+                    services.AddSingleton<IEventInboxStore>(inbox);
+                    services.AddKubeJobBrokerNativeWorker(options =>
+                    {
+                        options.WorkerId = workerId;
+                        options.BuildId = "integration";
+                        options.Queues = [];
+                        options.MaxConcurrentJobs = 8;
+                    });
+                    services.AddKubeJobEventHandler<OrderCreatedEvent, DistributedDataHandler>(OrderCreated, "data");
+                    if (includeAllCapabilities)
+                    {
+                        services.AddKubeJobEventHandler<OrderCreatedEvent, DistributedLogHandler>(OrderCreated, "log");
+                        services.AddKubeJobEventHandler<OrderCreatedEvent, DistributedNotifyHandler>(OrderCreated, "notify");
+                    }
+
+                    services.AddOptions<EventRuntimeOptions>();
+                    services.Configure<EventRuntimeOptions>(options =>
+                        options.Topics[OrderCreated.Topic] = KafkaBrokerNativePublisher.Id);
+                    services.TryAddSingleton<IMessageTransportRegistry, MessageTransportRegistry>();
+                    services.TryAddSingleton<IEventBus, DefaultEventBus>();
+                    services.AddKafkaKubeJobEventConsumer(options =>
+                    {
+                        options.BootstrapServers = bootstrapServers;
+                        options.Environment = suffix;
+                        options.EventTopic = eventTopic;
+                        options.CreateTopicsOnStartup = true;
+                        options.TopicPartitions = 3;
+                        options.ReplicationFactor = 1;
+                        options.ReconnectDelayMilliseconds = 100;
+                    });
+                })
+                .Build();
         }
     }
 
@@ -198,6 +303,28 @@ public sealed class KafkaEventRuntimeIntegrationTests
         }
     }
 
+    private sealed class DistributionProbe
+    {
+        private int _dataExecutions;
+        private int _logExecutions;
+        private int _notifyExecutions;
+        private readonly ConcurrentDictionary<string, byte> _dataWorkerIds = [];
+
+        public int DataExecutions => Volatile.Read(ref _dataExecutions);
+        public int LogExecutions => Volatile.Read(ref _logExecutions);
+        public int NotifyExecutions => Volatile.Read(ref _notifyExecutions);
+        public IReadOnlyCollection<string> DataWorkerIds => _dataWorkerIds.Keys.ToArray();
+
+        public void Data(EventExecutionContext context)
+        {
+            Interlocked.Increment(ref _dataExecutions);
+            _dataWorkerIds.TryAdd(context.Worker.WorkerId, 0);
+        }
+
+        public void Log() => Interlocked.Increment(ref _logExecutions);
+        public void Notify() => Interlocked.Increment(ref _notifyExecutions);
+    }
+
     private sealed class OrderCreatedJobHandler(JobProbe probe) : IKubeJob<OrderCreatedJobPayload>
     {
         public ValueTask ExecuteAsync(OrderCreatedJobPayload payload, JobExecutionContext context, CancellationToken cancellationToken)
@@ -228,6 +355,47 @@ public sealed class KafkaEventRuntimeIntegrationTests
         {
             probe.IncrementLog();
             probe.LogCompleted.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class DistributedDataHandler(DistributionProbe probe) : IKubeEventHandler<OrderCreatedEvent>
+    {
+        public ValueTask HandleAsync(OrderCreatedEvent @event, EventExecutionContext context, CancellationToken cancellationToken)
+        {
+            probe.Data(context);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class DistributedLogHandler(DistributionProbe probe) : IKubeEventHandler<OrderCreatedEvent>
+    {
+        public ValueTask HandleAsync(OrderCreatedEvent @event, EventExecutionContext context, CancellationToken cancellationToken)
+        {
+            probe.Log();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class DistributedNotifyHandler(DistributionProbe probe) : IKubeEventHandler<OrderCreatedEvent>
+    {
+        public ValueTask HandleAsync(OrderCreatedEvent @event, EventExecutionContext context, CancellationToken cancellationToken)
+        {
+            probe.Notify();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class InMemoryEventInboxStore : IEventInboxStore
+    {
+        private readonly ConcurrentDictionary<(string EventId, string ConsumerName), byte> _entries = [];
+
+        public ValueTask<bool> IsProcessedAsync(string eventId, string consumerName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(_entries.ContainsKey((eventId, consumerName)));
+
+        public ValueTask MarkProcessedAsync(string eventId, string consumerName, CancellationToken cancellationToken = default)
+        {
+            _entries.TryAdd((eventId, consumerName), 0);
             return ValueTask.CompletedTask;
         }
     }

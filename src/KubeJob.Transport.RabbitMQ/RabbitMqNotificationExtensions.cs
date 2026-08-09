@@ -1,5 +1,6 @@
 using KubeJob.Core.Transport;
 using KubeJob.Core.Runtime;
+using KubeJob.Core.Events;
 using KubeJob.ControlPlane.Runtime;
 using KubeJob.Worker.Extensions;
 using Microsoft.Extensions.DependencyInjection;
@@ -64,6 +65,7 @@ public static class RabbitMqNotificationExtensions
         Action<RabbitMqBrokerNativeOptions> configure)
     {
         services.AddRabbitMqKubeJobBrokerNativeTransport(configure);
+        services.TryAddSingleton<IEventInboxStore, MissingEventInboxStore>();
         services.AddHostedService<RabbitMqBrokerNativeEventConsumerService>();
         return services;
     }

@@ -94,8 +94,10 @@ jobs.
 The producer uses `acks=all` and idempotent producer settings. Consumers turn
 off auto-commit and commit an offset only after the handler succeeds, a retry
 record has been durably published, or a dead-letter record has been durably
-published. This remains at-least-once delivery: an application must make its
-handler and external side effects idempotent.
+published. Kafka event consumers additionally use the PostgreSQL Event Inbox
+by `(EventId, capability)` before acknowledging a successful handler. Configure
+`AddKubeJobServer(options => options.UsePostgreSql(connectionString))` for any
+Event consumer; an unconfigured durable Inbox fails the consumer at startup.
 
 Kafka topic creation is disabled by default. Provision the main, `.retry`, and
 `.dlq` topics in production, with partitions and replication appropriate to

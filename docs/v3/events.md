@@ -37,6 +37,14 @@ builder.Services.AddRabbitMqKubeJobEventConsumer(options =>
     options.ConnectionString = rabbitMqConnectionString);
 ```
 
+Event consumers require PostgreSQL for the durable Inbox. Configure it through
+the server registration (and initialize the schema during application startup):
+
+```csharp
+builder.Services.AddKubeJobServer(options =>
+    options.UsePostgreSql(postgresConnectionString));
+```
+
 ## Kafka event topology
 
 Kafka uses one shared `order.events` topic and three fixed capability consumer
@@ -105,8 +113,13 @@ in [Transport adapters](transport.md#kafka) for the exact delays.
 
 ## Delivery semantics
 
-Event delivery is at-least-once. A process can finish the handler and lose its
-connection before the broker sees the acknowledgement, so the same event may
-be delivered again. Make handlers idempotent with `EventId` plus a business
-identifier, and keep external side effects behind a deduplication check when
-necessary.
+Event delivery is at-least-once. Before a handler runs, KubeJob checks the
+PostgreSQL Inbox by `(EventId, capability)`; after a successful handler it
+writes that key, then acknowledges the broker delivery. If a process loses its
+broker connection after the Inbox write but before acknowledgement, the
+redelivery is acknowledged without calling the handler again.
+
+There remains an unavoidable boundary if a process dies after an external side
+effect but before the Inbox write. When that effect must be once-only, put the
+effect and Inbox write in the same application database transaction, or make
+the external operation idempotent using `EventId` plus a business identifier.

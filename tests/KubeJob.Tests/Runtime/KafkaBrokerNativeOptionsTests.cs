@@ -51,7 +51,33 @@ public sealed class KafkaBrokerNativeOptionsTests
         var options = new KafkaBrokerNativeOptions();
         var policy = new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(requestedSeconds), TimeSpan.FromSeconds(requestedSeconds));
 
-        options.GetRetryDelay(policy, completedAttempt: 1).Should().Be(TimeSpan.FromSeconds(expectedSeconds));
+        options.GetRetryDelay(policy, failedAttempt: 1).Should().Be(TimeSpan.FromSeconds(expectedSeconds));
+    }
+
+    [Theory]
+    [InlineData(BackoffStrategy.Fixed, 5)]
+    [InlineData(BackoffStrategy.Linear, 30)]
+    [InlineData(BackoffStrategy.Exponential, 30)]
+    public void Retry_delay_advances_from_the_attempt_that_failed(BackoffStrategy strategy, int expectedSeconds)
+    {
+        var options = new KafkaBrokerNativeOptions();
+        var policy = new RetryPolicy(strategy, TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(30));
+
+        options.GetRetryDelay(policy, failedAttempt: 2).Should().Be(TimeSpan.FromSeconds(expectedSeconds));
+    }
+
+    [Theory]
+    [InlineData("not-a-protocol", null)]
+    [InlineData("SaslSsl", "not-a-mechanism")]
+    public void Invalid_security_configuration_is_rejected(string protocol, string? mechanism)
+    {
+        var options = new KafkaBrokerNativeOptions
+        {
+            SecurityProtocol = protocol,
+            SaslMechanism = mechanism
+        };
+
+        options.Invoking(x => x.Validate()).Should().Throw<InvalidOperationException>();
     }
 
     [Fact]
