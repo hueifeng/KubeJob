@@ -26,32 +26,5 @@ public sealed record JobStatusSnapshot(
     DateTimeOffset? CompletedAt = null,
     string? CurrentWorkerId = null,
     string? FailureCode = null,
-    string? FailureMessage = null,
-    string? ParentRunId = null,
-    RunRelationKind RelationKind = RunRelationKind.None)
-{
-    public JobStatusSnapshot(
-        string JobId,
-        JobPhase Phase,
-        int AttemptCount,
-        DateTimeOffset CreatedAt,
-        DateTimeOffset? StartedAt,
-        DateTimeOffset? CompletedAt,
-        string? CurrentWorkerId,
-        string? FailureCode,
-        string? FailureMessage)
-        : this(
-            JobId,
-            Phase,
-            AttemptCount,
-            CreatedAt,
-            StartedAt,
-            CompletedAt,
-            CurrentWorkerId,
-            FailureCode,
-            FailureMessage,
-            null,
-            RunRelationKind.None)
-    {
-    }
-}
+    string? FailureMessage = null)
+{ }

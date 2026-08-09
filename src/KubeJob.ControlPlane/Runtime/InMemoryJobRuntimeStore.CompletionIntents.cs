@@ -132,13 +132,11 @@ public sealed partial class InMemoryJobRuntimeStore : ICompletionIntentFinalizer
             {
                 case JobAttemptOutcome.Succeeded:
                     MakeTerminal(run, JobPhase.Succeeded, now, null, null);
-                    FireContinuation(run, effectiveOutcome, now);
                     RemoveCompletionIntent(request);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 case JobAttemptOutcome.PermanentFailure:
                     MakeTerminal(run, JobPhase.Failed, now, effectiveFailureCode, effectiveFailureMessage);
-                    FireContinuation(run, effectiveOutcome, now);
                     RemoveCompletionIntent(request);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
@@ -158,7 +156,6 @@ public sealed partial class InMemoryJobRuntimeStore : ICompletionIntentFinalizer
                     }
 
                     MakeTerminal(run, JobPhase.Dead, now, effectiveFailureCode, effectiveFailureMessage);
-                    FireContinuation(run, effectiveOutcome, now);
                     RemoveCompletionIntent(request);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 

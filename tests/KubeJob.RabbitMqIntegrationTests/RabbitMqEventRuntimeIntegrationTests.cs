@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Collections.Concurrent;
 using KubeJob.Core.Events;
 using KubeJob.Core.Transport;
 using KubeJob.Server.Runtime;
@@ -26,11 +27,16 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
         var suffix = Guid.NewGuid().ToString("N");
         var prefix = $"kubejob.test.events.{suffix}";
         var probe = new EventProbe();
+        var inbox = new InMemoryEventInboxStore();
         var transportOptions = new RabbitMqBrokerNativeOptions
         {
             ConnectionString = connectionString,
             QueuePrefix = prefix,
             ExchangeName = $"{prefix}.jobs",
+            EventExchangeName = $"{prefix}.events",
+            LogEventQueueName = $"{prefix}.log",
+            DataEventQueueName = $"{prefix}.data",
+            NotifyEventQueueName = $"{prefix}.notify",
             PrefetchCount = 8,
             RetryDelay = TimeSpan.FromMilliseconds(100),
             ReconnectDelay = TimeSpan.FromMilliseconds(100)
@@ -41,6 +47,7 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
             {
                 services.AddLogging();
                 services.AddSingleton(probe);
+                services.AddSingleton<IEventInboxStore>(inbox);
                 services.AddKubeJobBrokerNativeWorker(options =>
                 {
                     options.WorkerId = $"event-worker-{suffix}";
@@ -50,10 +57,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
                 });
                 services.AddKubeJobEventHandler<OrderCreatedEvent, BusinessOrderCreatedHandler>(
                     OrderCreated,
-                    "order-business");
+                    "data");
                 services.AddKubeJobEventHandler<OrderCreatedEvent, OrderLogHandler>(
                     OrderCreated,
-                    "order-log");
+                    "log");
 
                 services.AddOptions<EventRuntimeOptions>();
                 services.Configure<EventRuntimeOptions>(options =>
@@ -66,6 +73,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
                     options.ConnectionString = transportOptions.ConnectionString;
                     options.QueuePrefix = transportOptions.QueuePrefix;
                     options.ExchangeName = transportOptions.ExchangeName;
+                    options.EventExchangeName = transportOptions.EventExchangeName;
+                    options.LogEventQueueName = transportOptions.LogEventQueueName;
+                    options.DataEventQueueName = transportOptions.DataEventQueueName;
+                    options.NotifyEventQueueName = transportOptions.NotifyEventQueueName;
                     options.PrefetchCount = transportOptions.PrefetchCount;
                     options.RetryDelay = transportOptions.RetryDelay;
                     options.ReconnectDelay = transportOptions.ReconnectDelay;
@@ -82,10 +93,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
         {
             var businessQueue = transportOptions.GetEventSubscriptionQueueName(
                 OrderCreated.Topic,
-                "order-business");
+                "data");
             var logQueue = transportOptions.GetEventSubscriptionQueueName(
                 OrderCreated.Topic,
-                "order-log");
+                "log");
             await EventuallyAsync(
                 async () => await HasConsumerAsync(connectionString, businessQueue)
                     && await HasConsumerAsync(connectionString, logQueue),
@@ -178,7 +189,7 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
     {
         using var connection = CreateConnection(connectionString);
         using var channel = connection.CreateModel();
-        foreach (var subscription in new[] { "order-business", "order-log" })
+        foreach (var subscription in new[] { "data", "log", "notify" })
         {
             TryDeleteQueue(channel, options.GetEventSubscriptionQueueName(OrderCreated.Topic, subscription));
             TryDeleteQueue(channel, options.GetEventRetryQueueName(OrderCreated.Topic, subscription));
@@ -266,6 +277,20 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
         {
             _probe.IncrementLog();
             _probe.LogCompleted.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class InMemoryEventInboxStore : IEventInboxStore
+    {
+        private readonly ConcurrentDictionary<(string EventId, string ConsumerName), byte> _entries = [];
+
+        public ValueTask<bool> IsProcessedAsync(string eventId, string consumerName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(_entries.ContainsKey((eventId, consumerName)));
+
+        public ValueTask MarkProcessedAsync(string eventId, string consumerName, CancellationToken cancellationToken = default)
+        {
+            _entries.TryAdd((eventId, consumerName), 0);
             return ValueTask.CompletedTask;
         }
     }

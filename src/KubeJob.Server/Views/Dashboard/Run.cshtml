@@ -79,10 +79,6 @@
                 <div class="col-md-4"><dt>Current worker</dt><dd>@(run.CurrentWorkerId ?? "Not assigned")</dd></div>
                 <div class="col-md-6"><dt>Idempotency key</dt><dd class="mono">@(run.IdempotencyKey ?? "Not set")</dd></div>
                 <div class="col-md-6"><dt>Concurrency key</dt><dd class="mono">@(run.ConcurrencyKey ?? "Not set")</dd></div>
-                @if (run.ParentRunId is not null)
-                {
-                    <div class="col-md-6"><dt>Parent run</dt><dd class="mono">@run.ParentRunId (@run.RelationKind)</dd></div>
-                }
                 <div class="col-md-6">
                     <dt>Ordering</dt>
                     <dd>

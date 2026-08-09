@@ -253,18 +253,7 @@ public sealed class ScheduleControlPlane
                 "KeyOrdered schedules require a non-empty ConcurrencyKey as the partition key.");
         }
 
-        var normalized = TerminalActionValidator.NormalizeAndValidate(
-            request.Continuation,
-            request.Compensation,
-            route.Queue,
-            _maxPayloadBytes,
-            "invalid_schedule_terminal_action",
-            "schedule_terminal_action_payload_too_large");
-        return request with
-        {
-            Continuation = normalized.Continuation,
-            Compensation = normalized.Compensation
-        };
+        return request;
     }
 
     private static void ValidateBrokerNativePolicy(
@@ -295,15 +284,6 @@ public sealed class ScheduleControlPlane
             throw UnsupportedBrokerNativeSchedule(queue, nameof(request.RetryPolicy));
         }
 
-        if (request.Continuation is not null)
-        {
-            throw UnsupportedBrokerNativeSchedule(queue, nameof(request.Continuation));
-        }
-
-        if (request.Compensation is not null)
-        {
-            throw UnsupportedBrokerNativeSchedule(queue, nameof(request.Compensation));
-        }
     }
 
     private static ControlPlaneValidationException UnsupportedBrokerNativeSchedule(
@@ -340,8 +320,6 @@ public sealed class ScheduleControlPlane
         TimeoutSeconds = request.TimeoutSeconds,
         ConcurrencyKey = request.ConcurrencyKey,
         RetryPolicy = request.RetryPolicy,
-        Continuation = request.Continuation,
-        Compensation = request.Compensation,
         Enabled = request.Enabled,
         NextFireAt = CronScheduleCalculator.GetRequiredNextOccurrence(
             request.CronExpression,
@@ -362,7 +340,5 @@ public sealed class ScheduleControlPlane
         schedule.MisfirePolicy,
         schedule.ConcurrencyPolicy,
         schedule.ConcurrencyKey,
-        schedule.RetryPolicy,
-        schedule.Continuation,
-        schedule.Compensation);
+        schedule.RetryPolicy);
 }

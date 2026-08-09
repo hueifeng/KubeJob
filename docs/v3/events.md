@@ -1,17 +1,17 @@
 # Event subscriptions
 
-BrokerNative events are published once and delivered to each named
-subscription. A subscription is a durable consumer queue, not just a label in
-application code.
+RabbitMQ BrokerNative events are published to the shared `order.exchange` and
+delivered to the fixed `log.queue`, `data.queue`, and `notify.queue` capability
+queues.
 
 ```text
-topic + routing key → exchange/topic → subscription queue → handler → ACK
+topic + routing key → order.exchange → capability queue → handler → ACK
 ```
 
 ## Register a subscription
 
-The topic and routing key identify the event. The subscription name identifies
-one independent delivery stream:
+The topic and routing key identify the event. The subscription selects one of
+the fixed capability queues: `log`, `data`, or `notify`.
 
 ```csharp
 var orderCreated = EventKey<OrderCreated>.Create(
@@ -20,12 +20,12 @@ var orderCreated = EventKey<OrderCreated>.Create(
 
 builder.Services.AddKubeJobEventHandler<OrderCreated, AuditOrderCreated>(
     orderCreated,
-    subscription: "order-audit");
+    subscription: "log");
 ```
 
-Every replica of the audit service should use `order-audit`; those replicas
-compete for one queue. A separate service should use another name, such as
-`order-search-index`, to receive its own copy.
+Every replica using `log` competes for `log.queue`. Use `data` or `notify`
+when a separate capability needs its own copy; arbitrary subscription queues
+are intentionally not created.
 
 Map the topic to a transport and start the event consumer:
 
@@ -37,12 +37,49 @@ builder.Services.AddRabbitMqKubeJobEventConsumer(options =>
     options.ConnectionString = rabbitMqConnectionString);
 ```
 
+Event consumers require PostgreSQL for the durable Inbox. Configure it through
+the server registration (and initialize the schema during application startup):
+
+```csharp
+builder.Services.AddKubeJobServer(options =>
+    options.UsePostgreSql(postgresConnectionString));
+```
+
+## Kafka event topology
+
+Kafka uses one shared `order.events` topic and three fixed capability consumer
+groups. This is the Kafka equivalent of the RabbitMQ exchange and capability
+queues; it does not create a topic or consumer group for every event type.
+
+```text
+order.events
+  ├─ kubejob.<environment>.log     → log handlers
+  ├─ kubejob.<environment>.data    → data handlers
+  └─ kubejob.<environment>.notify  → notify handlers
+```
+
+Register handlers with `log`, `data`, or `notify`, map the logical event topic
+to `KafkaBrokerNativePublisher.Id`, and start the Kafka event consumer:
+
+```csharp
+builder.Services.ConfigureKubeJobEventRuntimes(options =>
+    options.Topics["orders"] = KafkaBrokerNativePublisher.Id);
+builder.Services.AddKafkaKubeJobEventConsumer(options =>
+    options.BootstrapServers = "kafka-1:9092,kafka-2:9092");
+```
+
+Replicas in one capability group share partitions horizontally; the three
+groups each receive the event independently. A retry is written only to that
+capability's topic, for example `order.events.data.retry`, and a terminal
+failure only to `order.events.data.dlq`. It is never republished to
+`order.events`, so a data retry cannot invoke log or notify again.
+
 ## Retry and dead letters
 
 An acknowledgement is sent only after the handler returns successfully. If a
-handler fails, the broker retries that subscription. A terminal failure goes to
-the subscription's dead-letter route; it is not republished to every other
-subscriber.
+handler fails, the broker retries that capability queue. A terminal failure
+goes to that queue's dead-letter route; it is not republished to every other
+capability queue.
 
 For RabbitMQ, each subscription owns one fixed-delay retry queue. The retry copy
 returns directly to that subscription queue, so a failure in `data.queue` does
@@ -59,10 +96,18 @@ KubeJob does not write an event history to the managed job tables. If the
 application needs an audit trail, store the event id and business identifiers in
 an application table or an observability pipeline.
 
+Kafka uses its bounded retry tiers instead of TTL queues; see the Kafka section
+in [Transport adapters](transport.md#kafka) for the exact delays.
+
 ## Delivery semantics
 
-Event delivery is at-least-once. A process can finish the handler and lose its
-connection before the broker sees the acknowledgement, so the same event may
-be delivered again. Make handlers idempotent with `EventId` plus a business
-identifier, and keep external side effects behind a deduplication check when
-necessary.
+Event delivery is at-least-once. Before a handler runs, KubeJob checks the
+PostgreSQL Inbox by `(EventId, capability)`; after a successful handler it
+writes that key, then acknowledges the broker delivery. If a process loses its
+broker connection after the Inbox write but before acknowledgement, the
+redelivery is acknowledged without calling the handler again.
+
+There remains an unavoidable boundary if a process dies after an external side
+effect but before the Inbox write. When that effect must be once-only, put the
+effect and Inbox write in the same application database transaction, or make
+the external operation idempotent using `EventId` plus a business identifier.

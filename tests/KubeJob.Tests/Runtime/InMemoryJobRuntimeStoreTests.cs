@@ -152,66 +152,6 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
-    public async Task Lease_reaper_fires_terminal_actions_when_retry_budget_is_exhausted()
-    {
-        var store = new InMemoryJobRuntimeStore();
-        var run = (await store.SubmitAsync(
-            NewCommand(
-                maxAttempts: 1,
-                continuation: new Continuation
-                {
-                    JobKey = "mail.followup",
-                    Trigger = ContinuationTrigger.OnAnyTerminal
-                },
-                compensation: new Compensation
-                {
-                    JobKey = "mail.compensate"
-                }),
-            CancellationToken.None)).Run;
-        var worker = await RegisterAsync(store, "reaper-worker", "reaper-session");
-        (await store.ClaimAsync(
-            NewClaim(worker),
-            TimeSpan.FromSeconds(-1),
-            1,
-            CancellationToken.None)).Should().ContainSingle();
-
-        var reconciled = await store.RequeueExpiredLeasesAsync(
-            DateTimeOffset.UtcNow,
-            TestRetryPolicy,
-            10,
-            CancellationToken.None);
-
-        reconciled.Should().Be(1);
-        (await store.GetRunAsync(run.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Dead);
-
-        var followUpWorker = await RegisterAsync(
-            store,
-            "reaper-followup-worker",
-            "reaper-followup-session",
-            maxConcurrency: 2,
-            capabilities: new[] { "mail.followup", "mail.compensate" });
-        var followUps = await store.ClaimAsync(
-            NewClaim(followUpWorker) with
-            {
-                Capabilities = new[] { "mail.followup", "mail.compensate" },
-                AvailableSlots = 2
-            },
-            TimeSpan.FromSeconds(30),
-            2,
-            CancellationToken.None);
-
-        followUps.Select(job => job.JobKey)
-            .Should().BeEquivalentTo(new[] { "mail.followup", "mail.compensate" });
-        var followUpRuns = await Task.WhenAll(
-            followUps.Select(job => store.GetRunAsync(job.RunId, CancellationToken.None).AsTask()));
-        followUpRuns.All(candidate => candidate is not null).Should().BeTrue();
-        followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Continuation)!
-            .ParentRunId.Should().Be(run.Id);
-        followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Compensation)!
-            .ParentRunId.Should().Be(run.Id);
-    }
-
-    [Fact]
     public async Task Timeout_scanner_requeues_a_running_attempt_even_when_lease_is_renewable()
     {
         var store = new InMemoryJobRuntimeStore();
@@ -327,21 +267,10 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
-    public async Task Canceling_running_run_does_not_fire_terminal_actions()
+    public async Task Canceling_running_run_is_terminal()
     {
         var store = new InMemoryJobRuntimeStore();
-        var run = (await store.SubmitAsync(
-            NewCommand(
-                continuation: new Continuation
-                {
-                    JobKey = "mail.followup",
-                    Trigger = ContinuationTrigger.OnAnyTerminal
-                },
-                compensation: new Compensation
-                {
-                    JobKey = "mail.compensate"
-                }),
-            CancellationToken.None)).Run;
+        var run = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
         var worker = await RegisterAsync(
             store,
             "cancel-worker",
@@ -635,8 +564,6 @@ public sealed class InMemoryJobRuntimeStoreTests
         int maxAttempts = 1,
         string? concurrencyKey = null,
         RetryPolicy? retryPolicy = null,
-        Continuation? continuation = null,
-        Compensation? compensation = null,
         int timeoutSeconds = 300) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
@@ -647,9 +574,7 @@ public sealed class InMemoryJobRuntimeStoreTests
         concurrencyKey,
         maxAttempts,
         timeoutSeconds,
-        RetryPolicy: retryPolicy,
-        Continuation: continuation,
-        Compensation: compensation);
+        RetryPolicy: retryPolicy);
 
     private static async Task<WorkerSessionRecord> RegisterAsync(
         InMemoryJobRuntimeStore store,

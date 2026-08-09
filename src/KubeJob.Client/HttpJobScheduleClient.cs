@@ -46,9 +46,7 @@ public sealed class HttpJobScheduleClient : IJobScheduleClient
             checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
             options.Enabled,
             options.ConcurrencyKey,
-            options.RetryPolicy,
-            options.Continuation,
-            options.Compensation);
+            options.RetryPolicy);
 
         using var response = await _httpClient.PutAsJsonAsync(
             $"api/kubejob/schedules/{Uri.EscapeDataString(scheduleId)}",

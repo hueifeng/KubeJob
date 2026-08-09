@@ -8,16 +8,16 @@ internal static class RabbitMqEventTopology
     public static string DeclareSubscription(
         IModel channel,
         RabbitMqBrokerNativeOptions options,
-        string topic,
         string subscription,
         IEnumerable<EventSubscriptionDefinition> bindings)
     {
-        var exchange = options.GetEventExchangeName(topic);
-        var queue = options.GetEventSubscriptionQueueName(topic, subscription);
-        var retryExchange = options.GetEventRetryExchangeName(topic);
-        var retryQueue = options.GetEventRetryQueueName(topic, subscription);
-        var deadLetterExchange = options.GetEventDeadLetterExchangeName(topic);
-        var deadLetterQueue = options.GetEventDeadLetterQueueName(topic, subscription);
+        const string eventTopology = "order.events";
+        var exchange = options.GetEventExchangeName(eventTopology);
+        var queue = options.GetEventSubscriptionQueueName(eventTopology, subscription);
+        var retryExchange = options.GetEventRetryExchangeName(eventTopology);
+        var retryQueue = options.GetEventRetryQueueName(eventTopology, subscription);
+        var deadLetterExchange = options.GetEventDeadLetterExchangeName(eventTopology);
+        var deadLetterQueue = options.GetEventDeadLetterQueueName(eventTopology, subscription);
 
         channel.ExchangeDeclare(exchange, ExchangeType.Topic, durable: true, autoDelete: false);
         channel.ExchangeDeclare(retryExchange, ExchangeType.Direct, durable: true, autoDelete: false);

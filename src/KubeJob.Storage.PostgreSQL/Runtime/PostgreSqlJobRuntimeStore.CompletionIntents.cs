@@ -239,9 +239,7 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
                    run.ConcurrencyKey,
                    run.RetryPolicyJson,
                    run.Priority,
-                   run.TimeoutSeconds,
-                   run.ContinuationJson,
-                   run.CompensationJson
+                   run.TimeoutSeconds
             FROM Kj2_CompletionIntents intent
             JOIN Kj2_JobAttempts attempt ON attempt.Id = intent.AttemptId
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
@@ -331,8 +329,6 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
                     phase = JobPhase.Succeeded;
                     await MakeTerminalAsync(
                         connection, transaction, state.RunId, phase, now, null, null, cancellationToken);
-                    await FireTerminalActionsAsync(
-                        connection, transaction, completionState, effectiveOutcome, now, cancellationToken);
                     break;
 
                 case JobAttemptOutcome.PermanentFailure:
@@ -340,8 +336,6 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
                     await MakeTerminalAsync(
                         connection, transaction, state.RunId, phase, now,
                         effectiveFailureCode, effectiveFailureMessage, cancellationToken);
-                    await FireTerminalActionsAsync(
-                        connection, transaction, completionState, effectiveOutcome, now, cancellationToken);
                     break;
 
                 case JobAttemptOutcome.RetryableFailure:
@@ -382,8 +376,6 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
                         await MakeTerminalAsync(
                             connection, transaction, state.RunId, phase, now,
                             effectiveFailureCode, effectiveFailureMessage, cancellationToken);
-                        await FireTerminalActionsAsync(
-                            connection, transaction, completionState, effectiveOutcome, now, cancellationToken);
                     }
                     break;
 
@@ -532,8 +524,6 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
         public string? RetryPolicyJson { get; set; }
         public int Priority { get; set; }
         public int TimeoutSeconds { get; set; }
-        public string? ContinuationJson { get; set; }
-        public string? CompensationJson { get; set; }
 
         public CompletionStateRow ToCompletionState() => new()
         {
@@ -562,9 +552,7 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
             ConcurrencyKey = ConcurrencyKey,
             RetryPolicyJson = RetryPolicyJson,
             Priority = Priority,
-            TimeoutSeconds = TimeoutSeconds,
-            ContinuationJson = ContinuationJson,
-            CompensationJson = CompensationJson
+            TimeoutSeconds = TimeoutSeconds
         };
     }
 }

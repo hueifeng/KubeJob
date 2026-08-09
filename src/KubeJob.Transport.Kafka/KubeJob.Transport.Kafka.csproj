@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Kafka BrokerNative execution and fixed-capability event adapters for KubeJob.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Confluent.Kafka" Version="1.9.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KubeJob.Core\KubeJob.Core.csproj" />
+    <ProjectReference Include="..\KubeJob.Worker\KubeJob.Worker.csproj" />
+  </ItemGroup>
+
+</Project>

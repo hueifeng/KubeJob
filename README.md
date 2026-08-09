@@ -125,7 +125,8 @@ configured transport and the consumer acknowledges only after the handler
 finishes. No managed `JobRun`, lease, or completion row is created for this
 path.
 
-RabbitMQ is the included adapter:
+RabbitMQ is the included adapter; Kafka is an alternative BrokerNative adapter.
+Choose one transport id per logical job queue:
 
 ```csharp
 builder.Services.AddKubeJobServer();
@@ -153,9 +154,45 @@ builder.Services.AddRabbitMqKubeJobBrokerNativeConsumer(options =>
     options.ConnectionString = rabbitMqConnectionString);
 ```
 
-For fan-out, give each event consumer a different subscription name. See
-[Event subscriptions](docs/v3/events.md) for the topic, queue, retry, and
-dead-letter rules.
+BrokerNative event consumers additionally need PostgreSQL for their durable
+Inbox. Configure the server with `server.UsePostgreSql(connectionString)` and
+initialize its schema before starting the consumer. The Inbox records a
+successful `(EventId, capability)` before broker acknowledgement, preventing a
+redelivery after that write from invoking the same capability again.
+
+Kafka keeps the same Core contract, but maps a job queue to a Kafka topic and
+maps the fixed event capabilities to three consumer groups. Replicas in the
+same group distribute partitions horizontally:
+
+```csharp
+using KubeJob.Transport.Kafka;
+
+builder.Services.ConfigureKubeJobQueueRuntimes(options =>
+{
+    options.Queues["order.created"] = new QueueRuntimeRoute
+    {
+        Mode = QueueRuntimeMode.BrokerNative,
+        TransportId = KafkaBrokerNativePublisher.Id
+    };
+});
+builder.Services.AddKafkaKubeJobBrokerNativeTransport(options =>
+    options.BootstrapServers = "kafka-1:9092,kafka-2:9092");
+builder.Services.AddKafkaKubeJobBrokerNativeConsumer(options =>
+    options.BootstrapServers = "kafka-1:9092,kafka-2:9092");
+```
+
+For events Kafka uses one shared `order.events` topic and exactly three fixed
+consumer groups: `kubejob.<environment>.log`, `.data`, and `.notify`. Register
+event handlers with one of those subscription names, then call
+`AddKafkaKubeJobEventConsumer`. Retry and dead-letter records stay scoped to
+the capability group, so a data retry is not replayed to log or notify. Kafka
+does not provide RabbitMQ-style per-message TTL; retries use visible 5s, 30s,
+5m, or 30m tiers (larger requested delays are capped at 30m).
+
+For RabbitMQ fan-out, give each event consumer a different subscription name.
+Kafka deliberately restricts subscriptions to the fixed `log`, `data`, and
+`notify` capabilities above. See [Event subscriptions](docs/v3/events.md) for
+the topic, queue, retry, and dead-letter rules.
 
 ## Configuration and safety
 
@@ -166,9 +203,14 @@ dead-letter rules.
   development and tests. Do not enable them on a public or shared network.
 - Initialize the PostgreSQL schema before starting managed workers. The sample
   does this with `InitializeKubeJobDatabase()`.
+- Event consumers use the same PostgreSQL schema for their durable Inbox; they
+  fail at startup if no durable Inbox is configured.
 - RabbitMQ BrokerNative uses one fixed retry delay per retry queue. Configure
   `RetryDelay` for the adapter; KubeJob does not create per-delay or per-worker
   retry queues.
+- Kafka topic creation is disabled by default. Provision `order.events`, each
+  job topic, and their `.retry`/`.dlq` companions before startup; use
+  `CreateTopicsOnStartup` only for local development.
 - Do not put large payloads or secrets in a job message. Store sensitive data
   in your application database and pass a reference to the handler.
 
@@ -191,6 +233,10 @@ dotnet test KubeJob.sln -c Release
 RabbitMQ integration tests run when
 `KUBEJOB_RABBITMQ_TEST_CONNECTION` contains an AMQP connection string. Without
 it, those tests are skipped intentionally.
+
+Kafka integration tests run when `KUBEJOB_KAFKA_TEST_BOOTSTRAP` contains
+bootstrap servers (for the local stack: `localhost:9092`). They are skipped
+when Kafka is not configured.
 
 ## Documentation
 

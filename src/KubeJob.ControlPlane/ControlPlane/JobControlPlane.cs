@@ -51,7 +51,6 @@ public sealed class JobControlPlane
 
         var route = _queueRouter.Resolve(request.Queue);
         ValidateOrdering(request, route.Target);
-        request = NormalizeAndValidateTerminalActions(request, route.Queue);
 
         var result = await _submissions.SubmitAsync(
             new SubmitJobCommand(
@@ -65,9 +64,7 @@ public sealed class JobControlPlane
                 request.MaxAttempts,
                 request.TimeoutSeconds,
                 DeliveryTarget: route.Target,
-                RetryPolicy: request.RetryPolicy,
-                Continuation: request.Continuation,
-                Compensation: request.Compensation),
+                RetryPolicy: request.RetryPolicy),
             cancellationToken);
 
         _metrics?.SubmissionCompleted(result.Existing);
@@ -109,7 +106,6 @@ public sealed class JobControlPlane
             ValidateSubmission(request);
             var route = _queueRouter.Resolve(request.Queue);
             ValidateOrdering(request, route.Target);
-            request = NormalizeAndValidateTerminalActions(request, route.Queue);
             commands[index] = new SubmitJobCommand(
                 request.JobKey,
                 request.PayloadJson,
@@ -121,9 +117,7 @@ public sealed class JobControlPlane
                 request.MaxAttempts,
                 request.TimeoutSeconds,
                 DeliveryTarget: route.Target,
-                RetryPolicy: request.RetryPolicy,
-                Continuation: request.Continuation,
-                Compensation: request.Compensation);
+                RetryPolicy: request.RetryPolicy);
         }
 
         using var activity = KubeJobTelemetry.ActivitySource.StartActivity("kubejob.submit_batch");
@@ -257,24 +251,6 @@ public sealed class JobControlPlane
         }
     }
 
-    private EnqueueJobRequest NormalizeAndValidateTerminalActions(
-        EnqueueJobRequest request,
-        string canonicalQueue)
-    {
-        var normalized = TerminalActionValidator.NormalizeAndValidate(
-            request.Continuation,
-            request.Compensation,
-            canonicalQueue,
-            _options.MaxPayloadBytes,
-            "invalid_job_terminal_action",
-            "job_terminal_action_payload_too_large");
-        return request with
-        {
-            Continuation = normalized.Continuation,
-            Compensation = normalized.Compensation
-        };
-    }
-
     private static void ValidateOrdering(EnqueueJobRequest request, DeliveryTarget target)
     {
         if (target.OrderingMode == ExecutionOrderingMode.KeyOrdered
@@ -295,9 +271,7 @@ public sealed class JobControlPlane
         run.CompletedAt,
         run.CurrentWorkerId,
         run.FailureCode,
-        run.FailureMessage,
-        run.ParentRunId,
-        run.RelationKind);
+        run.FailureMessage);
 
     private static JobAttemptSnapshot ToSnapshot(JobAttemptRecord attempt) => new(
         attempt.Id,

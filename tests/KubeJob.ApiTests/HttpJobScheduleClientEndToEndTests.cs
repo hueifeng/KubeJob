@@ -39,17 +39,7 @@ public sealed class HttpJobScheduleClientEndToEndTests
                 RetryPolicy = new RetryPolicy(
                     BackoffStrategy.Fixed,
                     TimeSpan.FromSeconds(1),
-                    TimeSpan.FromSeconds(1)),
-                Continuation = new Continuation
-                {
-                    JobKey = "report.followup",
-                    PayloadJson = "{}"
-                },
-                Compensation = new Compensation
-                {
-                    JobKey = "report.compensate",
-                    PayloadJson = "{}"
-                }
+                    TimeSpan.FromSeconds(1))
             });
         var created = await client.GetAsync(handle.ScheduleId);
         var disabled = await client.SetEnabledAsync(handle.ScheduleId, false);
@@ -64,8 +54,6 @@ public sealed class HttpJobScheduleClientEndToEndTests
         created.ConcurrencyPolicy.Should().Be(ScheduleConcurrencyPolicy.SkipIfRunning);
         created.ConcurrencyKey.Should().Be("report:daily");
         created.RetryPolicy.Should().NotBeNull();
-        created.Continuation!.JobKey.Should().Be("report.followup");
-        created.Compensation!.JobKey.Should().Be("report.compensate");
         disabled.Should().BeTrue();
         afterDisable!.Enabled.Should().BeFalse();
         deleted.Should().BeTrue();

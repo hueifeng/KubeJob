@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using FluentAssertions;
 using KubeJob.Core.Client;
+using KubeJob.Core.Events;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Scheduling;
 using KubeJob.ControlPlane.Runtime;
@@ -126,6 +127,19 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Event_inbox_is_durable_per_capability()
+    {
+        if (!Enabled) return;
+        var inbox = new PostgreSqlEventInboxStore(_dataSource!);
+
+        (await inbox.IsProcessedAsync("event-001", "data")).Should().BeFalse();
+        await inbox.MarkProcessedAsync("event-001", "data");
+
+        (await inbox.IsProcessedAsync("event-001", "data")).Should().BeTrue();
+        (await inbox.IsProcessedAsync("event-001", "log")).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Batch_submit_persists_runs_and_honors_idempotency_in_one_transaction()
     {
         if (!Enabled) return;
@@ -176,6 +190,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         }
     }
 
+    #if false // V2 removes workflow-style terminal actions.
     [Fact]
     public async Task Batch_submit_persists_continuation_and_compensation()
     {
@@ -212,6 +227,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         run.Compensation.Should().BeEquivalentTo(compensation);
     }
 
+    #endif
     [Fact]
     public async Task GetByIdempotencyKeyAsync_returns_active_run_for_matching_key()
     {
@@ -227,6 +243,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         found!.Id.Should().Be(submitted.Run.Id);
     }
 
+    #if false // V2 removes workflow-style terminal actions.
     [Fact]
     public async Task SubmitAsync_round_trips_continuation_and_compensation()
     {
@@ -444,6 +461,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         continuationRun.RelationKind.Should().Be(RunRelationKind.Continuation);
     }
 
+    #endif
     [Fact]
     public async Task Batch_submit_is_faster_than_single_submits()
     {
@@ -693,6 +711,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .Phase.Should().Be(JobPhase.Canceled);
     }
 
+    #if false // V2 removes workflow-style terminal actions.
     [Fact]
     public async Task Completion_batch_fires_terminal_actions_for_each_terminal_run()
     {
@@ -759,6 +778,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .Should().BeEquivalentTo(new[] { "mail.batch.followup", "mail.batch.compensate" });
     }
 
+    #endif
     [Fact]
     public async Task Completion_batch_honors_cancel_requested_before_success()
     {
@@ -912,6 +932,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .Phase.Should().Be(JobAttemptPhase.TimedOut);
     }
 
+    #if false // V2 removes workflow-style terminal actions.
     [Fact]
     public async Task Lease_reaper_fires_terminal_actions_when_a_run_becomes_dead()
     {
@@ -967,6 +988,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .Should().BeEquivalentTo(new[] { "mail.lease.followup", "mail.lease.compensate" });
     }
 
+    #endif
     [Fact]
     public async Task Schedule_fire_advances_cursor_and_writes_run_and_outbox_atomically()
     {
@@ -1002,8 +1024,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         run.Should().NotBeNull();
         run!.ConcurrencyKey.Should().Be("schedule:postgres:42");
         run.RetryPolicy.Should().BeEquivalentTo(schedule!.RetryPolicy);
-        run.Continuation.Should().BeEquivalentTo(schedule.Continuation);
-        run.Compensation.Should().BeEquivalentTo(schedule.Compensation);
         schedule!.NextFireAt.Should().BeCloseTo(next, TimeSpan.FromMicroseconds(1));
         schedule.LastFireAt.Should().NotBeNull();
         schedule.LastFireAt!.Value.Should().BeCloseTo(due, TimeSpan.FromMicroseconds(1));
@@ -1143,7 +1163,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Idempotency_conflicts_when_persisted_retry_or_terminal_action_changes()
+    public async Task Idempotency_conflicts_when_persisted_retry_policy_changes()
     {
         if (!Enabled) return;
         var store = _store!;
@@ -1153,12 +1173,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
                 RetryPolicy = new RetryPolicy(
                     BackoffStrategy.Fixed,
                     TimeSpan.FromSeconds(1),
-                    TimeSpan.FromSeconds(1)),
-                Continuation = new Continuation
-                {
-                    JobKey = "mail.idempotency.followup",
-                    PayloadJson = "{\"version\":1}"
-                }
+                    TimeSpan.FromSeconds(1))
             },
             CancellationToken.None);
 
@@ -1168,12 +1183,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
                 RetryPolicy = new RetryPolicy(
                     BackoffStrategy.Fixed,
                     TimeSpan.FromSeconds(2),
-                    TimeSpan.FromSeconds(2)),
-                Continuation = new Continuation
-                {
-                    JobKey = "mail.idempotency.followup",
-                    PayloadJson = "{\"version\":2}"
-                }
+                    TimeSpan.FromSeconds(2))
             },
             CancellationToken.None);
 
@@ -1590,16 +1600,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             BackoffStrategy.Fixed,
             TimeSpan.FromSeconds(1),
             TimeSpan.FromSeconds(1)),
-        Continuation = new Continuation
-        {
-            JobKey = "mail.scheduled.followup",
-            PayloadJson = "{}"
-        },
-        Compensation = new Compensation
-        {
-            JobKey = "mail.scheduled.compensate",
-            PayloadJson = "{}"
-        },
         Enabled = true,
         NextFireAt = nextFireAt,
         CreatedAt = DateTimeOffset.UtcNow,
@@ -1672,7 +1672,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task V10_schema_fixture_upgrades_to_v11_without_losing_existing_runs()
+    public async Task V10_schema_fixture_upgrades_without_losing_existing_runs_and_removes_workflow_columns()
     {
         if (!Enabled)
         {
@@ -1745,7 +1745,9 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
                       AND ((table_name = 'kj2_jobruns' AND column_name IN ('parentrunid', 'relationkind'))
                         OR (table_name = 'kj2_jobschedules' AND column_name IN
                             ('concurrencykey', 'retrypolicyjson', 'continuationjson', 'compensationjson')));";
-                Convert.ToInt32(await columns.ExecuteScalarAsync()).Should().Be(6);
+                // V11 queue metadata remains, while the V2 migration removes
+                // workflow lineage and terminal-action columns.
+                Convert.ToInt32(await columns.ExecuteScalarAsync()).Should().Be(2);
 
                 await using var preserved = connection.CreateCommand();
                 preserved.CommandText = "SELECT JobKey FROM Kj2_JobRuns WHERE Id = 'migration-fixture-run';";

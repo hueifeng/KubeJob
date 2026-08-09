@@ -34,16 +34,6 @@ public sealed class JobEnqueueOptions
     /// </summary>
     public Runtime.RetryPolicy? RetryPolicy { get; init; }
 
-    /// <summary>
-    /// Optional continuation that fires when this run reaches a terminal state.
-    /// </summary>
-    public Runtime.Continuation? Continuation { get; init; }
-
-    /// <summary>
-    /// Optional compensation action for failed runs.
-    /// </summary>
-    public Runtime.Compensation? Compensation { get; init; }
-
     public void Validate()
     {
         if (Queue is not null && string.IsNullOrWhiteSpace(Queue))

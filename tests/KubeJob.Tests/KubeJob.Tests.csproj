@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\KubeJob.Worker\KubeJob.Worker.csproj" />
     <ProjectReference Include="..\..\src\KubeJob.Storage.PostgreSQL\KubeJob.Storage.PostgreSQL.csproj" />
     <ProjectReference Include="..\..\src\KubeJob.Transport.RabbitMQ\KubeJob.Transport.RabbitMQ.csproj" />
+    <ProjectReference Include="..\..\src\KubeJob.Transport.Kafka\KubeJob.Transport.Kafka.csproj" />
     <ProjectReference Include="..\..\src\KubeJob.Generators\KubeJob.Generators.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />

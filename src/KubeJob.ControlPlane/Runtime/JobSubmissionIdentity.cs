@@ -19,8 +19,6 @@ public static class JobSubmissionIdentity
                 existing.MaxAttempts,
                 existing.TimeoutSeconds,
                 existing.RetryPolicy,
-                existing.Continuation,
-                existing.Compensation,
                 command))
         {
             return;
@@ -42,8 +40,6 @@ public static class JobSubmissionIdentity
                 existing.MaxAttempts,
                 existing.TimeoutSeconds,
                 existing.RetryPolicy,
-                existing.Continuation,
-                existing.Compensation,
                 command))
         {
             return;
@@ -61,8 +57,6 @@ public static class JobSubmissionIdentity
         int existingMaxAttempts,
         int existingTimeoutSeconds,
         RetryPolicy? existingRetryPolicy,
-        Continuation? existingContinuation,
-        Compensation? existingCompensation,
         SubmitJobCommand command) =>
         string.Equals(existingJobKey, command.JobKey, StringComparison.Ordinal)
         && JsonEquals(existingPayloadJson, command.PayloadJson)
@@ -71,44 +65,13 @@ public static class JobSubmissionIdentity
         && string.Equals(existingConcurrencyKey, command.ConcurrencyKey, StringComparison.Ordinal)
         && existingMaxAttempts == command.MaxAttempts
         && existingTimeoutSeconds == command.TimeoutSeconds
-        && Equals(existingRetryPolicy, command.RetryPolicy)
-        && ContinuationEquals(existingContinuation, command.Continuation)
-        && CompensationEquals(existingCompensation, command.Compensation);
+        && Equals(existingRetryPolicy, command.RetryPolicy);
 
     private static void ThrowConflict(string? idempotencyKey, string existingJobId)
     {
         throw new IdempotencyConflictException(
             idempotencyKey ?? string.Empty,
             existingJobId);
-    }
-
-    private static bool ContinuationEquals(
-        Continuation? left,
-        Continuation? right) => left is null || right is null
-        ? left is null && right is null
-        : string.Equals(left.JobKey, right.JobKey, StringComparison.Ordinal)
-          && left.Trigger == right.Trigger
-          && string.Equals(left.Queue, right.Queue, StringComparison.Ordinal)
-          && JsonEqualsOrOrdinal(left.PayloadJson ?? "{}", right.PayloadJson ?? "{}");
-
-    private static bool CompensationEquals(
-        Compensation? left,
-        Compensation? right) => left is null || right is null
-        ? left is null && right is null
-        : string.Equals(left.JobKey, right.JobKey, StringComparison.Ordinal)
-          && string.Equals(left.Queue, right.Queue, StringComparison.Ordinal)
-          && JsonEqualsOrOrdinal(left.PayloadJson ?? "{}", right.PayloadJson ?? "{}");
-
-    private static bool JsonEqualsOrOrdinal(string left, string right)
-    {
-        try
-        {
-            return JsonEquals(left, right);
-        }
-        catch (JsonException)
-        {
-            return string.Equals(left, right, StringComparison.Ordinal);
-        }
     }
 
     private static bool JsonEquals(string left, string right)

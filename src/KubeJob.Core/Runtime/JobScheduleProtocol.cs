@@ -17,9 +17,7 @@ public sealed record UpsertCronScheduleRequest(
     int TimeoutSeconds = 300,
     bool Enabled = true,
     string? ConcurrencyKey = null,
-    RetryPolicy? RetryPolicy = null,
-    Continuation? Continuation = null,
-    Compensation? Compensation = null)
+    RetryPolicy? RetryPolicy = null)
 {
     // Preserve the pre-policy constructor for already compiled client
     // adapters. New callers should use the primary constructor's policy
@@ -48,8 +46,6 @@ public sealed record UpsertCronScheduleRequest(
             MaxAttempts,
             TimeoutSeconds,
             Enabled,
-            null,
-            null,
             null,
             null)
     {

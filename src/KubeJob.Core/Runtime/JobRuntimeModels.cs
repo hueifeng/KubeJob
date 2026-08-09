@@ -29,18 +29,6 @@ public enum JobAttemptOutcome
     TimedOut = 4
 }
 
-/// <summary>
-/// Durable relationship between a logical run and a terminal-action child.
-/// Keeping this relation in the runtime model makes lineage independent of a
-/// particular storage adapter or an in-memory metadata convention.
-/// </summary>
-public enum RunRelationKind
-{
-    None = 0,
-    Continuation = 1,
-    Compensation = 2
-}
-
 public enum WorkerSessionState
 {
     Ready = 0,
@@ -101,16 +89,6 @@ public sealed class JobRunRecord
     public RetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
-    /// Optional continuation that fires when this run reaches a terminal state.
-    /// </summary>
-    public Continuation? Continuation { get; init; }
-
-    /// <summary>
-    /// Optional compensation action for failed runs.
-    /// </summary>
-    public Compensation? Compensation { get; init; }
-
-    /// <summary>
     /// Extensible metadata bag for run lineage, diagnostics tags,
     /// or custom key-value pairs. Not serialized to the broker.
     /// </summary>
@@ -120,8 +98,6 @@ public sealed class JobRunRecord
     public string? IdempotencyKey { get; init; }
     public string? ConcurrencyKey { get; init; }
     public ExecutionOrderingMode OrderingMode { get; init; } = ExecutionOrderingMode.Parallel;
-    public string? ParentRunId { get; init; }
-    public RunRelationKind RelationKind { get; init; } = RunRelationKind.None;
     /// <summary>Database-assigned submission order used only by KeyOrdered runs.</summary>
     public long OrderingSequence { get; init; }
     public string? ScheduleId { get; init; }

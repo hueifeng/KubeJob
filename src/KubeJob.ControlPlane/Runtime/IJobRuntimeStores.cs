@@ -16,9 +16,7 @@ public sealed record SubmitJobCommand(
     string? ScheduleId = null,
     DateTimeOffset? ScheduledFor = null,
     DeliveryTarget? DeliveryTarget = null,
-    RetryPolicy? RetryPolicy = null,
-    Continuation? Continuation = null,
-    Compensation? Compensation = null);
+    RetryPolicy? RetryPolicy = null);
 
 public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
 

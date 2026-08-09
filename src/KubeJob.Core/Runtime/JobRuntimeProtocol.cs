@@ -116,8 +116,6 @@ public sealed record EnqueueJobRequest(
     string? ConcurrencyKey = null,
     int MaxAttempts = 1,
     int TimeoutSeconds = 300,
-    RetryPolicy? RetryPolicy = null,
-    Continuation? Continuation = null,
-    Compensation? Compensation = null);
+    RetryPolicy? RetryPolicy = null);
 
 public sealed record CancelJobRequest(string? Reason = null);

@@ -15,6 +15,8 @@ the code and are the contract for new integrations.
 - [Transport and capabilities](v3/transport.md) — adapter boundaries and
   feature checks.
 - [Benchmarking](v3/benchmarking.md) — reproduce and report throughput tests.
+- [Transport adapters](v3/transport.md) — RabbitMQ and Kafka BrokerNative topology.
+- [Event subscriptions](v3/events.md) — fixed capability event delivery and retries.
 
 The [release checklist](v3/release-checklist.md) is for maintainers preparing
 a release, not a user tutorial.

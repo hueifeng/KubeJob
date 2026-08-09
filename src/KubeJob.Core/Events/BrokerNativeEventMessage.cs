@@ -2,7 +2,8 @@ namespace KubeJob.Core.Events;
 
 /// <summary>
 /// Self-contained event envelope copied independently to every subscription by
-/// the transport. No PostgreSQL lookup is required to dispatch or execute it.
+/// the transport. The payload needs no PostgreSQL lookup; the consumer uses a
+/// durable Inbox only to de-duplicate an acknowledged event.
 /// </summary>
 public sealed record BrokerNativeEventMessage
 {
