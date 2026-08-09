@@ -12,10 +12,16 @@ public sealed class KubeJobDashboardOptions
     public string RoutePrefix { get; set; } = "kubejob";
 
     /// <summary>
-    /// Optional ASP.NET Core authorization policy applied only to the dashboard
-    /// controller. Authentication and the named policy are configured by the host.
+    /// ASP.NET Core authorization policy applied only to the dashboard
+    /// controller. When omitted, KubeJob applies the host's default policy.
     /// </summary>
     public string? AuthorizationPolicy { get; set; }
+
+    /// <summary>
+    /// Explicitly permits anonymous dashboard access. Use only for local
+    /// development; dashboard pages can expose operational metadata.
+    /// </summary>
+    public bool AllowAnonymousAccess { get; set; }
 
     /// <summary>
     /// Controls whether serialized job payloads are rendered on Run detail pages.

@@ -18,8 +18,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KubeJob.Server.Extensions;
 
@@ -91,7 +89,8 @@ public static class KubeJobServerExtensions
         {
             mvc.Conventions.Add(new KubeJobApiAuthorizationConvention(
                 options.GetNormalizedClientAuthorizationPolicy(),
-                options.GetNormalizedWorkerAuthorizationPolicy()));
+                options.GetNormalizedWorkerAuthorizationPolicy(),
+                options.AllowAnonymousEndpoints));
         })
             .AddApplicationPart(typeof(JobsApiController).Assembly);
         services.AddHostedService<ScheduleReconcilerService>();
@@ -99,12 +98,6 @@ public static class KubeJobServerExtensions
         services.AddHostedService<OutboxPublisherService>();
         services.AddHostedService<RuntimeRetentionService>();
         services.AddHostedService<OrderingMetricsRefreshService>();
-        var clientPolicy = options.GetNormalizedClientAuthorizationPolicy();
-        var workerPolicy = options.GetNormalizedWorkerAuthorizationPolicy();
-        services.AddHostedService(sp => new KubeJobAuthorizationPolicyWarningService(
-            new[] { ("client", clientPolicy), ("worker", workerPolicy) },
-            sp.GetService<ILogger<KubeJobAuthorizationPolicyWarningService>>()
-                ?? NullLogger<KubeJobAuthorizationPolicyWarningService>.Instance));
         return services;
     }
 
@@ -167,14 +160,10 @@ public static class KubeJobServerExtensions
         {
             mvc.Conventions.Add(new KubeJobDashboardRouteConvention(
                 options.GetNormalizedRoutePrefix(),
-                options.GetNormalizedAuthorizationPolicy()));
+                options.GetNormalizedAuthorizationPolicy(),
+                options.AllowAnonymousAccess));
         })
         .AddApplicationPart(typeof(DashboardController).Assembly);
-        var dashboardPolicy = options.GetNormalizedAuthorizationPolicy();
-        services.AddHostedService(sp => new KubeJobAuthorizationPolicyWarningService(
-            new[] { ("dashboard", dashboardPolicy) },
-            sp.GetService<ILogger<KubeJobAuthorizationPolicyWarningService>>()
-                ?? NullLogger<KubeJobAuthorizationPolicyWarningService>.Instance));
         return services;
     }
 
@@ -195,13 +184,16 @@ internal sealed class KubeJobApiAuthorizationConvention : IControllerModelConven
 {
     private readonly string? _clientPolicy;
     private readonly string? _workerPolicy;
+    private readonly bool _allowAnonymousEndpoints;
 
     public KubeJobApiAuthorizationConvention(
         string? clientPolicy,
-        string? workerPolicy)
+        string? workerPolicy,
+        bool allowAnonymousEndpoints)
     {
         _clientPolicy = clientPolicy;
         _workerPolicy = workerPolicy;
+        _allowAnonymousEndpoints = allowAnonymousEndpoints;
     }
 
     public void Apply(ControllerModel controller)
@@ -219,6 +211,14 @@ internal sealed class KubeJobApiAuthorizationConvention : IControllerModelConven
         {
             controller.Filters.Add(new AuthorizeFilter(policy));
         }
+        else if (!_allowAnonymousEndpoints && controllerType is not null
+                 && (controllerType == typeof(JobRuntimeController)
+                     || controllerType == typeof(JobsApiController)
+                     || controllerType == typeof(SchedulesApiController)
+                     || controllerType == typeof(JobAttemptSnapshotsController)))
+        {
+            controller.Filters.Add(new AuthorizeFilter());
+        }
     }
 }
 
@@ -226,10 +226,12 @@ public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
 {
     private readonly string _routePrefix;
     private readonly string? _authorizationPolicy;
+    private readonly bool _allowAnonymousAccess;
 
     public KubeJobDashboardRouteConvention(
         string routePrefix,
-        string? authorizationPolicy = null)
+        string? authorizationPolicy = null,
+        bool allowAnonymousAccess = false)
     {
         _routePrefix = string.IsNullOrWhiteSpace(routePrefix)
             ? "kubejob"
@@ -237,6 +239,7 @@ public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
         _authorizationPolicy = string.IsNullOrWhiteSpace(authorizationPolicy)
             ? null
             : authorizationPolicy.Trim();
+        _allowAnonymousAccess = allowAnonymousAccess;
     }
 
     public void Apply(ControllerModel controller)
@@ -259,38 +262,9 @@ public sealed class KubeJobDashboardRouteConvention : IControllerModelConvention
         {
             controller.Filters.Add(new AuthorizeFilter(_authorizationPolicy));
         }
-    }
-}
-
-internal sealed class KubeJobAuthorizationPolicyWarningService : IHostedService
-{
-    private readonly (string Surface, string? Policy)[] _surfaces;
-    private readonly ILogger<KubeJobAuthorizationPolicyWarningService> _logger;
-
-    public KubeJobAuthorizationPolicyWarningService(
-        (string Surface, string? Policy)[] surfaces,
-        ILogger<KubeJobAuthorizationPolicyWarningService> logger)
-    {
-        _surfaces = surfaces;
-        _logger = logger;
-    }
-
-    public Task StartAsync(CancellationToken cancellationToken)
-    {
-        foreach (var (surface, policy) in _surfaces)
+        else if (!_allowAnonymousAccess)
         {
-            if (policy is null)
-            {
-                _logger.LogWarning(
-                    "KubeJob {Surface} endpoints have no authorization policy configured; " +
-                    "they are reachable anonymously. Configure the corresponding policy option " +
-                    "before deploying to production.",
-                    surface);
-            }
+            controller.Filters.Add(new AuthorizeFilter());
         }
-
-        return Task.CompletedTask;
     }
-
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

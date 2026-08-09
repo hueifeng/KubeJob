@@ -76,7 +76,7 @@ public sealed class HttpJobScheduleClientEndToEndTests
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        builder.Services.AddKubeJobServer();
+        builder.Services.AddKubeJobServer(options => options.AllowAnonymousEndpoints = true);
 
         var app = builder.Build();
         app.MapControllers();

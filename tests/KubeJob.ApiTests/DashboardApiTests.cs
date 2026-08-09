@@ -40,7 +40,7 @@ public sealed class DashboardApiTests
                 policy.RequireAuthenticatedUser();
             });
         });
-        builder.Services.AddKubeJobServer();
+        builder.Services.AddKubeJobServer(options => options.AllowAnonymousEndpoints = true);
         builder.Services.AddKubeJobDashboard(options =>
         {
             options.RoutePrefix = "/admin/jobs/";

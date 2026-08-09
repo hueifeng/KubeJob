@@ -19,7 +19,7 @@ public sealed class AttemptHistoryApiTests
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        builder.Services.AddKubeJobServer();
+        builder.Services.AddKubeJobServer(options => options.AllowAnonymousEndpoints = true);
 
         await using var app = builder.Build();
         app.MapControllers();

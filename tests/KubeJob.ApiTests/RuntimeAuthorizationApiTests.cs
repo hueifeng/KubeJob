@@ -19,6 +19,30 @@ namespace KubeJob.ApiTests;
 public sealed class RuntimeAuthorizationApiTests
 {
     [Fact]
+    public async Task Runtime_endpoints_require_the_host_default_policy_by_default()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services
+            .AddAuthentication("kubejob-test")
+            .AddScheme<AuthenticationSchemeOptions, ScopeHeaderAuthenticationHandler>(
+                "kubejob-test",
+                _ => { });
+        builder.Services.AddAuthorization();
+        builder.Services.AddKubeJobServer();
+
+        await using var app = builder.Build();
+        app.UseRouting();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapControllers();
+        await app.StartAsync();
+
+        using var response = await app.GetTestClient().GetAsync("/api/kubejob/jobs/missing");
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
     public async Task Client_and_worker_endpoints_support_independent_policies()
     {
         var builder = WebApplication.CreateBuilder();

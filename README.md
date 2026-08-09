@@ -110,6 +110,14 @@ builder.Services.AddKubeJobHandler<SendEmailJob, SendEmail>();
 
 Business handlers only depend on job contracts. Runtime, storage and transport implementations remain isolated behind abstractions.
 
+## Security
+
+KubeJob HTTP and Dashboard endpoints require authorization by default. Configure
+named client, worker, and dashboard policies (or a host default policy) and
+call `UseAuthentication()` / `UseAuthorization()` before mapping controllers.
+`AllowAnonymousEndpoints` and `AllowAnonymousAccess` are explicit local
+development/test opt-outs only.
+
 ## Architecture
 
 Core concepts:

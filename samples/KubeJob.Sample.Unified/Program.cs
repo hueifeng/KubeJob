@@ -23,6 +23,7 @@ builder.Services.AddKubeJobHandler<DashboardDemoJob, DashboardDemoPayload>();
 builder.Services.AddKubeJob(
     configureServer: options =>
     {
+        options.AllowAnonymousEndpoints = builder.Environment.IsDevelopment();
         if (string.IsNullOrWhiteSpace(postgresConnectionString))
         {
             options.UseInMemory();
@@ -52,6 +53,7 @@ builder.Services.AddKubeJob(
 builder.Services.AddKubeJobDashboard(options =>
 {
     options.RoutePrefix = "admin/jobs";
+    options.AllowAnonymousAccess = builder.Environment.IsDevelopment();
     options.AllowMutatingActions = true;
 });
 
