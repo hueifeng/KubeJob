@@ -14,8 +14,8 @@ public sealed class WorkerControlPlane
 {
     private readonly IWorkerSessionStore _sessions;
     private readonly IJobClaimStore _claims;
-    private readonly IJobCompletionStore _completions;
     private readonly ICompletionIntentStore _completionIntents;
+    private readonly ICompletionIntentFinalizer _completionFinalizer;
     private readonly IJobSubmissionStore _submissions;
     private readonly CompletionBatcher? _completionBatcher;
     private readonly JobRuntimeOptions _options;
@@ -33,8 +33,11 @@ public sealed class WorkerControlPlane
     {
         _sessions = sessions;
         _claims = claims;
-        _completions = completions;
+        _ = completions; // retained in the constructor for source compatibility
         _completionIntents = completionIntents;
+        _completionFinalizer = completionIntents as ICompletionIntentFinalizer
+            ?? throw new InvalidOperationException(
+                $"{completionIntents.GetType().Name} must implement {nameof(ICompletionIntentFinalizer)}.");
         _submissions = submissions;
         _completionBatcher = completionBatcher;
         _options = options.Value;
@@ -128,11 +131,14 @@ public sealed class WorkerControlPlane
                 false,
                 JobPhase.Failed,
                 false,
-                "stale_session_attempt_expired_or_fencing_token_mismatch");
+                "stale_session_attempt_expired_fencing_or_completion_conflict");
         }
 
         return _completionBatcher is null
-            ? await _completions.CompleteAsync(request, _options.RetryPolicy, cancellationToken)
+            ? await _completionFinalizer.FinalizeAsync(
+                request,
+                _options.RetryPolicy,
+                cancellationToken)
             : await _completionBatcher.EnqueueAsync(request, cancellationToken);
     }
 
