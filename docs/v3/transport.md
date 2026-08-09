@@ -55,6 +55,58 @@ For PostgresManaged workers, RabbitMQ can be registered as an optional wake-up
 notification. Losing RabbitMQ only makes the worker poll PostgreSQL; it does
 not change the queue authority.
 
+## Kafka
+
+Kafka is a BrokerNative adapter. It uses the same Core publisher seam as
+RabbitMQ, but maps a logical job queue to a durable Kafka topic and scales
+through consumer-group partition assignment:
+
+```csharp
+builder.Services.AddKubeJobServer();
+builder.Services.ConfigureKubeJobQueueRuntimes(options =>
+{
+    options.Queues["order.created"] = new QueueRuntimeRoute
+    {
+        Mode = QueueRuntimeMode.BrokerNative,
+        TransportId = KafkaBrokerNativePublisher.Id
+    };
+});
+builder.Services.AddKafkaKubeJobBrokerNativeTransport(options =>
+    options.BootstrapServers = "kafka-1:9092,kafka-2:9092");
+builder.Services.AddKafkaKubeJobBrokerNativeConsumer(options =>
+    options.BootstrapServers = "kafka-1:9092,kafka-2:9092");
+```
+
+With the default options, logical queue `order.created` maps to these topics:
+
+```text
+kubejob.jobs.order.created          main delivery topic
+kubejob.jobs.order.created.retry    retry topic
+kubejob.jobs.order.created.dlq      terminal failure topic
+```
+
+All replicas using the same `Environment` share the
+`kubejob.<environment>.jobs` consumer group. Kafka preserves order within one
+partition only; set `EventPublishOptions.PartitionKey` when event ordering per
+business key matters. Do not rely on cross-message ordering for BrokerNative
+jobs.
+
+The producer uses `acks=all` and idempotent producer settings. Consumers turn
+off auto-commit and commit an offset only after the handler succeeds, a retry
+record has been durably published, or a dead-letter record has been durably
+published. This remains at-least-once delivery: an application must make its
+handler and external side effects idempotent.
+
+Kafka topic creation is disabled by default. Provision the main, `.retry`, and
+`.dlq` topics in production, with partitions and replication appropriate to
+the deployment. `CreateTopicsOnStartup` is intended only for local development
+and integration tests. The local Podman stack exposes Kafka on `localhost:9092`.
+
+Kafka does not provide RabbitMQ-style per-message TTL. BrokerNative retries are
+rounded to explicit 5s, 30s, 5m, or 30m tiers; requests beyond 30m are capped
+at the final tier. This makes retry behavior visible instead of silently
+claiming arbitrary delayed delivery.
+
 ## BrokerNative submission rules
 
 `JobEnqueueOptions.IdempotencyKey` is a PostgresManaged feature. BrokerNative
