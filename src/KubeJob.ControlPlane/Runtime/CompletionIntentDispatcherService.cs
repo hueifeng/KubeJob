@@ -6,14 +6,14 @@ using Microsoft.Extensions.Options;
 namespace KubeJob.ControlPlane.Runtime;
 
 /// <summary>
-/// Replays durable completion intents left behind when the control-plane
-/// process stops after accepting a worker completion and before the state
-/// transition commits. Normal traffic is still served by CompletionBatcher.
+/// Replays durable completion intents left behind after the control plane has
+/// accepted a worker completion. Persisted intents own their Attempt even after
+/// the original worker lease/session expires.
 /// </summary>
 public sealed class CompletionIntentDispatcherService : BackgroundService
 {
     private readonly ICompletionIntentStore _intents;
-    private readonly IJobCompletionStore _completions;
+    private readonly ICompletionIntentFinalizer _finalizer;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<CompletionIntentDispatcherService> _logger;
 
@@ -24,7 +24,10 @@ public sealed class CompletionIntentDispatcherService : BackgroundService
         ILogger<CompletionIntentDispatcherService> logger)
     {
         _intents = intents;
-        _completions = completions;
+        _ = completions; // retained for constructor compatibility with existing composition/tests
+        _finalizer = intents as ICompletionIntentFinalizer
+            ?? throw new InvalidOperationException(
+                $"{intents.GetType().Name} must implement {nameof(ICompletionIntentFinalizer)}.");
         _options = options.Value;
         _logger = logger;
     }
@@ -35,37 +38,51 @@ public sealed class CompletionIntentDispatcherService : BackgroundService
         using var timer = new PeriodicTimer(_options.CompletionIntentPollInterval);
         try
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken))
+            // Recover immediately on startup instead of waiting one poll period.
+            while (!stoppingToken.IsCancellationRequested)
             {
-                try
-                {
-                    var pending = await _intents.GetPendingAsync(
-                        _options.CompletionIntentBatchSize,
-                        stoppingToken);
-                    foreach (var request in pending)
-                    {
-                        var response = await _completions.CompleteAsync(
-                            request,
-                            _options.RetryPolicy,
-                            stoppingToken);
-                        if (!response.Accepted)
-                        {
-                            await _intents.RemoveAsync(request.AttemptId, stoppingToken);
-                        }
-                    }
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                await DispatchOnceAsync(stoppingToken);
+                if (!await timer.WaitForNextTickAsync(stoppingToken))
                 {
                     break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "KubeJob completion intent recovery iteration failed");
                 }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
+        }
+    }
+
+    private async Task DispatchOnceAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            var pending = await _intents.GetPendingAsync(
+                _options.CompletionIntentBatchSize,
+                stoppingToken);
+            foreach (var request in pending)
+            {
+                var response = await _finalizer.FinalizeAsync(
+                    request,
+                    _options.RetryPolicy,
+                    stoppingToken);
+                if (!response.Accepted)
+                {
+                    await _intents.RemoveAsync(request.AttemptId, stoppingToken);
+                    _logger.LogWarning(
+                        "Discarded stale or conflicting KubeJob completion intent for attempt {AttemptId}: {Reason}",
+                        request.AttemptId,
+                        response.RejectionReason);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "KubeJob completion intent recovery iteration failed");
         }
     }
 }

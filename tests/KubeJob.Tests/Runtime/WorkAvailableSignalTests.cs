@@ -41,4 +41,22 @@ public sealed class WorkAvailableSignalTests
 
         action.Should().Throw<InvalidOperationException>();
     }
+
+    [Fact]
+    public void Malformed_work_available_payload_is_rejected()
+    {
+        var message = new OutboxMessageRecord
+        {
+            Id = "outbox-malformed",
+            Queue = "mail",
+            EventType = "work-available",
+            PayloadJson = "{not-json}",
+            CreatedAt = DateTimeOffset.UtcNow,
+            AvailableAt = DateTimeOffset.UtcNow
+        };
+
+        var action = () => WorkAvailableSignal.FromOutbox(message);
+
+        action.Should().Throw<System.Text.Json.JsonException>();
+    }
 }

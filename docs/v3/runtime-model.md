@@ -34,21 +34,34 @@ Use this path when you need one or more of:
 ### Fencing, completion, and timeouts
 
 Every managed claim carries a monotonically increasing `FenceVersion` and a
-lease token. Renewals and completions must present both values. If a worker
-loses its lease and later resumes, its completion is rejected even if the
-same process is still alive.
+lease token. Renewals and completion acceptance must present both values. If a
+worker loses its lease before the completion intent is accepted, that stale
+completion is rejected.
 
-The worker-facing completion path first persists a completion intent, then
-queues the normal completion batch. A restarted control plane replays intents
-that are still valid; stale intents are discarded. This closes the crash
-window between accepting a completion and committing the run transition, but
-it does not make external side effects exactly-once.
+A valid completion first crosses a durable boundary in PostgreSQL:
 
-`TimeoutSeconds` is enforced in two places: the worker links the handler
-cancellation token to the attempt timeout, and the control plane's timeout
-scanner reconciles attempts that remain running while their worker continues
-renewing the lease. A timeout follows the same retry policy as a handler
-failure and becomes `Dead` after `MaxAttempts`.
+```text
+Running attempt
+    ↓ persist immutable completion intent
+Completing attempt
+    ↓ finalize Run/Attempt state
+Succeeded / Pending / Failed / Dead / Canceled
+```
+
+Once the completion intent is persisted, the attempt no longer depends on the
+original worker lease or session. Lease recovery and timeout scanning only
+reclaim `Running` attempts, so a control-plane restart cannot turn an already
+accepted completion into a retry. The recovery dispatcher replays persisted
+intents after restart. A conflicting duplicate completion for the same attempt
+is rejected rather than overwriting the original outcome.
+
+`TimeoutSeconds` is authoritative. The worker links the handler cancellation
+token to the timeout and reports `TimedOut` even if a handler ignores
+cancellation and returns late. The control plane also compares the durable
+completion-acceptance time with the attempt deadline; a completion accepted
+after that deadline is finalized as `TimedOut`. This makes success-vs-timeout
+independent of whether the worker completion call or timeout scanner happens
+to acquire a database lock first.
 
 Retry behavior is selected from the per-run `RetryPolicy` when present, then
 falls back to the server policy. The policy controls fixed, linear,
@@ -68,8 +81,19 @@ public ValueTask ExecuteAsync(
 }
 ```
 
-Do not acknowledge a completion before the handler has finished, and do not
-use a stale `FenceVersion` for external writes.
+Persisted completion state does not make external side effects exactly-once.
+Business handlers must still make duplicate-sensitive external writes
+idempotent.
+
+### Ordering
+
+`KeyOrdered` serializes work sharing the same `ConcurrencyKey`.
+`BestEffortFifo` serializes visible work for one managed execution lane in
+submission-sequence order. It is intentionally not advertised as strict global
+FIFO: two concurrent submission transactions can allocate sequence values and
+commit in the opposite order under PostgreSQL `READ COMMITTED` visibility.
+`StrictFifo` remains a compatibility alias for the same numeric mode; new
+configuration should use `BestEffortFifo`.
 
 ## BrokerNative
 

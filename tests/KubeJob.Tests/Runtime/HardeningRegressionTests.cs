@@ -84,11 +84,23 @@ public sealed class HardeningRegressionTests
             FailureCode: null,
             FailureMessage: null);
 
-    private sealed class FlakyCompletionStore : IJobCompletionStore
+    private sealed class FlakyCompletionStore : ICompletionIntentStore, ICompletionIntentFinalizer
     {
         public bool ThrowOnNextBatch { get; set; }
 
-        public ValueTask<CompleteAttemptResponse> CompleteAsync(
+        public ValueTask<bool> PersistAsync(
+            CompleteAttemptRequest request,
+            CancellationToken cancellationToken) => ValueTask.FromResult(true);
+
+        public ValueTask<IReadOnlyList<CompleteAttemptRequest>> GetPendingAsync(
+            int batchSize,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IReadOnlyList<CompleteAttemptRequest>>(Array.Empty<CompleteAttemptRequest>());
+
+        public ValueTask RemoveAsync(string attemptId, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask<CompleteAttemptResponse> FinalizeAsync(
             CompleteAttemptRequest request,
             RetryPolicy retryPolicy,
             CancellationToken cancellationToken)
@@ -102,7 +114,7 @@ public sealed class HardeningRegressionTests
                 true, JobPhase.Succeeded, false));
         }
 
-        public ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
+        public ValueTask<IReadOnlyList<CompleteAttemptResponse>> FinalizeBatchAsync(
             IReadOnlyList<CompleteAttemptRequest> requests,
             RetryPolicy retryPolicy,
             CancellationToken cancellationToken)
@@ -120,22 +132,5 @@ public sealed class HardeningRegressionTests
             return ValueTask.FromResult(responses);
         }
 
-        public ValueTask<int> RequeueExpiredLeasesAsync(
-            DateTimeOffset now,
-            RetryPolicy retryPolicy,
-            int batchSize,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.FromResult(0);
-        }
-
-        public ValueTask<int> RequeueTimedOutAttemptsAsync(
-            DateTimeOffset now,
-            RetryPolicy retryPolicy,
-            int batchSize,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.FromResult(0);
-        }
     }
 }

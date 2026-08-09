@@ -79,9 +79,9 @@ public sealed class RabbitMqWorkerNotificationService : BackgroundService
             var consumerQueue = _rabbitMq.GetConsumerQueueName(logicalQueue);
             channel.QueueDeclare(
                 queue: consumerQueue,
-                durable: false,
+                durable: true,
                 exclusive: false,
-                autoDelete: true,
+                autoDelete: false,
                 arguments: null);
             channel.QueueBind(
                 queue: consumerQueue,

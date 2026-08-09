@@ -81,32 +81,20 @@ handler fails, the broker retries that capability queue. A terminal failure
 goes to that queue's dead-letter route; it is not republished to every other
 capability queue.
 
-KubeJob does not write an event history to
-the managed job tables. If the application needs an audit trail, store the
-event id and business identifiers in an application table or an observability
-pipeline.
+For RabbitMQ, each subscription owns one fixed-delay retry queue. The retry copy
+returns directly to that subscription queue, so a failure in `data.queue` does
+not redeliver the same event to `log.queue` or `notify.queue`. All replicas of
+the same subscription continue to compete on the same queue.
 
-`EventPublishOptions` accepts `MaxAttempts` and an optional `RetryPolicy`:
+`MaxAttempts` controls the retry budget. `RabbitMqBrokerNativeOptions.RetryDelay`
+controls the RabbitMQ retry delay. KubeJob deliberately does not create a family
+of delay queues per subscription and does not mix per-message expiration with a
+queue-level TTL. A generic `RetryPolicy` can still be carried in the envelope for
+other transport adapters, but RabbitMQ uses its configured fixed retry delay.
 
-```csharp
-await eventBus.PublishAsync(
-    orderCreated,
-    payload,
-    new EventPublishOptions
-    {
-        MaxAttempts = 5,
-        RetryPolicy = new RetryPolicy(
-            BackoffStrategy.Exponential,
-            TimeSpan.FromSeconds(2),
-            TimeSpan.FromMinutes(2))
-    });
-```
-
-The policy is copied into the self-contained BrokerNative envelope and is
-preserved on retry. Older envelopes without a policy use the RabbitMQ
-transport's fixed `RetryDelay`. RabbitMQ's retry queue also has a queue-level
-TTL for compatibility, so configure `RetryDelay` at least as high as the
-largest custom policy delay until the retry topology is migrated.
+KubeJob does not write an event history to the managed job tables. If the
+application needs an audit trail, store the event id and business identifiers in
+an application table or an observability pipeline.
 
 Kafka uses its bounded retry tiers instead of TTL queues; see the Kafka section
 in [Transport adapters](transport.md#kafka) for the exact delays.

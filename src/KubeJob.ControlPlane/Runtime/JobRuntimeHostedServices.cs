@@ -200,7 +200,22 @@ public sealed class OutboxPublisherService : BackgroundService
 
         // PostgresManaged is the sole authority for durable Runs. The outbox
         // only emits an optional wake signal; workers still claim from PG.
-        var signal = WorkAvailableSignal.FromOutbox(message);
+        WorkAvailableSignal signal;
+        try
+        {
+            signal = WorkAvailableSignal.FromOutbox(message);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Text.Json.JsonException)
+        {
+            // The outbox is durable, so a malformed legacy row would otherwise
+            // be picked up and retried forever. It can never become publishable
+            // without changing its stored payload; retain it as Abandoned for
+            // operator inspection instead.
+            throw new PermanentOutboxException(
+                $"Outbox message '{message.Id}' contains an invalid work-available payload.",
+                ex);
+        }
+
         await _notifier.PublishAsync(signal, cancellationToken);
 
         if (_metrics?.IsOutboxPublishLagEnabled == true)

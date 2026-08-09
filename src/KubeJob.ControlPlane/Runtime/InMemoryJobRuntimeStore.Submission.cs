@@ -155,7 +155,10 @@ public sealed partial class InMemoryJobRuntimeStore
                 return ValueTask.FromResult(new CancelJobResult(false));
             }
 
-            if (IsTerminal(run.Phase) || run.CancelRequested)
+            if (IsTerminal(run.Phase)
+                || run.CancelRequested
+                || (run.CurrentAttemptId is { } attemptId
+                    && _completionIntents.ContainsKey(attemptId)))
             {
                 return ValueTask.FromResult(new CancelJobResult(false));
             }

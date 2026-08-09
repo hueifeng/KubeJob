@@ -18,7 +18,20 @@ public enum ExecutionOrderingMode
 {
     Parallel = 0,
     KeyOrdered = 1,
-    StrictFifo = 2
+
+    /// <summary>
+    /// Best-effort FIFO for one managed execution lane. Runs that are visible
+    /// together are claimed in submission-sequence order, but concurrent submit
+    /// transactions can commit in a different order, so this is deliberately
+    /// not advertised as a strict global FIFO guarantee.
+    /// </summary>
+    BestEffortFifo = 2,
+
+    /// <summary>
+    /// Compatibility alias for <see cref="BestEffortFifo"/>. New configuration
+    /// should use BestEffortFifo so the public name matches the actual guarantee.
+    /// </summary>
+    StrictFifo = BestEffortFifo
 }
 
 /// <summary>

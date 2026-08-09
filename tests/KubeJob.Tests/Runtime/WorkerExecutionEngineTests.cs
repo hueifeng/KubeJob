@@ -95,6 +95,26 @@ public sealed class WorkerExecutionEngineTests
         result.FailureMessage.Should().Contain("handler failed");
     }
 
+    [Fact]
+    public async Task ExecuteAsync_reports_timeout_when_handler_ignores_cancellation_and_returns_late()
+    {
+        var services = new ServiceCollection();
+        await using var provider = services.BuildServiceProvider();
+        var registry = new JobHandlerRegistry(new[]
+        {
+            new IgnoringCancellationInvoker("order.created", TimeSpan.FromMilliseconds(1100))
+        });
+        var engine = new WorkerExecutionEngine(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            registry,
+            NullLogger.Instance);
+
+        var result = await engine.ExecuteAsync(CreateRequest("order.created") with { TimeoutSeconds = 1 });
+
+        result.Outcome.Should().Be(JobAttemptOutcome.TimedOut);
+        result.FailureCode.Should().Be("timeout");
+    }
+
     private static WorkerExecutionRequest CreateRequest(string jobKey) =>
         new(
             "run-1",
@@ -159,5 +179,29 @@ public sealed class WorkerExecutionEngineTests
             JobExecutionContext context,
             CancellationToken cancellationToken) =>
             ValueTask.FromException(new InvalidOperationException("handler failed"));
+    }
+
+    private sealed class IgnoringCancellationInvoker : IJobHandlerInvoker
+    {
+        private readonly TimeSpan _delay;
+
+        public IgnoringCancellationInvoker(string jobKey, TimeSpan delay)
+        {
+            JobKey = jobKey;
+            _delay = delay;
+        }
+
+        public string JobKey { get; }
+
+        public Type PayloadType => typeof(object);
+
+        public async ValueTask InvokeAsync(
+            IServiceProvider serviceProvider,
+            string payloadJson,
+            JobExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(_delay, CancellationToken.None);
+        }
     }
 }

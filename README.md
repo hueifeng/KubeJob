@@ -205,9 +205,9 @@ the topic, queue, retry, and dead-letter rules.
   does this with `InitializeKubeJobDatabase()`.
 - Event consumers use the same PostgreSQL schema for their durable Inbox; they
   fail at startup if no durable Inbox is configured.
-- Keep the RabbitMQ BrokerNative `RetryDelay` at least as high as any custom
-  `RetryPolicy.MaxDelay`; the retry queue has a queue-level TTL for backward
-  compatibility.
+- RabbitMQ BrokerNative uses one fixed retry delay per retry queue. Configure
+  `RetryDelay` for the adapter; KubeJob does not create per-delay or per-worker
+  retry queues.
 - Kafka topic creation is disabled by default. Provision `order.events`, each
   job topic, and their `.retry`/`.dlq` companions before startup; use
   `CreateTopicsOnStartup` only for local development.

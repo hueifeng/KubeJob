@@ -42,9 +42,11 @@ public sealed class RabbitMqBrokerNativeOptions
     public ushort ConsumerDispatchConcurrency { get; set; }
 
     /// <summary>
-    /// Fallback retry delay for messages without a policy. It is also the
-    /// queue-level safety TTL, so set it at least as high as custom policies'
-    /// maximum delay until the retry queue topology is migrated.
+    /// Fixed RabbitMQ BrokerNative retry delay. Each job retry queue and each
+    /// event-subscription retry queue uses this value as its queue-level TTL.
+    /// Per-message RetryPolicy may still control the retry budget/intent at the
+    /// runtime model level, but RabbitMQ deliberately does not create variable
+    /// delay queues or per-message expirations.
     /// </summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -52,6 +54,10 @@ public sealed class RabbitMqBrokerNativeOptions
 
     public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Compatibility helper for callers that need to represent the RabbitMQ
+    /// adapter's fixed retry delay as a generic RetryPolicy.
+    /// </summary>
     public RetryPolicy GetFallbackRetryPolicy() =>
         new(BackoffStrategy.Fixed, RetryDelay, RetryDelay);
 
@@ -108,11 +114,6 @@ public sealed class RabbitMqBrokerNativeOptions
         _ = GetRetryQueueName();
         _ = GetDeadLetterExchangeName();
         _ = GetDeadLetterQueueName();
-
-        // Logical queue/topic/subscription names are validated when a concrete
-        // topology name is generated. Validating the theoretical combination
-        // of two maximum-length logical names here would reject every default
-        // configuration even when the application only uses short names.
     }
 
     public string GetQueueName(string logicalQueue)

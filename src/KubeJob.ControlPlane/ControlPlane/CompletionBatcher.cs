@@ -7,28 +7,27 @@ using Microsoft.Extensions.Options;
 namespace KubeJob.Server.ControlPlane;
 
 /// <summary>
-/// Coalesces completion calls at the control plane into micro-batches.
-///
-/// <para><b>Sharding (Item 6):</b> When <see cref="JobRuntimeOptions.CompletionBatcherShardCount"/>
-/// is > 1, completion requests are routed by <c>RunId.GetHashCode() % ShardCount</c>.
-/// Each shard owns its own bounded channel, flush loop, and batch submission,
-/// eliminating the single-batcher hot spot under high worker concurrency.
-/// Fencing/idempotency is unchanged: conflicting completions are detected by
-/// the store and relayed back to the caller.</para>
+/// Coalesces already-persisted completion intents into micro-batches.
+/// Persistence is the durable ownership boundary; this batcher only performs
+/// the final Run/Attempt state transition and may safely be lost on restart.
 /// </summary>
 public sealed class CompletionBatcher
 {
-    private readonly IJobCompletionStore _store;
     private readonly JobRuntimeOptions _options;
     private readonly ILogger<CompletionBatcher>? _logger;
     private readonly CompletionShard[] _shards;
 
     public CompletionBatcher(
-        IJobCompletionStore store,
+        ICompletionIntentStore intents,
         IOptions<JobRuntimeOptions> options,
         ILogger<CompletionBatcher>? logger = null)
     {
-        _store = store;
+        if (intents is not ICompletionIntentFinalizer finalizer)
+        {
+            throw new InvalidOperationException(
+                $"{intents.GetType().Name} must implement {nameof(ICompletionIntentFinalizer)}.");
+        }
+
         _options = options.Value;
         _logger = logger;
         _options.Validate();
@@ -37,30 +36,25 @@ public sealed class CompletionBatcher
         _shards = new CompletionShard[shardCount];
         for (var i = 0; i < shardCount; i++)
         {
-            _shards[i] = new CompletionShard(store, _options, logger, shardIndex: i);
+            _shards[i] = new CompletionShard(finalizer, _options, logger, shardIndex: i);
         }
     }
 
     /// <summary>
-    /// Enqueue a completion request. The worker blocks until its specific
-    /// completion is flushed and the store responds. The caller still awaits
-    /// the individual durable result, so transport ACK timing is unchanged.
+    /// Enqueue a persisted completion intent. The worker blocks until its
+    /// specific durable state transition finishes.
     /// </summary>
     public async ValueTask<CompleteAttemptResponse> EnqueueAsync(
         CompleteAttemptRequest request,
         CancellationToken cancellationToken)
     {
         var shardIndex = (request.RunId.GetHashCode() & 0x7FFFFFFF) % _shards.Length;
-        var shard = _shards[shardIndex];
-        return await shard.EnqueueAsync(request, cancellationToken);
+        return await _shards[shardIndex].EnqueueAsync(request, cancellationToken);
     }
 
-    /// <summary>
-    /// A single completion shard with its own bounded channel and flush loop.
-    /// </summary>
     private sealed class CompletionShard
     {
-        private readonly IJobCompletionStore _store;
+        private readonly ICompletionIntentFinalizer _finalizer;
         private readonly JobRuntimeOptions _options;
         private readonly ILogger<CompletionBatcher>? _logger;
         private readonly int _shardIndex;
@@ -69,12 +63,12 @@ public sealed class CompletionBatcher
         private Channel<PendingCompletion> _channel;
 
         public CompletionShard(
-            IJobCompletionStore store,
+            ICompletionIntentFinalizer finalizer,
             JobRuntimeOptions options,
             ILogger<CompletionBatcher>? logger,
             int shardIndex)
         {
-            _store = store;
+            _finalizer = finalizer;
             _options = options;
             _logger = logger;
             _shardIndex = shardIndex;
@@ -122,8 +116,10 @@ public sealed class CompletionBatcher
         {
             while (await _channel.Reader.WaitToReadAsync())
             {
-                var batch = new List<PendingCompletion>(_options.CompletionBatchSize);
-                batch.Add(await _channel.Reader.ReadAsync());
+                var batch = new List<PendingCompletion>(_options.CompletionBatchSize)
+                {
+                    await _channel.Reader.ReadAsync()
+                };
                 var deadline = Task.Delay(_options.CompletionFlushInterval);
 
                 while (batch.Count < _options.CompletionBatchSize)
@@ -151,7 +147,7 @@ public sealed class CompletionBatcher
 
                 try
                 {
-                    var responses = await _store.CompleteBatchAsync(
+                    var responses = await _finalizer.FinalizeBatchAsync(
                         batch.Select(x => x.Request).ToArray(),
                         _options.RetryPolicy,
                         CancellationToken.None);
@@ -176,7 +172,8 @@ public sealed class CompletionBatcher
                 }
             }
 
-            _logger?.LogWarning("KubeJob completion batcher loop exited (shard={Shard}); will restart on next enqueue",
+            _logger?.LogWarning(
+                "KubeJob completion batcher loop exited (shard={Shard}); will restart on next enqueue",
                 _shardIndex);
         }
     }
