@@ -91,7 +91,7 @@ jobs:
       run: |
         CONFIGURATION=Release \
         PACKAGE_VERSION="${PACKAGE_VERSION:-0.0.0-publish-validation}" \
-        bash eng/validate-v2-complete.sh
+        bash eng/validate-complete.sh
 
     - name: Pack
       run: |

@@ -9,5 +9,5 @@
 - [Local development](v3/local-development.md)
 - [Benchmarking](v3/benchmarking.md)
 
-`docs/v2/` and ADRs are historical material. They explain prior decisions but
-do not override the V3 contracts or current source.
+Only the V3 documentation is shipped and maintained. The source code and these
+pages are the authoritative current contract.

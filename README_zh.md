@@ -9,7 +9,5 @@ KubeJob 是面向 .NET 的持久化任务与 BrokerNative 事件运行时。当�
 - [V3 事件订阅](./docs/v3/events.md)
 - [本地开发环境](./docs/v3/local-development.md)
 - [基准测试方法](./docs/v3/benchmarking.md)
-- [历史 V2 教程与架构资料](./docs/v2/README.md)
 
-快速开始、示例代码、安全默认值和能力边界请以英文首页为准；V2 文档仅用于查阅
-历史设计，不代表当前 V3 契约。
+快速开始、示例代码、安全默认值和能力边界请以英文首页为准。

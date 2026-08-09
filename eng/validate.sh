@@ -35,7 +35,7 @@ if [ "$negative_status" -eq 0 ] || ! grep -q "KJGEN003" <<< "$negative_output"; 
 fi
 
 rm -rf artifacts/packages
-CONFIGURATION="$configuration" PACKAGE_VERSION="$smoke_version" bash eng/pack-v2.sh
+CONFIGURATION="$configuration" PACKAGE_VERSION="$smoke_version" bash eng/pack.sh
 
 run dotnet restore tests/KubeJob.PackageSmoke/KubeJob.PackageSmoke.csproj \
   -p:KubeJobSmokeVersion="$smoke_version" \

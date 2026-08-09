@@ -54,7 +54,7 @@ jobs:
         run: |
           mkdir -p artifacts/validation
           set -o pipefail
-          bash eng/validate-v2-complete.sh 2>&1 \
+          bash eng/validate-complete.sh 2>&1 \
             | tee artifacts/validation/full-validation.log
 
       - name: Upload validation log

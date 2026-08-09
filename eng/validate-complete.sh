@@ -4,7 +4,7 @@ set -euo pipefail
 configuration="${CONFIGURATION:-Release}"
 smoke_version="${PACKAGE_VERSION:-0.0.0-complete}"
 
-CONFIGURATION="$configuration" PACKAGE_VERSION="$smoke_version" bash eng/validate-v2.sh
+CONFIGURATION="$configuration" PACKAGE_VERSION="$smoke_version" bash eng/validate.sh
 
 dotnet restore tests/KubeJob.EndToEndTests/KubeJob.EndToEndTests.csproj
 dotnet test tests/KubeJob.EndToEndTests/KubeJob.EndToEndTests.csproj \
