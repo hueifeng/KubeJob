@@ -187,4 +187,4 @@ otherwise those four tests are skipped intentionally.
 
 ## License
 
-MIT
+[MIT License](LICENSE)
