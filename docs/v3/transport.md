@@ -4,18 +4,39 @@ Transport adapters isolate external messaging systems from runtime logic.
 
 ## Capability model
 
-A transport should declare capabilities instead of leaking implementation details.
+Runtime code should depend on declared transport capabilities instead of leaking broker-specific behavior.
 
-Example capabilities:
+A transport capability model includes:
 
-- Durable delivery
-- Ordered delivery
-- Delay support
-- Dead-letter support
-- Cancellation support
-- Strong status tracking
+```text
+TransportCapabilities
 
-Runtime code must only depend on capabilities.
+- Durable
+- OrderedDelivery
+- DelayDelivery
+- DeadLetter
+- Cancellation
+- ExactlyOnce
+```
+
+Capabilities describe what a transport can provide; they do not change the execution authority model.
+
+## Runtime boundary
+
+```text
+Runtime
+   |
+   | depends on capabilities
+   |
+Transport Abstraction
+   |
++----------+----------+
+|                     |
+RabbitMQ            Kafka/Pulsar/Other
+Adapter             Adapter
+```
+
+The core runtime must never reference a specific broker client library.
 
 ## RabbitMQ
 
@@ -34,4 +55,4 @@ The runtime does not assume RabbitMQ is the only future transport.
 
 Kafka, Pulsar and other brokers can be integrated through the same adapter boundary.
 
-The core model should never reference a specific broker client library.
+New transports should expose their capabilities and keep broker-specific details inside the adapter layer.
