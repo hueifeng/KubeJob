@@ -103,8 +103,6 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                 Worker = request.Worker
             };
 
-            // Keep the existing middleware contract stable while moving the
-            // execution mechanics out of WorkerRuntimeService.
             context.Items["_JobKey"] = request.JobKey;
 
             if (request.ConsumerIndex is int consumerIndex)
@@ -142,6 +140,27 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                 ? Stopwatch.GetTimestamp()
                 : 0L;
             await pipeline(context);
+
+            // Cancellation tokens are cooperative, but the runtime deadline is
+            // authoritative. A handler that ignores cancellation and returns
+            // after its timeout must never be reported as Succeeded.
+            if (request.AttemptCancellationToken.IsCancellationRequested)
+            {
+                RecordHandlerDuration(handlerStartedAt, "canceled");
+                return new WorkerExecutionResult(
+                    JobAttemptOutcome.Canceled,
+                    "canceled",
+                    "Execution was canceled by the control plane, worker drain, or session fencing.");
+            }
+
+            if (timeoutSource.IsCancellationRequested)
+            {
+                RecordHandlerDuration(handlerStartedAt, "timed_out");
+                return new WorkerExecutionResult(
+                    JobAttemptOutcome.TimedOut,
+                    "timeout",
+                    $"Execution exceeded its {request.TimeoutSeconds} second timeout.");
+            }
 
             if (context.Outcome.HasValue)
             {
