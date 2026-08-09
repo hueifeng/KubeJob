@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
@@ -162,8 +161,6 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Keep the broker delivery unacked; connection shutdown causes
-            // RabbitMQ to redeliver it to another live worker.
             return;
         }
 
@@ -176,7 +173,6 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                     delivery.Body.Span,
                     SerializerOptions)
                     ?? throw new JsonException("BrokerNative job message was empty.");
-                message = message with { RetryPolicy = message.RetryPolicy ?? _options.GetFallbackRetryPolicy() };
                 message.Validate();
                 if (!string.Equals(message.Queue, expectedLogicalQueue, StringComparison.Ordinal))
                 {
@@ -205,7 +201,6 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Shutdown is not a job outcome. Leave this delivery unacked.
                 return;
             }
 
@@ -245,13 +240,9 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Unacked delivery is recovered by RabbitMQ on connection close.
         }
         catch (Exception exception)
         {
-            // Handler failures are normalized by BrokerNativeJobProcessor. An
-            // exception here is transport/infrastructure failure, so preserve
-            // at-least-once delivery by requeueing the original message.
             Nack(consumeChannel, consumeChannelGate, delivery.DeliveryTag);
             _logger.LogError(
                 exception,
@@ -300,11 +291,11 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                     ? new Dictionary<string, object>()
                     : new Dictionary<string, object>(original.BasicProperties.Headers);
                 properties.Headers["x-kubejob-attempt"] = retryMessage.Attempt;
-                properties.Expiration = Math.Ceiling(
-                    (retryMessage.RetryPolicy ?? _options.GetFallbackRetryPolicy())
-                    .ComputeDelay(Math.Max(1, retryMessage.Attempt - 1))
-                    .TotalMilliseconds).ToString(CultureInfo.InvariantCulture);
 
+                // RabbitMQ uses one fixed-delay retry queue per job runtime.
+                // Do not mix per-message expirations with the queue TTL: variable
+                // expirations in one queue introduce head-of-line delay and force
+                // transport-specific constraints onto the generic RetryPolicy.
                 publishChannel.BasicPublish(
                     exchange: _options.GetRetryExchangeName(),
                     routingKey: retryMessage.Queue,
@@ -324,8 +315,6 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                         $"RabbitMQ could not route BrokerNative retry for queue '{retryMessage.Queue}'.");
                 }
 
-                // Only ACK the original after the retry copy is durably
-                // accepted by RabbitMQ. This is the key at-least-once handoff.
                 Ack(consumeChannel, consumeChannelGate, original.DeliveryTag);
             }
             finally
