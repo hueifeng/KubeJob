@@ -22,13 +22,10 @@ public sealed class RabbitMqIntegrationCollection
 [Collection(RabbitMqIntegrationCollection.Name)]
 public sealed class RabbitMqIngressIntegrationTests
 {
-    [Fact]
+    [RabbitMqFact]
     public async Task Ingress_acks_accepted_messages_and_dead_letters_invalid_json()
     {
-        var connectionString = Environment.GetEnvironmentVariable(
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
-            ?? throw new InvalidOperationException(
-                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
+        var connectionString = RabbitMqTestEnvironment.GetRequiredConnectionString();
 
         var suffix = Guid.NewGuid().ToString("N");
         var exchange = $"kubejob.test.ingress.{suffix}";

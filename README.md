@@ -83,6 +83,11 @@ Provides:
 - transport-level retry/dead-letter handling
 - decoupled consumers
 
+BrokerNative delivery is at-least-once. It deliberately rejects
+`JobEnqueueOptions.IdempotencyKey`, because durable KubeJob-side de-duplication
+belongs to the Managed Runtime. Use a PostgresManaged queue when KubeJob must
+own that guarantee, or make the handler idempotent with a business key.
+
 ## Performance
 
 Benchmark results (environment dependent):

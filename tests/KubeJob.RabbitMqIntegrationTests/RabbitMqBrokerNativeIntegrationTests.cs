@@ -18,13 +18,10 @@ public sealed class RabbitMqBrokerNativeIntegrationTests
 {
     private static readonly JobKey<OrderCreatedPayload> JobKey = new("order.created");
 
-    [Fact]
+    [RabbitMqFact]
     public async Task BrokerNative_executes_and_retries_without_control_plane_runtime()
     {
-        var connectionString = Environment.GetEnvironmentVariable(
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
-            ?? throw new InvalidOperationException(
-                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
+        var connectionString = RabbitMqTestEnvironment.GetRequiredConnectionString();
 
         var suffix = Guid.NewGuid().ToString("N");
         var exchange = $"kubejob.test.native.jobs.{suffix}";

@@ -44,6 +44,43 @@ public sealed class RabbitMqNotificationTests
     }
 
     [Fact]
+    public async Task Broker_native_submission_rejects_managed_idempotency_and_missing_transport_capabilities()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKubeJobServer();
+        services.ConfigureKubeJobQueueRuntimes(options =>
+        {
+            options.Queues["orders"] = new QueueRuntimeRoute
+            {
+                Mode = QueueRuntimeMode.BrokerNative,
+                TransportId = "test"
+            };
+        });
+        var publisher = new TestTransportPublisher(MessageTransportCapabilities.None);
+        services.AddSingleton<IMessageTransportPublisher>(publisher);
+
+        using var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<KubeJob.Core.Client.IJobClient>();
+        var job = new KubeJob.Core.Jobs.JobKey<string>("orders");
+
+        var idempotency = async () => await client.EnqueueAsync(
+            job,
+            "payload",
+            new KubeJob.Core.Client.JobEnqueueOptions
+            {
+                IdempotencyKey = "order:42"
+            });
+        await idempotency.Should().ThrowAsync<NotSupportedException>()
+            .WithMessage("*IdempotencyKey*");
+
+        var durablePublish = async () => await client.EnqueueAsync(job, "payload");
+        await durablePublish.Should().ThrowAsync<NotSupportedException>()
+            .WithMessage("*DurablePublish*");
+        publisher.PublishCount.Should().Be(0);
+    }
+
+    [Fact]
     public void Business_ingress_registration_keeps_the_control_plane_ingress_seam()
     {
         var services = new ServiceCollection();
@@ -56,6 +93,28 @@ public sealed class RabbitMqNotificationTests
 
         provider.GetRequiredService<IJobMessageIngress>()
             .Should().BeOfType<JobMessageIngress>();
+    }
+
+    private sealed class TestTransportPublisher : IMessageTransportPublisher
+    {
+        public TestTransportPublisher(MessageTransportCapabilities capabilities)
+        {
+            Capabilities = capabilities;
+        }
+
+        public string TransportId => "test";
+
+        public MessageTransportCapabilities Capabilities { get; }
+
+        public int PublishCount { get; private set; }
+
+        public ValueTask PublishAsync(
+            TransportPublishRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            PublishCount++;
+            return ValueTask.CompletedTask;
+        }
     }
 
     [Fact]

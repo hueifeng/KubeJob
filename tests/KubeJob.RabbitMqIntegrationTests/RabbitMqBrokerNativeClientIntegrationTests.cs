@@ -20,13 +20,10 @@ public sealed class RabbitMqBrokerNativeClientIntegrationTests
 {
     private static readonly JobKey<OrderCreatedPayload> JobKey = new("order.created");
 
-    [Fact]
+    [RabbitMqFact]
     public async Task JobClient_routes_broker_native_queue_directly_to_transport_without_creating_run()
     {
-        var connectionString = Environment.GetEnvironmentVariable(
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
-            ?? throw new InvalidOperationException(
-                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
+        var connectionString = RabbitMqTestEnvironment.GetRequiredConnectionString();
 
         var suffix = Guid.NewGuid().ToString("N");
         var logicalQueue = "order.created";

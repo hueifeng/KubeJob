@@ -204,6 +204,7 @@ public sealed class DefaultJobClient : IJobClient
             ?? throw new InvalidOperationException(
                 $"BrokerNative queue '{queue}' does not have a transport configured.");
         var publisher = _transportRegistry.GetRequiredPublisher(transportId);
+        ValidateBrokerNativeCapabilities(publisher, queue, options.MaxAttempts);
 
         var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
         var messageId = Guid.NewGuid().ToString("N");
@@ -280,6 +281,16 @@ public sealed class DefaultJobClient : IJobClient
             throw Unsupported(queue, nameof(options.NotBefore));
         }
 
+        // BrokerNative intentionally has no durable KubeJob-side deduplication
+        // store. Keeping this option accepted would imply the PostgresManaged
+        // idempotency contract while retrying a timed-out publish could execute
+        // the handler more than once. Applications needing that guarantee must
+        // use a PostgresManaged queue or make the handler idempotent itself.
+        if (!string.IsNullOrWhiteSpace(options.IdempotencyKey))
+        {
+            throw Unsupported(queue, nameof(options.IdempotencyKey));
+        }
+
         if (!string.IsNullOrWhiteSpace(options.ConcurrencyKey))
         {
             throw new NotSupportedException(
@@ -300,6 +311,27 @@ public sealed class DefaultJobClient : IJobClient
         if (options.Compensation is not null)
         {
             throw Unsupported(queue, nameof(options.Compensation));
+        }
+    }
+
+    private static void ValidateBrokerNativeCapabilities(
+        IMessageTransportPublisher publisher,
+        string queue,
+        int maxAttempts)
+    {
+        if (!publisher.Capabilities.HasFlag(MessageTransportCapabilities.DurablePublish))
+        {
+            throw new NotSupportedException(
+                $"BrokerNative queue '{queue}' requires durable publish, but transport " +
+                $"'{publisher.TransportId}' does not advertise {nameof(MessageTransportCapabilities.DurablePublish)}.");
+        }
+
+        if (maxAttempts > 1
+            && !publisher.Capabilities.HasFlag(MessageTransportCapabilities.DeadLetter))
+        {
+            throw new NotSupportedException(
+                $"BrokerNative queue '{queue}' requests retries, but transport " +
+                $"'{publisher.TransportId}' does not advertise {nameof(MessageTransportCapabilities.DeadLetter)}.");
         }
     }
 

@@ -18,13 +18,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
     private static readonly EventKey<OrderCreatedEvent> OrderCreated =
         EventKey<OrderCreatedEvent>.Create("order.events", "order.created");
 
-    [Fact]
+    [RabbitMqFact]
     public async Task Event_fans_out_once_per_subscription_and_retry_is_subscription_scoped()
     {
-        var connectionString = Environment.GetEnvironmentVariable(
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
-            ?? throw new InvalidOperationException(
-                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
+        var connectionString = RabbitMqTestEnvironment.GetRequiredConnectionString();
 
         var suffix = Guid.NewGuid().ToString("N");
         var prefix = $"kubejob.test.events.{suffix}";
