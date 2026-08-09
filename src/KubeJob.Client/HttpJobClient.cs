@@ -167,7 +167,5 @@ public sealed class HttpJobClient : IJobClient
             options.ConcurrencyKey,
             options.MaxAttempts,
             checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
-            RetryPolicy: options.RetryPolicy,
-            Continuation: options.Continuation,
-            Compensation: options.Compensation);
+            RetryPolicy: options.RetryPolicy);
 }

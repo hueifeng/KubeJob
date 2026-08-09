@@ -33,8 +33,6 @@ public sealed class CronScheduleOptions
     public bool Enabled { get; init; } = true;
     public string? ConcurrencyKey { get; init; }
     public RetryPolicy? RetryPolicy { get; init; }
-    public Continuation? Continuation { get; init; }
-    public Compensation? Compensation { get; init; }
 
     public void Validate()
     {
@@ -94,9 +92,7 @@ public sealed record JobScheduleSnapshot(
     MisfirePolicy MisfirePolicy,
     ScheduleConcurrencyPolicy ConcurrencyPolicy,
     string? ConcurrencyKey = null,
-    RetryPolicy? RetryPolicy = null,
-    Continuation? Continuation = null,
-    Compensation? Compensation = null)
+    RetryPolicy? RetryPolicy = null)
 {
     public JobScheduleSnapshot(
         string ScheduleId,
@@ -118,8 +114,6 @@ public sealed record JobScheduleSnapshot(
             LastFireAt,
             MisfirePolicy,
             ConcurrencyPolicy,
-            null,
-            null,
             null,
             null)
     {

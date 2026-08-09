@@ -227,8 +227,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                    OrderingSequence,
                    ScheduleId,
                    ScheduledFor,
-                   ParentRunId,
-                   RelationKind,
                    CurrentWorkerId,
                    CancelRequested,
                    FailureCode,

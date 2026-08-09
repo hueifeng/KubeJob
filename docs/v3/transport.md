@@ -62,9 +62,8 @@ does not maintain a KubeJob de-duplication table, so the option is rejected
 instead of being accepted with weaker semantics. Put a business identifier in
 the payload and make the handler check it if de-duplication is required.
 
-The same rule applies to managed scheduling, priority, continuations, and
-compensations: configure a managed queue when KubeJob must own those state
-transitions.
+The same rule applies to managed scheduling and priority: configure a managed
+queue when KubeJob must own those state transitions.
 
 ## Adding another broker
 

@@ -90,7 +90,7 @@ public sealed class ControlPlaneTests
     }
 
     [Fact]
-    public async Task Job_submission_rejects_invalid_retry_and_terminal_action_configuration()
+    public async Task Job_submission_rejects_invalid_retry_configuration()
     {
         using var provider = CreateProvider();
         var controlPlane = provider.GetRequiredService<JobControlPlane>();
@@ -106,39 +106,6 @@ public sealed class ControlPlaneTests
         var retryException = await invalidRetry.Should().ThrowAsync<ControlPlaneValidationException>();
         retryException.Which.Code.Should().Be("invalid_job_retry_policy");
 
-        var invalidAction = async () => await controlPlane.SubmitAsync(
-            new EnqueueJobRequest(
-                "sample.data",
-                "{}",
-                Continuation: new Continuation
-                {
-                    JobKey = "sample.followup",
-                    PayloadJson = "not-json",
-                    Trigger = ContinuationTrigger.OnSuccess
-                }));
-        var actionException = await invalidAction.Should().ThrowAsync<ControlPlaneValidationException>();
-        actionException.Which.Code.Should().Be("invalid_job_terminal_action");
-    }
-
-    [Fact]
-    public async Task Job_submission_rejects_cross_queue_terminal_actions_until_their_route_is_resolved()
-    {
-        using var provider = CreateProvider();
-        var controlPlane = provider.GetRequiredService<JobControlPlane>();
-
-        var invalid = async () => await controlPlane.SubmitAsync(
-            new EnqueueJobRequest(
-                "sample.data",
-                "{}",
-                Queue: "orders.push",
-                Continuation: new Continuation
-                {
-                    JobKey = "sample.followup",
-                    Queue = "billing.push"
-                }));
-
-        var exception = await invalid.Should().ThrowAsync<ControlPlaneValidationException>();
-        exception.Which.Code.Should().Be("cross_queue_terminal_action_not_supported");
     }
 
     [Fact]

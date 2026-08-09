@@ -55,10 +55,9 @@ public static class RabbitMqNotificationExtensions
     }
 
     /// <summary>
-    /// Adds the RabbitMQ Event subscription data plane. Each logical
-    /// (Topic, Subscription) owns one queue, and all replicas of that
-    /// subscription compete for deliveries. Distinct subscriptions receive
-    /// independent event copies. Retry and DLQ remain subscription-scoped.
+    /// Adds the RabbitMQ Event subscription data plane. Event handlers use the
+    /// fixed log, data, or notify queue; replicas of each queue compete for
+    /// deliveries while the three queues receive independent event copies.
     /// </summary>
     public static IServiceCollection AddRabbitMqKubeJobEventConsumer(
         this IServiceCollection services,

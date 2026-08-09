@@ -26,8 +26,6 @@ public sealed class JobScheduleRecord
     public int TimeoutSeconds { get; init; } = 300;
     public string? ConcurrencyKey { get; init; }
     public RetryPolicy? RetryPolicy { get; init; }
-    public Continuation? Continuation { get; init; }
-    public Compensation? Compensation { get; init; }
     public bool Enabled { get; set; } = true;
     public DateTimeOffset NextFireAt { get; set; }
     public DateTimeOffset? LastFireAt { get; set; }

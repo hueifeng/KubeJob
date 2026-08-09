@@ -31,6 +31,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
             ConnectionString = connectionString,
             QueuePrefix = prefix,
             ExchangeName = $"{prefix}.jobs",
+            EventExchangeName = $"{prefix}.events",
+            LogEventQueueName = $"{prefix}.log",
+            DataEventQueueName = $"{prefix}.data",
+            NotifyEventQueueName = $"{prefix}.notify",
             PrefetchCount = 8,
             RetryDelay = TimeSpan.FromMilliseconds(100),
             ReconnectDelay = TimeSpan.FromMilliseconds(100)
@@ -50,10 +54,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
                 });
                 services.AddKubeJobEventHandler<OrderCreatedEvent, BusinessOrderCreatedHandler>(
                     OrderCreated,
-                    "order-business");
+                    "data");
                 services.AddKubeJobEventHandler<OrderCreatedEvent, OrderLogHandler>(
                     OrderCreated,
-                    "order-log");
+                    "log");
 
                 services.AddOptions<EventRuntimeOptions>();
                 services.Configure<EventRuntimeOptions>(options =>
@@ -66,6 +70,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
                     options.ConnectionString = transportOptions.ConnectionString;
                     options.QueuePrefix = transportOptions.QueuePrefix;
                     options.ExchangeName = transportOptions.ExchangeName;
+                    options.EventExchangeName = transportOptions.EventExchangeName;
+                    options.LogEventQueueName = transportOptions.LogEventQueueName;
+                    options.DataEventQueueName = transportOptions.DataEventQueueName;
+                    options.NotifyEventQueueName = transportOptions.NotifyEventQueueName;
                     options.PrefetchCount = transportOptions.PrefetchCount;
                     options.RetryDelay = transportOptions.RetryDelay;
                     options.ReconnectDelay = transportOptions.ReconnectDelay;
@@ -82,10 +90,10 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
         {
             var businessQueue = transportOptions.GetEventSubscriptionQueueName(
                 OrderCreated.Topic,
-                "order-business");
+                "data");
             var logQueue = transportOptions.GetEventSubscriptionQueueName(
                 OrderCreated.Topic,
-                "order-log");
+                "log");
             await EventuallyAsync(
                 async () => await HasConsumerAsync(connectionString, businessQueue)
                     && await HasConsumerAsync(connectionString, logQueue),
@@ -178,7 +186,7 @@ public sealed class RabbitMqEventRuntimeIntegrationTests
     {
         using var connection = CreateConnection(connectionString);
         using var channel = connection.CreateModel();
-        foreach (var subscription in new[] { "order-business", "order-log" })
+        foreach (var subscription in new[] { "data", "log", "notify" })
         {
             TryDeleteQueue(channel, options.GetEventSubscriptionQueueName(OrderCreated.Topic, subscription));
             TryDeleteQueue(channel, options.GetEventRetryQueueName(OrderCreated.Topic, subscription));

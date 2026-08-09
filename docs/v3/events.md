@@ -1,17 +1,16 @@
 # Event subscriptions
 
-BrokerNative events are published once and delivered to each named
-subscription. A subscription is a durable consumer queue, not just a label in
-application code.
+BrokerNative events are published to the shared `order.exchange` and delivered
+to the fixed `log.queue`, `data.queue`, and `notify.queue` capability queues.
 
 ```text
-topic + routing key → exchange/topic → subscription queue → handler → ACK
+topic + routing key → order.exchange → capability queue → handler → ACK
 ```
 
 ## Register a subscription
 
-The topic and routing key identify the event. The subscription name identifies
-one independent delivery stream:
+The topic and routing key identify the event. The subscription selects one of
+the fixed capability queues: `log`, `data`, or `notify`.
 
 ```csharp
 var orderCreated = EventKey<OrderCreated>.Create(
@@ -20,12 +19,12 @@ var orderCreated = EventKey<OrderCreated>.Create(
 
 builder.Services.AddKubeJobEventHandler<OrderCreated, AuditOrderCreated>(
     orderCreated,
-    subscription: "order-audit");
+    subscription: "log");
 ```
 
-Every replica of the audit service should use `order-audit`; those replicas
-compete for one queue. A separate service should use another name, such as
-`order-search-index`, to receive its own copy.
+Every replica using `log` competes for `log.queue`. Use `data` or `notify`
+when a separate capability needs its own copy; arbitrary subscription queues
+are intentionally not created.
 
 Map the topic to a transport and start the event consumer:
 
@@ -40,12 +39,11 @@ builder.Services.AddRabbitMqKubeJobEventConsumer(options =>
 ## Retry and dead letters
 
 An acknowledgement is sent only after the handler returns successfully. If a
-handler fails, the broker retries that subscription. A terminal failure goes to
-the subscription's dead-letter route; it is not republished to every other
-subscriber.
+handler fails, the broker retries that capability queue. A terminal failure
+goes to that queue's dead-letter route; it is not republished to every other
+capability queue.
 
-This means each subscription can choose its own retry count, dead-letter
-retention, and operational owner. KubeJob does not write an event history to
+KubeJob does not write an event history to
 the managed job tables. If the application needs an audit trail, store the
 event id and business identifiers in an application table or an observability
 pipeline.

@@ -43,24 +43,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var retryPolicyJson = command.RetryPolicy is not null
             ? JsonSerializer.Serialize(command.RetryPolicy, SerializerOptions)
             : null;
-        var continuationJson = command.Continuation is not null
-            ? JsonSerializer.Serialize(command.Continuation, SerializerOptions)
-            : null;
-        var compensationJson = command.Compensation is not null
-            ? JsonSerializer.Serialize(command.Compensation, SerializerOptions)
-            : null;
 
         var inserted = await connection.QuerySingleOrDefaultAsync<JobRunRecord>(new CommandDefinition(@"
             INSERT INTO Kj2_JobRuns
                 (Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, Priority, Phase, AvailableAt,
                  CreatedAt, AttemptCount, MaxAttempts, TimeoutSeconds, RetryPolicyJson,
-                 ContinuationJson, CompensationJson,
                  IdempotencyKey, ConcurrencyKey, OrderingMode, CancelRequested, Version)
             VALUES
                 (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, NULL, @Priority,
                  @Phase, @AvailableAt, clock_timestamp(), 0, @MaxAttempts,
                  @TimeoutSeconds, CAST(@RetryPolicyJson AS jsonb),
-                 CAST(@ContinuationJson AS jsonb), CAST(@CompensationJson AS jsonb),
                  @IdempotencyKey, @ConcurrencyKey, @OrderingMode, FALSE, 0)
             ON CONFLICT (IdempotencyKey) DO NOTHING
             RETURNING *;",
@@ -79,8 +71,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 command.MaxAttempts,
                 command.TimeoutSeconds,
                 RetryPolicyJson = retryPolicyJson,
-                ContinuationJson = continuationJson,
-                CompensationJson = compensationJson,
                 command.IdempotencyKey,
                 command.ConcurrencyKey,
                 OrderingMode = (int)target.OrderingMode
@@ -149,8 +139,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var maxAttempts = new int[count];
         var timeouts = new int[count];
         var retryPolicyJsons = new string?[count];
-        var continuationJsons = new string?[count];
-        var compensationJsons = new string?[count];
         var idempotencyKeys = new string?[count];
         var concurrencyKeys = new string?[count];
         var targets = new DeliveryTarget[count];
@@ -175,10 +163,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             timeouts[index] = command.TimeoutSeconds;
             retryPolicyJsons[index] = command.RetryPolicy is not null
                 ? JsonSerializer.Serialize(command.RetryPolicy, SerializerOptions) : null;
-            continuationJsons[index] = command.Continuation is not null
-                ? JsonSerializer.Serialize(command.Continuation, SerializerOptions) : null;
-            compensationJsons[index] = command.Compensation is not null
-                ? JsonSerializer.Serialize(command.Compensation, SerializerOptions) : null;
             idempotencyKeys[index] = command.IdempotencyKey;
             concurrencyKeys[index] = command.ConcurrencyKey;
             targets[index] = target;
@@ -188,13 +172,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
             INSERT INTO Kj2_JobRuns
                 (Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, Priority, Phase, AvailableAt,
                  CreatedAt, AttemptCount, MaxAttempts, TimeoutSeconds, RetryPolicyJson,
-                 ContinuationJson, CompensationJson,
                  IdempotencyKey, ConcurrencyKey, OrderingMode, CancelRequested, Version)
             SELECT
                 item.Id, item.JobKey, CAST(item.PayloadJson AS jsonb), item.Queue, item.ExecutionLane, item.DeliveryProfile, item.ConsumerGroup,
                 item.TransportId, item.Priority, @Pending, item.AvailableAt, clock_timestamp(), 0, item.MaxAttempts,
                 item.TimeoutSeconds, CAST(item.RetryPolicyJson AS jsonb),
-                CAST(item.ContinuationJson AS jsonb), CAST(item.CompensationJson AS jsonb),
                 item.IdempotencyKey, item.ConcurrencyKey, item.OrderingMode, FALSE, 0
             FROM unnest(
                 CAST(@Ids AS text[]),
@@ -210,14 +192,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 CAST(@MaxAttempts AS int[]),
                 CAST(@Timeouts AS int[]),
                 CAST(@RetryPolicyJsons AS text[]),
-                CAST(@ContinuationJsons AS text[]),
-                CAST(@CompensationJsons AS text[]),
                 CAST(@IdempotencyKeys AS text[]),
                 CAST(@ConcurrencyKeys AS text[]),
                 CAST(@OrderingModes AS int[]))
                 AS item(Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, Priority,
                         AvailableAt, MaxAttempts, TimeoutSeconds, RetryPolicyJson,
-                        ContinuationJson, CompensationJson,
                         IdempotencyKey, ConcurrencyKey, OrderingMode)
             ON CONFLICT (IdempotencyKey) DO NOTHING
             RETURNING *;",
@@ -236,8 +215,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 MaxAttempts = maxAttempts,
                 Timeouts = timeouts,
                 RetryPolicyJsons = retryPolicyJsons,
-                ContinuationJsons = continuationJsons,
-                CompensationJsons = compensationJsons,
                 IdempotencyKeys = idempotencyKeys,
                 ConcurrencyKeys = concurrencyKeys,
                 OrderingModes = targets.Select(target => (int)target.OrderingMode).ToArray(),

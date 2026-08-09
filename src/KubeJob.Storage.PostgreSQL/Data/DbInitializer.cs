@@ -6,7 +6,7 @@ namespace KubeJob.Storage.PostgreSQL.Data;
 
 public sealed class DbInitializer : IStorageInitializer
 {
-    public const int CurrentSchemaVersion = 13;
+    public const int CurrentSchemaVersion = 14;
 
     private readonly string _connectionString;
 
@@ -59,13 +59,9 @@ public sealed class DbInitializer : IStorageInitializer
                 MaxAttempts INTEGER NOT NULL,
                 TimeoutSeconds INTEGER NOT NULL,
                 RetryPolicyJson JSONB,
-                ContinuationJson JSONB,
-                CompensationJson JSONB,
                 IdempotencyKey VARCHAR(500),
                 ConcurrencyKey VARCHAR(500),
                 OrderingMode INTEGER NOT NULL DEFAULT 0,
-                ParentRunId VARCHAR(64),
-                RelationKind INTEGER NOT NULL DEFAULT 0,
                 OrderingSequence BIGINT NOT NULL DEFAULT nextval('Kj2_JobRunOrderSequence'),
                 ScheduleId VARCHAR(200),
                 ScheduledFor TIMESTAMPTZ,
@@ -106,10 +102,6 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_KeyOrderedHead
                 ON Kj2_JobRuns (Queue, ConcurrencyKey, OrderingSequence)
                 WHERE OrderingMode = 1 AND Phase IN (0, 1) AND ConcurrencyKey IS NOT NULL;
-
-            CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_ParentRelation
-                ON Kj2_JobRuns (ParentRunId, RelationKind)
-                WHERE ParentRunId IS NOT NULL;
 
             CREATE UNIQUE INDEX IF NOT EXISTS UQ_Kj2_JobRuns_ScheduleOccurrence
                 ON Kj2_JobRuns (ScheduleId, ScheduledFor)
@@ -234,8 +226,6 @@ public sealed class DbInitializer : IStorageInitializer
                 TimeoutSeconds INTEGER NOT NULL,
                 ConcurrencyKey VARCHAR(500),
                 RetryPolicyJson JSONB,
-                ContinuationJson JSONB,
-                CompensationJson JSONB,
                 Enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 NextFireAt TIMESTAMPTZ NOT NULL,
                 LastFireAt TIMESTAMPTZ,
@@ -369,13 +359,10 @@ public sealed class DbInitializer : IStorageInitializer
             }
             if (appliedVersion < 6)
             {
-                // v5 -> v6: add RetryPolicyJson, ContinuationJson, CompensationJson
-                // columns to Kj2_JobRuns. Additive: null means no per-run override.
+                // v5 -> v6: add the optional per-run retry policy.
                 connection.Execute(@"
                     ALTER TABLE Kj2_JobRuns
-                        ADD COLUMN IF NOT EXISTS RetryPolicyJson JSONB,
-                        ADD COLUMN IF NOT EXISTS ContinuationJson JSONB,
-                        ADD COLUMN IF NOT EXISTS CompensationJson JSONB;");
+                        ADD COLUMN IF NOT EXISTS RetryPolicyJson JSONB;");
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (6, CURRENT_TIMESTAMP);");
             }
@@ -422,22 +409,11 @@ public sealed class DbInitializer : IStorageInitializer
             }
             if (appliedVersion < 11)
             {
-                // v10 -> v11: make terminal-action lineage and scheduled Run
-                // policy durable in both adapters. Existing rows represent
-                // root runs and schedules, so the additive defaults preserve
-                // their behavior.
+                // v10 -> v11: persist per-schedule concurrency and retry policy.
                 connection.Execute(@"
-                    ALTER TABLE Kj2_JobRuns
-                        ADD COLUMN IF NOT EXISTS ParentRunId VARCHAR(64),
-                        ADD COLUMN IF NOT EXISTS RelationKind INTEGER NOT NULL DEFAULT 0;
-                    CREATE INDEX IF NOT EXISTS IX_Kj2_JobRuns_ParentRelation
-                        ON Kj2_JobRuns (ParentRunId, RelationKind)
-                        WHERE ParentRunId IS NOT NULL;
                     ALTER TABLE Kj2_JobSchedules
                         ADD COLUMN IF NOT EXISTS ConcurrencyKey VARCHAR(500),
-                        ADD COLUMN IF NOT EXISTS RetryPolicyJson JSONB,
-                        ADD COLUMN IF NOT EXISTS ContinuationJson JSONB,
-                        ADD COLUMN IF NOT EXISTS CompensationJson JSONB;");
+                        ADD COLUMN IF NOT EXISTS RetryPolicyJson JSONB;");
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (11, CURRENT_TIMESTAMP);");
             }
@@ -480,6 +456,22 @@ public sealed class DbInitializer : IStorageInitializer
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (13, CURRENT_TIMESTAMP);");
             }
+            if (appliedVersion < 14)
+            {
+                // V2 removes workflow-style terminal actions and their lineage.
+                connection.Execute(@"
+                    DROP INDEX IF EXISTS IX_Kj2_JobRuns_ParentRelation;
+                    ALTER TABLE Kj2_JobRuns
+                        DROP COLUMN IF EXISTS ContinuationJson,
+                        DROP COLUMN IF EXISTS CompensationJson,
+                        DROP COLUMN IF EXISTS ParentRunId,
+                        DROP COLUMN IF EXISTS RelationKind;
+                    ALTER TABLE Kj2_JobSchedules
+                        DROP COLUMN IF EXISTS ContinuationJson,
+                        DROP COLUMN IF EXISTS CompensationJson;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (14, CURRENT_TIMESTAMP);");
+            }
             if (appliedVersion > CurrentSchemaVersion)
             {
                 throw new InvalidOperationException(
@@ -505,10 +497,6 @@ public sealed class DbInitializer : IStorageInitializer
                 ('Kj2_JobRuns', 'ExecutionLane'),
                 ('Kj2_JobRuns', 'CancelRequested'),
                 ('Kj2_JobRuns', 'RetryPolicyJson'),
-                ('Kj2_JobRuns', 'ContinuationJson'),
-                ('Kj2_JobRuns', 'CompensationJson'),
-                ('Kj2_JobRuns', 'ParentRunId'),
-                ('Kj2_JobRuns', 'RelationKind'),
                 ('Kj2_JobRuns', 'Version'),
                 ('Kj2_JobRuns', 'FenceVersion'),
                 ('Kj2_JobAttempts', 'RunId'),
@@ -526,8 +514,6 @@ public sealed class DbInitializer : IStorageInitializer
                 ('Kj2_JobSchedules', 'OrderingMode'),
                 ('Kj2_JobSchedules', 'ConcurrencyKey'),
                 ('Kj2_JobSchedules', 'RetryPolicyJson'),
-                ('Kj2_JobSchedules', 'ContinuationJson'),
-                ('Kj2_JobSchedules', 'CompensationJson'),
                 ('Kj2_Outbox', 'EventType'),
                 ('Kj2_Outbox', 'ExecutionLane'),
                 ('Kj2_Outbox', 'OrderingMode'),

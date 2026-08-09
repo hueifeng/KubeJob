@@ -50,11 +50,8 @@ public sealed partial class PostgreSqlJobRuntimeStore :
         // convert DateTime to DateTimeOffset for scalar queries.
         SqlMapper.AddTypeHandler(UtcDateTimeOffsetHandler.Instance);
 
-        // JSONB columns are named *Json while their CLR properties are not
-        // (ContinuationJson -> JobRunRecord.Continuation). Dapper's default
-        // name matching cannot pair them, so every read path returned null
-        // for these fields. The type map below strips the suffix for both Run
-        // and Schedule records, and the handlers decode the JSON cells.
+        // Retry policy JSON columns use an *Json storage suffix. The type map
+        // strips that suffix for the corresponding runtime model property.
         SqlMapper.SetTypeMap(
             typeof(JobRunRecord),
             new JsonSuffixTypeMap(typeof(JobRunRecord)));
@@ -62,8 +59,6 @@ public sealed partial class PostgreSqlJobRuntimeStore :
             typeof(JobScheduleRecord),
             new JsonSuffixTypeMap(typeof(JobScheduleRecord)));
         SqlMapper.AddTypeHandler(RetryPolicyJsonHandler.Instance);
-        SqlMapper.AddTypeHandler(ContinuationJsonHandler.Instance);
-        SqlMapper.AddTypeHandler(CompensationJsonHandler.Instance);
     }
 
     public PostgreSqlJobRuntimeStore(NpgsqlDataSource dataSource)
@@ -185,10 +180,9 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     }
 
     /// <summary>
-    /// Maps <c>*Json</c> columns to their unsuffixed CLR properties
-    /// (e.g. <c>ContinuationJson</c> → <see cref="JobRunRecord.Continuation"/>),
-    /// which Dapper's default name matching cannot do. JSON cell decoding is
-    /// handled by the per-type handlers.
+    /// Maps <c>*Json</c> columns to their unsuffixed CLR properties, which
+    /// Dapper's default name matching cannot do. JSON cell decoding is handled
+    /// by the per-type handlers.
     /// </summary>
     private sealed class JsonSuffixTypeMap : SqlMapper.ITypeMap
     {
@@ -216,30 +210,13 @@ public sealed partial class PostgreSqlJobRuntimeStore :
                 return member;
             }
 
-            // PostgreSQL folds unquoted identifiers to lowercase, so the raw
-            // column name is "continuationjson" rather than "ContinuationJson".
+            // PostgreSQL folds unquoted identifiers to lowercase.
             if (columnName.EndsWith("Json", StringComparison.OrdinalIgnoreCase))
             {
                 return _inner.GetMember(columnName[..^"Json".Length]);
             }
 
             return null;
-        }
-    }
-
-    private sealed class ContinuationJsonHandler : SqlMapper.TypeHandler<Continuation>
-    {
-        public static ContinuationJsonHandler Instance { get; } = new();
-
-        public override Continuation Parse(object value) =>
-            JsonSerializer.Deserialize<Continuation>(
-                (string)value,
-                SerializerOptions)!;
-
-        public override void SetValue(IDbDataParameter parameter, Continuation? value)
-        {
-            parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
-            parameter.DbType = DbType.String;
         }
     }
 
@@ -253,22 +230,6 @@ public sealed partial class PostgreSqlJobRuntimeStore :
                 SerializerOptions)!;
 
         public override void SetValue(IDbDataParameter parameter, RetryPolicy? value)
-        {
-            parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
-            parameter.DbType = DbType.String;
-        }
-    }
-
-    private sealed class CompensationJsonHandler : SqlMapper.TypeHandler<Compensation>
-    {
-        public static CompensationJsonHandler Instance { get; } = new();
-
-        public override Compensation Parse(object value) =>
-            JsonSerializer.Deserialize<Compensation>(
-                (string)value,
-                SerializerOptions)!;
-
-        public override void SetValue(IDbDataParameter parameter, Compensation? value)
         {
             parameter.Value = JsonSerializer.Serialize(value, SerializerOptions);
             parameter.DbType = DbType.String;

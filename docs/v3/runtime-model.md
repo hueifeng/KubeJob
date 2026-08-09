@@ -95,9 +95,9 @@ Choose this path when:
   controls;
 - the handler can safely process a duplicate message using a business key.
 
-Managed-only options such as `IdempotencyKey`, `NotBefore`, `Priority`,
-continuations, and compensations are rejected on BrokerNative queues. If the
-application needs those semantics, use a PostgresManaged queue instead.
+Managed-only options such as `IdempotencyKey`, `NotBefore`, and `Priority` are
+rejected on BrokerNative queues. If the application needs those semantics, use
+a PostgresManaged queue instead.
 
 ## What the split means in practice
 

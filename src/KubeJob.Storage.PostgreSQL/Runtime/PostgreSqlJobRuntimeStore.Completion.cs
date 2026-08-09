@@ -72,9 +72,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.ConcurrencyKey,
                 run.RetryPolicyJson,
                 run.Priority,
-                run.TimeoutSeconds,
-                run.ContinuationJson,
-                run.CompensationJson
+                run.TimeoutSeconds
             FROM Kj2_JobAttempts attempt
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
             WHERE attempt.Id = @AttemptId
@@ -145,13 +143,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                         null,
                         null,
                         cancellationToken);
-                    await FireTerminalActionsAsync(
-                        connection,
-                        transaction,
-                        state,
-                        request.Outcome,
-                        now,
-                        cancellationToken);
                     break;
 
                 case JobAttemptOutcome.PermanentFailure:
@@ -164,13 +155,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                         now,
                         request.FailureCode,
                         request.FailureMessage,
-                        cancellationToken);
-                    await FireTerminalActionsAsync(
-                        connection,
-                        transaction,
-                        state,
-                        request.Outcome,
-                        now,
                         cancellationToken);
                     break;
 
@@ -218,13 +202,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                             request.FailureCode,
                             request.FailureMessage,
                             cancellationToken);
-                        await FireTerminalActionsAsync(
-                            connection,
-                            transaction,
-                            state,
-                            request.Outcome,
-                            now,
-                            cancellationToken);
                     }
                     break;
 
@@ -240,132 +217,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new CompleteAttemptResponse(true, phase, requeued);
-    }
-
-    /// <summary>
-    /// Enqueues continuation/compensation jobs inside the completion transaction
-    /// when the run's configured actions match the attempt outcome. Mirrors the
-    /// in-memory store's fire-and-forget contract: a failure here must not fail
-    /// the parent completion, so unparseable action JSON is skipped.
-    /// </summary>
-    private async ValueTask FireTerminalActionsAsync(
-        NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
-        CompletionStateRow state,
-        JobAttemptOutcome outcome,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        if (state.ContinuationJson is null && state.CompensationJson is null)
-        {
-            return;
-        }
-
-        Continuation? continuation = null;
-        if (state.ContinuationJson is not null)
-        {
-            try
-            {
-                continuation = JsonSerializer.Deserialize<Continuation>(
-                    state.ContinuationJson, SerializerOptions);
-            }
-            catch (JsonException)
-            {
-                // Corrupt action JSON must not fail the parent completion.
-            }
-        }
-
-        Compensation? compensation = null;
-        if (state.CompensationJson is not null)
-        {
-            try
-            {
-                compensation = JsonSerializer.Deserialize<Compensation>(
-                    state.CompensationJson, SerializerOptions);
-            }
-            catch (JsonException)
-            {
-                // Corrupt action JSON must not fail the parent completion.
-            }
-        }
-
-        var parent = new FollowUpInheritance(
-            state.Queue,
-            state.DeliveryProfile,
-            state.ExecutionLane,
-            state.ConsumerGroup,
-            state.TransportId,
-            state.Priority,
-            state.MaxAttempts,
-            state.TimeoutSeconds,
-            state.OrderingMode,
-            state.ConcurrencyKey,
-            state.AttemptRunId);
-
-        var specs = new List<FollowUpRunSpec>(2);
-        if (continuation is { } continuationAction
-            && TerminalActionPlanner.PlanContinuation(continuationAction, outcome, parent) is { } continuationSpec)
-        {
-            specs.Add(continuationSpec);
-        }
-
-        if (compensation is { } compensationAction
-            && TerminalActionPlanner.PlanCompensation(compensationAction, outcome, parent) is { } compensationSpec)
-        {
-            specs.Add(compensationSpec);
-        }
-
-        foreach (var spec in specs)
-        {
-            var runId = NewId();
-            await connection.ExecuteAsync(new CommandDefinition(@"
-                INSERT INTO Kj2_JobRuns
-                    (Id, JobKey, PayloadJson, Queue, ExecutionLane, DeliveryProfile, ConsumerGroup, TransportId, Priority, Phase, AvailableAt,
-                     CreatedAt, AttemptCount, MaxAttempts, TimeoutSeconds, OrderingMode, ConcurrencyKey,
-                     ParentRunId, RelationKind, CancelRequested, Version)
-                VALUES
-                    (@Id, @JobKey, CAST(@PayloadJson AS jsonb), @Queue, @ExecutionLane, @DeliveryProfile, @ConsumerGroup, @TransportId, @Priority,
-                     @Pending, @AvailableAt, clock_timestamp(), 0, @MaxAttempts, @TimeoutSeconds, @OrderingMode, @ConcurrencyKey,
-                     @ParentRunId, @RelationKind, FALSE, 0);",
-                new
-                {
-                    Id = runId,
-                    spec.JobKey,
-                    spec.PayloadJson,
-                    spec.Queue,
-                    spec.ExecutionLane,
-                    DeliveryProfile = (int)spec.DeliveryProfile,
-                    spec.ConsumerGroup,
-                    spec.TransportId,
-                    spec.Priority,
-                    Pending = (int)JobPhase.Pending,
-                    AvailableAt = now,
-                    spec.MaxAttempts,
-                    spec.TimeoutSeconds,
-                    OrderingMode = (int)spec.OrderingMode,
-                    spec.ConcurrencyKey,
-                    ParentRunId = spec.ParentRunId,
-                    RelationKind = (int)spec.RelationKind
-                },
-                transaction,
-                cancellationToken: cancellationToken));
-
-            await AddOutboxAsync(
-                connection,
-                transaction,
-                spec.Queue,
-                OutboxEventTypes.WorkAvailable,
-                JsonSerializer.Serialize(new { runId, queue = spec.Queue }, SerializerOptions),
-                now,
-                cancellationToken,
-                new DeliveryTarget(
-                    spec.DeliveryProfile,
-                    spec.ExecutionLane,
-                    spec.TransportId,
-                    spec.ConsumerGroup,
-                    spec.OrderingMode),
-                partitionKey: spec.ConcurrencyKey);
-        }
     }
 
     public async ValueTask<IReadOnlyList<CompleteAttemptResponse>> CompleteBatchAsync(
@@ -469,8 +320,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.OrderingMode,
                 run.ConcurrencyKey,
                 run.RetryPolicyJson,
-                run.ContinuationJson,
-                run.CompensationJson,
                 run.Priority,
                 run.TimeoutSeconds
             FROM Kj2_JobAttempts attempt
@@ -590,30 +439,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             {
                 await SetTerminalRunBatchWithPhasesAsync(connection, transaction, terminal, now, cancellationToken);
 
-                // Keep the optimized batch state transition and the single-run
-                // terminal-action contract aligned. Actions are created in the
-                // same transaction, after the parent rows are terminal, so a
-                // successful batch cannot silently lose follow-up work.
-                foreach (var (request, _, state) in valid)
-                {
-                    var isCanceled = state.CancelRequested
-                        || request.Outcome == JobAttemptOutcome.Canceled;
-                    var isTerminal = request.Outcome is JobAttemptOutcome.Succeeded
-                        or JobAttemptOutcome.PermanentFailure
-                        || ((request.Outcome == JobAttemptOutcome.RetryableFailure
-                             || request.Outcome == JobAttemptOutcome.TimedOut)
-                            && state.AttemptCount >= state.MaxAttempts);
-                    if (!isCanceled && isTerminal)
-                    {
-                        await FireTerminalActionsAsync(
-                            connection,
-                            transaction,
-                            state,
-                            request.Outcome,
-                            now,
-                            cancellationToken);
-                    }
-                }
             }
 
             if (retryable.Count > 0)
@@ -855,8 +680,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 run.OrderingMode,
                 run.ConcurrencyKey,
                 run.RetryPolicyJson,
-                run.ContinuationJson,
-                run.CompensationJson,
                 run.Priority,
                 run.TimeoutSeconds
             FROM Kj2_JobAttempts attempt
@@ -974,17 +797,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
             failureCode,
             failureMessage,
             cancellationToken);
-
-        foreach (var state in dead)
-        {
-            await FireTerminalActionsAsync(
-                connection,
-                transaction,
-                state,
-                timeoutOnly ? JobAttemptOutcome.TimedOut : JobAttemptOutcome.RetryableFailure,
-                databaseNow,
-                cancellationToken);
-        }
 
         await DeleteCompletionIntentsAsync(
             connection,
@@ -1237,8 +1049,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public string? RetryPolicyJson { get; set; }
         public int Priority { get; set; }
         public int TimeoutSeconds { get; set; }
-        public string? ContinuationJson { get; set; }
-        public string? CompensationJson { get; set; }
     }
 
     /// <summary>

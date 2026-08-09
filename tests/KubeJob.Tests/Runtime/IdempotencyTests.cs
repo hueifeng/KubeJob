@@ -98,45 +98,9 @@ public sealed class IdempotencyTests
         await action.Should().ThrowAsync<IdempotencyConflictException>();
     }
 
-    [Fact]
-    public async Task Same_key_with_different_terminal_actions_throws_conflict()
-    {
-        var store = new InMemoryJobRuntimeStore();
-        await store.SubmitAsync(
-            NewCommand(
-                "{\"id\":42}",
-                continuation: new Continuation
-                {
-                    JobKey = "mail.followup",
-                    PayloadJson = "{\"id\":42}",
-                    Trigger = ContinuationTrigger.OnSuccess
-                },
-                compensation: new Compensation
-                {
-                    JobKey = "mail.compensate",
-                    PayloadJson = "{\"id\":42}"
-                }),
-            CancellationToken.None);
-
-        var action = async () => await store.SubmitAsync(
-            NewCommand(
-                "{\"id\":42}",
-                continuation: new Continuation
-                {
-                    JobKey = "mail.followup.v2",
-                    PayloadJson = "{\"id\":42}",
-                    Trigger = ContinuationTrigger.OnSuccess
-                }),
-            CancellationToken.None);
-
-        await action.Should().ThrowAsync<IdempotencyConflictException>();
-    }
-
     private static SubmitJobCommand NewCommand(
         string payloadJson,
-        RetryPolicy? retryPolicy = null,
-        Continuation? continuation = null,
-        Compensation? compensation = null) => new(
+        RetryPolicy? retryPolicy = null) => new(
         "mail.send",
         payloadJson,
         "default",
@@ -146,7 +110,5 @@ public sealed class IdempotencyTests
         null,
         1,
         300,
-        RetryPolicy: retryPolicy,
-        Continuation: continuation,
-        Compensation: compensation);
+        RetryPolicy: retryPolicy);
 }

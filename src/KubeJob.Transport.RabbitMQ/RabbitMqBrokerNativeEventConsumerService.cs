@@ -12,9 +12,9 @@ using RabbitMQ.Client.Events;
 namespace KubeJob.Transport.RabbitMQ;
 
 /// <summary>
-/// RabbitMQ Event Runtime. Each (Topic, Subscription) owns one physical queue;
-/// all replicas of the same subscription compete for deliveries while distinct
-/// subscriptions receive independent copies from the Topic exchange.
+/// RabbitMQ Event Runtime. The fixed log, data, and notify queues receive
+/// independent copies from the shared business exchange. All replicas bound to
+/// the same capability queue compete for deliveries.
 /// </summary>
 public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
 {
@@ -43,9 +43,9 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
 
         _groups = subscriptions
             .GroupBy(
-                item => (item.Topic, item.Subscription),
+                item => item.Subscription,
                 item => item)
-            .Select(group => CreateGroup(group.Key.Topic, group.Key.Subscription, group))
+            .Select(group => CreateGroup(group.Key, group))
             .ToArray();
 
         if (_groups.Length == 0)
@@ -118,9 +118,8 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
             var queue = RabbitMqEventTopology.DeclareSubscription(
                 consumeChannel,
                 _options,
-                group.Topic,
                 group.Subscription,
-                group.ByRoutingKey.Values);
+                group.ByEventKey.Values);
 
             var expectedGroup = group;
             var consumer = new AsyncEventingBasicConsumer(consumeChannel);
@@ -151,7 +150,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
         _logger.LogInformation(
             "RabbitMQ Event consumer active for worker {WorkerId}; subscriptions {Subscriptions}; concurrency {Concurrency}",
             _worker.WorkerId,
-            string.Join(",", _groups.Select(group => $"{group.Topic}/{group.Subscription}")),
+            string.Join(",", _groups.Select(group => group.Subscription)),
             _worker.MaxConcurrentJobs);
 
         await Task.WhenAny(
@@ -193,16 +192,10 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                 message = message with { RetryPolicy = message.RetryPolicy ?? _options.GetFallbackRetryPolicy() };
                 message.Validate();
 
-                if (!string.Equals(message.Topic, group.Topic, StringComparison.Ordinal))
+                if (!group.ByEventKey.TryGetValue(EventKey(message.Topic, message.RoutingKey), out definition!))
                 {
                     throw new JsonException(
-                        $"Event topic '{message.Topic}' does not match subscription topic '{group.Topic}'.");
-                }
-
-                if (!group.ByRoutingKey.TryGetValue(message.RoutingKey, out definition!))
-                {
-                    throw new JsonException(
-                        $"No handler in subscription '{group.Subscription}' accepts routing key '{message.RoutingKey}'.");
+                        $"No handler in subscription '{group.Subscription}' accepts event '{message.Topic}/{message.RoutingKey}'.");
                 }
             }
             catch (Exception exception) when (
@@ -211,9 +204,8 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                 Reject(consumeChannel, consumeChannelGate, delivery.DeliveryTag);
                 _logger.LogWarning(
                     exception,
-                    "Dead-lettered malformed Event delivery {DeliveryTag} for {Topic}/{Subscription}",
+                    "Dead-lettered malformed Event delivery {DeliveryTag} for subscription {Subscription}",
                     delivery.DeliveryTag,
-                    group.Topic,
                     group.Subscription);
                 return;
             }
@@ -330,7 +322,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                 properties.Headers["x-kubejob-subscription"] = group.Subscription;
 
                 publishChannel.BasicPublish(
-                    _options.GetEventRetryExchangeName(group.Topic),
+                    _options.GetEventRetryExchangeName(retryMessage.Topic),
                     group.Subscription,
                     mandatory: true,
                     basicProperties: properties,
@@ -346,7 +338,7 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
                 if (returned is not null)
                 {
                     throw new IOException(
-                        $"RabbitMQ could not route event retry for '{group.Topic}/{group.Subscription}'.");
+                        $"RabbitMQ could not route event retry for subscription '{group.Subscription}'.");
                 }
 
                 Ack(consumeChannel, consumeChannelGate, original.DeliveryTag);
@@ -359,23 +351,25 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
     }
 
     private static SubscriptionGroup CreateGroup(
-        string topic,
         string subscription,
         IEnumerable<EventSubscriptionDefinition> definitions)
     {
-        var byRoutingKey = new Dictionary<string, EventSubscriptionDefinition>(StringComparer.Ordinal);
+        var byEventKey = new Dictionary<string, EventSubscriptionDefinition>(StringComparer.Ordinal);
         foreach (var definition in definitions)
         {
-            if (!byRoutingKey.TryAdd(definition.RoutingKey, definition))
+            var eventKey = EventKey(definition.Topic, definition.RoutingKey);
+            if (!byEventKey.TryAdd(eventKey, definition))
             {
                 throw new InvalidOperationException(
-                    $"Subscription '{topic}/{subscription}' has multiple handlers for routing key " +
-                    $"'{definition.RoutingKey}'. Use separate Subscription names for independent consumers.");
+                    $"Subscription '{subscription}' has multiple handlers for event " +
+                    $"'{definition.Topic}/{definition.RoutingKey}'.");
             }
         }
 
-        return new SubscriptionGroup(topic, subscription, byRoutingKey);
+        return new SubscriptionGroup(subscription, byEventKey);
     }
+
+    private static string EventKey(string topic, string routingKey) => $"{topic}\n{routingKey}";
 
     private static void Ack(IModel channel, object gate, ulong deliveryTag)
     {
@@ -411,7 +405,6 @@ public sealed class RabbitMqBrokerNativeEventConsumerService : BackgroundService
     }
 
     private sealed record SubscriptionGroup(
-        string Topic,
         string Subscription,
-        IReadOnlyDictionary<string, EventSubscriptionDefinition> ByRoutingKey);
+        IReadOnlyDictionary<string, EventSubscriptionDefinition> ByEventKey);
 }

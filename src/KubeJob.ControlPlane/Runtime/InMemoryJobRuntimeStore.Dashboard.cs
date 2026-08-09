@@ -347,8 +347,6 @@ public sealed partial class InMemoryJobRuntimeStore
             OrderingSequence = run.OrderingSequence,
             ScheduleId = run.ScheduleId,
             ScheduledFor = run.ScheduledFor,
-            ParentRunId = run.ParentRunId,
-            RelationKind = run.RelationKind,
             CurrentWorkerId = run.CurrentWorkerId,
             CancelRequested = run.CancelRequested,
             FailureCode = run.FailureCode,

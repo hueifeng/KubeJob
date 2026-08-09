@@ -7,7 +7,8 @@ namespace KubeJob.Transport.RabbitMQ;
 /// <summary>
 /// RabbitMQ data-plane options for BrokerNative jobs and events. Jobs use one
 /// direct exchange plus one execution queue per logical KubeJob Queue. Events
-/// use one topic exchange per logical Topic and one queue per Subscription.
+/// use the fixed business exchange and three capability queues: log, data, and
+/// notify. Retry/DLQ topology remains internal transport plumbing.
 /// Retry/DLQ topology remains internal transport plumbing.
 /// </summary>
 public sealed class RabbitMqBrokerNativeOptions
@@ -21,12 +22,20 @@ public sealed class RabbitMqBrokerNativeOptions
     /// </summary>
     public string ExchangeName { get; set; } = "kubejob.jobs";
 
-    /// <summary>
-    /// Prefix for physical execution queues and Event topic exchanges.
-    /// A logical queue "order.created" becomes "kubejob.order.created";
-    /// topic "order.events" becomes exchange "kubejob.order.events".
-    /// </summary>
+    /// <summary>Prefix for physical Job execution queues.</summary>
     public string QueuePrefix { get; set; } = "kubejob";
+
+    /// <summary>Business event exchange shared by all event types.</summary>
+    public string EventExchangeName { get; set; } = "order.exchange";
+
+    /// <summary>Fixed capability queue for logging event consumers.</summary>
+    public string LogEventQueueName { get; set; } = "log.queue";
+
+    /// <summary>Fixed capability queue for data event consumers.</summary>
+    public string DataEventQueueName { get; set; } = "data.queue";
+
+    /// <summary>Fixed capability queue for notification event consumers.</summary>
+    public string NotifyEventQueueName { get; set; } = "notify.queue";
 
     public ushort PrefetchCount { get; set; } = 64;
 
@@ -57,6 +66,10 @@ public sealed class RabbitMqBrokerNativeOptions
 
         ArgumentException.ThrowIfNullOrWhiteSpace(ExchangeName);
         ArgumentException.ThrowIfNullOrWhiteSpace(QueuePrefix);
+        ArgumentException.ThrowIfNullOrWhiteSpace(EventExchangeName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(LogEventQueueName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(DataEventQueueName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(NotifyEventQueueName);
 
         if (PrefetchCount == 0)
         {
@@ -87,6 +100,10 @@ public sealed class RabbitMqBrokerNativeOptions
         }
 
         ValidateTopologyName(ExchangeName, nameof(ExchangeName));
+        ValidateTopologyName(EventExchangeName, nameof(EventExchangeName));
+        ValidateTopologyName(LogEventQueueName, nameof(LogEventQueueName));
+        ValidateTopologyName(DataEventQueueName, nameof(DataEventQueueName));
+        ValidateTopologyName(NotifyEventQueueName, nameof(NotifyEventQueueName));
         _ = GetRetryExchangeName();
         _ = GetRetryQueueName();
         _ = GetDeadLetterExchangeName();
@@ -118,17 +135,21 @@ public sealed class RabbitMqBrokerNativeOptions
 
     public string GetEventExchangeName(string topic)
     {
-        var normalized = LogicalQueueName.Normalize(topic, nameof(topic));
-        return ValidateTopologyName($"{QueuePrefix}.{normalized}", "event exchange");
+        _ = LogicalQueueName.Normalize(topic, nameof(topic));
+        return EventExchangeName;
     }
 
     public string GetEventSubscriptionQueueName(string topic, string subscription)
     {
-        var normalizedTopic = LogicalQueueName.Normalize(topic, nameof(topic));
-        var normalizedSubscription = LogicalQueueName.Normalize(subscription, nameof(subscription));
-        return ValidateTopologyName(
-            $"{QueuePrefix}.{normalizedTopic}.{normalizedSubscription}",
-            "event subscription queue");
+        _ = LogicalQueueName.Normalize(topic, nameof(topic));
+        return LogicalQueueName.Normalize(subscription, nameof(subscription)) switch
+        {
+            "log" => LogEventQueueName,
+            "data" => DataEventQueueName,
+            "notify" => NotifyEventQueueName,
+            _ => throw new InvalidOperationException(
+                "RabbitMQ event subscriptions must target one of the fixed capability queues: log, data, or notify.")
+        };
     }
 
     public string GetEventRetryExchangeName(string topic)

@@ -102,8 +102,6 @@ public sealed partial class InMemoryJobRuntimeStore
             MaxAttempts = command.MaxAttempts,
             TimeoutSeconds = command.TimeoutSeconds,
             RetryPolicy = command.RetryPolicy,
-            Continuation = command.Continuation,
-            Compensation = command.Compensation,
             Phase = JobPhase.Pending
         };
 

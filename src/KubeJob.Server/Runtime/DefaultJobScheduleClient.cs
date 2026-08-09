@@ -48,9 +48,7 @@ public sealed class DefaultJobScheduleClient : IJobScheduleClient
                 checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
                 options.Enabled,
                 options.ConcurrencyKey,
-                options.RetryPolicy,
-                options.Continuation,
-                options.Compensation),
+                options.RetryPolicy),
             cancellationToken);
 
         return new JobScheduleHandle(scheduleId);

@@ -189,17 +189,7 @@ public sealed class ScheduleRuntimeTests
                 RetryPolicy: new RetryPolicy(
                     BackoffStrategy.Fixed,
                     TimeSpan.FromSeconds(1),
-                    TimeSpan.FromSeconds(1)),
-                Continuation: new Continuation
-                {
-                    JobKey = "report.followup",
-                    PayloadJson = "{}"
-                },
-                Compensation: new Compensation
-                {
-                    JobKey = "report.compensate",
-                    PayloadJson = "{}"
-                }));
+                    TimeSpan.FromSeconds(1))));
         var persistedSchedule = await store.GetAsync(
             "daily-report-routing",
             CancellationToken.None);
@@ -232,8 +222,6 @@ public sealed class ScheduleRuntimeTests
         persistedSchedule.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
         persistedSchedule.ConcurrencyKey.Should().Be("report:42");
         persistedSchedule.RetryPolicy.Should().NotBeNull();
-        persistedSchedule.Continuation!.JobKey.Should().Be("report.followup");
-        persistedSchedule.Compensation!.JobKey.Should().Be("report.compensate");
         run.Should().NotBeNull();
         run!.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
         run.ConsumerGroup.Should().Be("reports-workers");
@@ -241,8 +229,6 @@ public sealed class ScheduleRuntimeTests
         run.OrderingMode.Should().Be(ExecutionOrderingMode.KeyOrdered);
         run.ConcurrencyKey.Should().Be("report:42");
         run.RetryPolicy.Should().BeEquivalentTo(persistedSchedule.RetryPolicy);
-        run.Continuation.Should().BeEquivalentTo(persistedSchedule.Continuation);
-        run.Compensation.Should().BeEquivalentTo(persistedSchedule.Compensation);
         var work = outbox.Should().ContainSingle(message => message.PayloadJson.Contains("cron-run-1")).Subject;
         work.DeliveryProfile.Should().Be(ExecutionDeliveryProfile.Pull);
         work.ConsumerGroup.Should().Be("reports-workers");

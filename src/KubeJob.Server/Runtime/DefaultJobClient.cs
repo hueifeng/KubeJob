@@ -390,9 +390,7 @@ public sealed class DefaultJobClient : IJobClient
             options.ConcurrencyKey,
             options.MaxAttempts,
             timeoutSeconds,
-            RetryPolicy: options.RetryPolicy,
-            Continuation: options.Continuation,
-            Compensation: options.Compensation);
+            RetryPolicy: options.RetryPolicy);
     }
 
     private static void ValidateBrokerNativeOptions(
@@ -433,15 +431,6 @@ public sealed class DefaultJobClient : IJobClient
             throw Unsupported(queue, nameof(options.RetryPolicy));
         }
 
-        if (options.Continuation is not null)
-        {
-            throw Unsupported(queue, nameof(options.Continuation));
-        }
-
-        if (options.Compensation is not null)
-        {
-            throw Unsupported(queue, nameof(options.Compensation));
-        }
     }
 
     private void ValidateBrokerNativeRequest(
@@ -494,9 +483,7 @@ public sealed class DefaultJobClient : IJobClient
                 ConcurrencyKey = request.ConcurrencyKey,
                 MaxAttempts = request.MaxAttempts,
                 Timeout = TimeSpan.FromSeconds(request.TimeoutSeconds),
-                RetryPolicy = request.RetryPolicy,
-                Continuation = request.Continuation,
-                Compensation = request.Compensation
+                RetryPolicy = request.RetryPolicy
             };
         }
         catch (ArgumentOutOfRangeException exception)

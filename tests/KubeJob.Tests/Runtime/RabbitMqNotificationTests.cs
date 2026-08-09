@@ -217,11 +217,13 @@ public sealed class RabbitMqNotificationTests
     {
         var options = new RabbitMqBrokerNativeOptions();
 
-        options.GetEventExchangeName("order.events").Should().Be("kubejob.order.events");
-        options.GetEventSubscriptionQueueName("order.events", "order-business")
-            .Should().Be("kubejob.order.events.order-business");
-        options.GetEventSubscriptionQueueName("order.events", "order-log")
-            .Should().Be("kubejob.order.events.order-log");
+        options.GetEventExchangeName("order.events").Should().Be("order.exchange");
+        options.GetEventSubscriptionQueueName("order.events", "data")
+            .Should().Be("data.queue");
+        options.GetEventSubscriptionQueueName("order.events", "log")
+            .Should().Be("log.queue");
+        options.GetEventSubscriptionQueueName("order.events", "notify")
+            .Should().Be("notify.queue");
     }
 
     [Fact]
