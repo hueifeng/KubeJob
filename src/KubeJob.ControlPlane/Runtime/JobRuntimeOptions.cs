@@ -96,28 +96,6 @@ public sealed class JobRuntimeOptions
     /// </summary>
     public TimeSpan OrderingBacklogRefreshInterval { get; set; } = TimeSpan.FromSeconds(5);
 
-    /// <summary>
-    /// Flag for broker-accelerated cancellation of BrokerDispatch runs.
-    /// BrokerDispatch submission writes a <c>work-available</c> outbox row; the
-    /// <c>OutboxPublisherService</c> converts it to an
-    /// <see cref="KubeJob.Core.Runtime.ExecutionEnvelope"/> at publish time for
-    /// queues whose delivery profile is
-    /// <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>,
-    /// while Pull submission discovers work directly from the store.
-    /// When this flag is <c>true</c>, cancelling a BrokerDispatch-profile Run
-    /// also writes a <c>cancel</c> outbox row so a registered
-    /// <c>ICancelPublisher</c> can fan out a low-latency cancel signal to
-    /// workers; when <c>false</c>, cancel only sets <c>CancelRequested</c> and
-    /// relies on the lease reaper / renewal loop as the correctness fallback.
-    /// Requires <c>RabbitMqNotificationExtensions.UseRabbitMqKubeJobExecutionDispatcher</c>
-    /// and an <c>ICancelPublisher</c> implementation for the cancel path to
-    /// function; hosts that stay on <c>Pull</c> and skip the RabbitMQ execution
-    /// extensions can set this back to <c>false</c>. Default is <c>true</c>,
-    /// matching <c>QueueDeliveryOptions.Defaults.Profile</c> defaulting to
-    /// <see cref="KubeJob.Core.Runtime.ExecutionDeliveryProfile.BrokerDispatch"/>.
-    /// </summary>
-    public bool BrokerCancelPropagationEnabled { get; set; } = true;
-
     public void Validate()
     {
         if (LeaseDuration <= TimeSpan.Zero)

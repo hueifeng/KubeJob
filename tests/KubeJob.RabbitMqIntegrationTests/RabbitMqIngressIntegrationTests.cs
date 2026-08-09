@@ -117,50 +117,6 @@ public sealed class RabbitMqIngressIntegrationTests
         }
     }
 
-    [Fact]
-    public async Task Direct_dispatch_surfaces_unroutable_publish_when_no_queue_binding_exists()
-    {
-        var connectionString = Environment.GetEnvironmentVariable(
-            "KUBEJOB_RABBITMQ_TEST_CONNECTION")
-            ?? throw new InvalidOperationException(
-                "Set KUBEJOB_RABBITMQ_TEST_CONNECTION before running this integration project.");
-        var suffix = Guid.NewGuid().ToString("N");
-        var options = new RabbitMqExecutionOptions
-        {
-            ConnectionString = connectionString,
-            ConsumerGroup = $"integration-{suffix}",
-            ConsumerQueuePrefix = $"kubejob.integration.{suffix}",
-            PublisherConfirmTimeout = TimeSpan.FromSeconds(5)
-        };
-        var exchange = $"{options.ConsumerQueuePrefix}.{options.ConsumerGroup}";
-
-        try
-        {
-            using var dispatcher = new RabbitMqExecutionDispatcher(
-                Microsoft.Extensions.Options.Options.Create(options));
-            var action = async () => await dispatcher.PublishAsync(
-                new ExecutionEnvelope
-                {
-                    SchemaVersion = ExecutionEnvelope.CurrentSchemaVersion,
-                    EventId = $"event-{suffix}",
-                    Queue = "missing-queue",
-                    ExecutionLane = "default",
-                    ConsumerGroup = options.ConsumerGroup,
-                    RunId = $"run-{suffix}"
-                },
-                CancellationToken.None);
-
-            var exception = await action.Should().ThrowAsync<IOException>();
-            exception.Which.Message.Should().Contain("could not route");
-        }
-        finally
-        {
-            using var connection = CreateConnection(connectionString);
-            using var channel = connection.CreateModel();
-            channel.ExchangeDelete(exchange);
-        }
-    }
-
     private static IConnection CreateConnection(string connectionString) =>
         new ConnectionFactory
         {

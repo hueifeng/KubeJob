@@ -33,7 +33,7 @@ public sealed class BenchmarkOptions
     public int JobWorkMs { get; set; } = 0;
 
     // --- Submission driver ---
-    /// <summary>Concurrent <c>EnqueueAsync</c> calls (typed) or RabbitMQ publishes (ingress).</summary>
+    /// <summary>Concurrent typed client calls or RabbitMQ ingress publishes.</summary>
     public int SubmitterConcurrency { get; set; } = 16;
     public SubmissionMode SubmissionMode { get; set; } = Benchmark.SubmissionMode.TypedClient;
     public int IngressBatchSize { get; set; } = 100;
@@ -42,21 +42,14 @@ public sealed class BenchmarkOptions
 
     // --- Worker ---
     public int WorkerMaxConcurrency { get; set; } = 128;
-    public int PrefetchCount { get; set; } = 128;
-
-    /// <summary>Envelopes admitted per control-plane claim transaction.</summary>
-    public int AdmissionBatchSize { get; set; } = 16;
-    public int ConsumerDispatchConcurrency { get; set; } = 128;
 
     // --- Server / outbox ---
     public int OutboxPublishConcurrency { get; set; } = 4;
     public int OutboxBatchSize { get; set; } = 512;
     public int OutboxPollIntervalMs { get; set; } = 10;
-    public int PublisherConcurrency { get; set; } = 32;
 
-    // --- Delivery ---
-    /// <summary>BrokerDispatch uses RabbitMQ; Pull uses worker polling (faster for local benchmarks).</summary>
-    public ExecutionDeliveryProfile DeliveryProfile { get; set; } = ExecutionDeliveryProfile.BrokerDispatch;
+    /// <summary>Managed completion batcher flush window in milliseconds.</summary>
+    public int CompletionFlushIntervalMs { get; set; } = 2;
 
     // --- Completion polling ---
     public int PollIntervalMs { get; set; } = 100;
@@ -73,7 +66,7 @@ public sealed class BenchmarkOptions
     // --- Lane sweep (Item 1+5: fixed-N MQ lanes) ---
     /// <summary>
     /// Sweep N across <see cref="ExecutionLaneCount"/> values. Each combination
-    /// (scenario × N) produces one result row. Default: [1] (single lane, legacy).
+    /// (scenario × N) produces one result row. Default: [1].
     /// </summary>
     public IReadOnlyList<int> LaneCountSweep { get; set; } = new[] { 1 };
     /// <summary>Convenience: the first (or only) lane count for non-sweeping callers.</summary>
@@ -117,23 +110,15 @@ public sealed class BenchmarkOptions
         opts.IngressBatchSize = EnvInt(env, "KUBEJOB_BENCH_INGRESS_BATCH", opts.IngressBatchSize);
         opts.IngressBatchWaitMs = EnvInt(env, "KUBEJOB_BENCH_INGRESS_WAIT_MS", opts.IngressBatchWaitMs);
         opts.IngressPrefetch = EnvInt(env, "KUBEJOB_BENCH_INGRESS_PREFETCH", opts.IngressPrefetch);
-        opts.DeliveryProfile = Enum.TryParse(Env(env, "KUBEJOB_BENCH_DELIVERY_PROFILE",
-            opts.DeliveryProfile.ToString()), ignoreCase: true, out ExecutionDeliveryProfile dp)
-            ? dp : opts.DeliveryProfile;
-
         opts.WorkerMaxConcurrency = EnvInt(env, "KUBEJOB_BENCH_WORKER_CONCURRENCY",
             opts.WorkerMaxConcurrency);
-        opts.PrefetchCount = EnvInt(env, "KUBEJOB_BENCH_PREFETCH", opts.PrefetchCount);
-        opts.AdmissionBatchSize = EnvInt(env, "KUBEJOB_BENCH_ADMISSION_BATCH", opts.AdmissionBatchSize);
-        opts.ConsumerDispatchConcurrency = EnvInt(env, "KUBEJOB_BENCH_DISPATCH_CONCURRENCY",
-            opts.ConsumerDispatchConcurrency);
         opts.OutboxPublishConcurrency = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_CONCURRENCY",
             opts.OutboxPublishConcurrency);
         opts.OutboxBatchSize = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_BATCH", opts.OutboxBatchSize);
         opts.OutboxPollIntervalMs = EnvInt(env, "KUBEJOB_BENCH_OUTBOX_POLL_MS",
             opts.OutboxPollIntervalMs);
-        opts.PublisherConcurrency = EnvInt(env, "KUBEJOB_BENCH_PUBLISHER_CONCURRENCY",
-            opts.PublisherConcurrency);
+        opts.CompletionFlushIntervalMs = EnvInt(env, "KUBEJOB_BENCH_COMPLETION_FLUSH_MS",
+            opts.CompletionFlushIntervalMs);
 
         opts.PollIntervalMs = EnvInt(env, "KUBEJOB_BENCH_POLL_MS", opts.PollIntervalMs);
         opts.StatusPollParallelism = EnvInt(env, "KUBEJOB_BENCH_STATUS_PARALLELISM",
@@ -206,13 +191,9 @@ public sealed class BenchmarkOptions
                 case "submitters": opts.SubmitterConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "mode": opts.SubmissionMode = Enum.Parse<SubmissionMode>(value, ignoreCase: true); break;
                 case "worker-concurrency": opts.WorkerMaxConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "prefetch": opts.PrefetchCount = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "admission-batch": opts.AdmissionBatchSize = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "dispatch-concurrency": opts.ConsumerDispatchConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "outbox-concurrency": opts.OutboxPublishConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "outbox-batch": opts.OutboxBatchSize = int.Parse(value, CultureInfo.InvariantCulture); break;
-                case "delivery-profile": opts.DeliveryProfile = Enum.Parse<ExecutionDeliveryProfile>(value, ignoreCase: true); break;
-                case "publisher-concurrency": opts.PublisherConcurrency = int.Parse(value, CultureInfo.InvariantCulture); break;
+                case "completion-flush-ms": opts.CompletionFlushIntervalMs = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "poll-ms": opts.PollIntervalMs = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "status-parallelism": opts.StatusPollParallelism = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "run-timeout-s": opts.RunTimeoutSeconds = int.Parse(value, CultureInfo.InvariantCulture); break;

@@ -41,7 +41,7 @@ public sealed class InMemoryJobRuntimeStoreTests
     }
 
     [Fact]
-    public async Task Targeted_claim_admits_only_the_run_named_by_an_execution_envelope()
+    public async Task Targeted_claim_returns_only_the_named_run()
     {
         var store = new InMemoryJobRuntimeStore();
         var target = (await store.SubmitAsync(
@@ -287,7 +287,7 @@ public sealed class InMemoryJobRuntimeStoreTests
         var run = (await store.SubmitAsync(NewCommand(), CancellationToken.None)).Run;
         var worker = await RegisterAsync(store, "worker", "session");
 
-        var accepted = await store.RequestCancelAsync(run.Id, "not needed", null, CancellationToken.None);
+        var accepted = await store.RequestCancelAsync(run.Id, "not needed", CancellationToken.None);
         var claimed = await store.ClaimAsync(
             NewClaim(worker),
             TimeSpan.FromSeconds(30),
@@ -331,7 +331,6 @@ public sealed class InMemoryJobRuntimeStoreTests
         (await store.RequestCancelAsync(
             run.Id,
             "operator canceled",
-            null,
             CancellationToken.None)).Requested.Should().BeTrue();
         var completion = await store.CompleteAsync(
             NewCompletion(worker, claim, JobAttemptOutcome.Canceled),
@@ -398,7 +397,6 @@ public sealed class InMemoryJobRuntimeStoreTests
         var canceled = await store.RequestCancelAsync(
             run.Id,
             "cancel before reconciliation",
-            null,
             CancellationToken.None);
         var scheduledAfterCancel = await store.RequeueWorkAvailableAsync(
             run.Id,

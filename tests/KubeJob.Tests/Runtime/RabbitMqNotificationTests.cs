@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KubeJob.Core.Transport;
+using KubeJob.Core.Runtime;
 using KubeJob.Server.ControlPlane;
 using KubeJob.Server.Extensions;
 using KubeJob.Server.Runtime;
@@ -182,7 +183,7 @@ public sealed class RabbitMqNotificationTests
     {
         var options = new RabbitMqBrokerNativeOptions
         {
-            QueuePrefix = new string('q', 240)
+            QueuePrefix = new string('q', 244)
         };
 
         options.Invoking(x => x.GetQueueName("orders.push"))

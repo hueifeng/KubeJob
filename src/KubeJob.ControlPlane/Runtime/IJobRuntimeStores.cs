@@ -23,12 +23,10 @@ public sealed record SubmitJobCommand(
 public sealed record SubmitJobResult(JobRunRecord Run, bool Existing);
 
 /// <summary>
-/// Result of a cancel request. <see cref="Queue"/> and <see cref="Group"/>
-/// are returned when the cancel actually mutated a Run so the caller can
-/// decide whether to write a per-group <c>cancel</c> outbox row for Direct
-/// Dispatch Mode.
+/// Result of a cancel request. Cancellation is authoritative durable state;
+/// workers observe it through the normal managed lease/heartbeat path.
 /// </summary>
-public sealed record CancelJobResult(bool Requested, string? Queue, string? Group);
+public sealed record CancelJobResult(bool Requested);
 
 public interface IJobSubmissionStore
 {
@@ -42,7 +40,7 @@ public interface IJobSubmissionStore
     /// whose <see cref="SubmitJobCommand.IdempotencyKey"/> already exists returns
     /// that existing run with <c>Existing: true</c> and writes no outbox row.
     /// Implementations must preflight conflicts and leave no new rows behind if
-    /// any command cannot be admitted.
+    /// any command cannot be accepted.
     /// </summary>
     ValueTask<IReadOnlyList<SubmitJobResult>> SubmitBatchAsync(
         IReadOnlyList<SubmitJobCommand> commands,
@@ -50,7 +48,7 @@ public interface IJobSubmissionStore
 
     /// <summary>
     /// Schedules a durable work-available signal for a still-pending Run after
-    /// broker retry budget is exhausted. Returns false when the Run is no longer
+    /// delivery retry budget is exhausted. Returns false when the Run is no longer
     /// pending and therefore needs no broker re-drive.
     /// </summary>
     ValueTask<bool> RequeueWorkAvailableAsync(
@@ -61,7 +59,6 @@ public interface IJobSubmissionStore
     ValueTask<CancelJobResult> RequestCancelAsync(
         string runId,
         string? reason,
-        string? consumerGroup,
         CancellationToken cancellationToken);
 
     ValueTask<JobRunRecord?> GetByIdempotencyKeyAsync(
@@ -123,15 +120,6 @@ public interface IJobQueryStore
 {
     ValueTask<JobRunRecord?> GetRunAsync(
         string runId,
-        CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Fetches several runs in one query. Used by the batch admission path to
-    /// diagnose envelopes the claim could not admit without a per-envelope
-    /// round trip. Missing ids are simply absent from the result.
-    /// </summary>
-    ValueTask<IReadOnlyList<JobRunRecord>> GetRunsAsync(
-        IReadOnlyList<string> runIds,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(

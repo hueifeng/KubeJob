@@ -105,7 +105,7 @@ public sealed class RabbitMqBrokerNativeIntegrationTests
 
             var completedAttempt = await probe.CompletedAttempt.Task.WaitAsync(TimeSpan.FromSeconds(20));
             completedAttempt.Should().Be(2,
-                "the first handler attempt fails and must be republished through RabbitMQ retry without PostgreSQL admission");
+                "the first handler attempt fails and must be republished through RabbitMQ retry without PostgreSQL claim");
             probe.ExecutionCount.Should().Be(2);
 
             await EventuallyAsync(

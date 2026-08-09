@@ -281,7 +281,6 @@ public sealed class DbInitializer : IStorageInitializer
                 ON Kj2_JobRuns (CompletedAt, Id)
                 WHERE Phase IN (2, 3, 4, 5)
                   AND IdempotencyKey IS NULL
-                  AND IdempotencyKey IS NULL
                   AND ScheduleId IS NULL;
         ");
                 connection.Execute(

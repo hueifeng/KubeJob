@@ -20,7 +20,7 @@ public static class LaneAssignment
 
     /// <summary>
     /// Maps a partition key to a virtual slot (0–16383).
-    /// An empty or null key always maps to slot 0 (legacy/un-keyed runs).
+    /// An empty or null key always maps to slot 0 (un-keyed runs).
     /// </summary>
     public static int GetSlot(string? partitionKey)
     {

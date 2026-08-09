@@ -7,7 +7,7 @@ namespace KubeJob.Tests.Runtime;
 
 /// <summary>
 /// Item 2 (P0): StrictFIFO ordering mode unit tests.
-/// Tests the claim-admission gate for StrictFifo lanes.
+/// Tests the managed claim gate for StrictFifo lanes.
 /// </summary>
 public sealed class StrictFifoOrderingTests
 {
@@ -171,9 +171,9 @@ public sealed class StrictFifoOrderingTests
             MaxAttempts: 5,
             TimeoutSeconds: 300,
             DeliveryTarget: new DeliveryTarget(
-                ExecutionDeliveryProfile.BrokerDispatch,
+                ExecutionDeliveryProfile.Pull,
                 ExecutionLane: "default",
-                TransportId: "test",
+                TransportId: null,
                 ConsumerGroup: "default",
                 OrderingMode: mode));
     }

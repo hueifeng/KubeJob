@@ -16,25 +16,6 @@ public sealed partial class InMemoryJobRuntimeStore
         }
     }
 
-    public ValueTask<IReadOnlyList<JobRunRecord>> GetRunsAsync(
-        IReadOnlyList<string> runIds,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(runIds);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (runIds.Count == 0)
-        {
-            return ValueTask.FromResult<IReadOnlyList<JobRunRecord>>(Array.Empty<JobRunRecord>());
-        }
-
-        lock (_gate)
-        {
-            var ids = runIds.ToHashSet(StringComparer.Ordinal);
-            return ValueTask.FromResult<IReadOnlyList<JobRunRecord>>(
-                _runs.Values.Where(run => ids.Contains(run.Id)).ToArray());
-        }
-    }
-
     public ValueTask<IReadOnlyList<JobAttemptRecord>> GetAttemptsAsync(
         string runId,
         CancellationToken cancellationToken)

@@ -29,8 +29,7 @@ public sealed record WorkerHeartbeatRequest(
 
 /// <summary>
 /// Claims eligible work for a Worker session. When <paramref name="RunIds"/>
-/// is supplied, the claim is targeted and cannot fall back to another Run;
-/// this is used by broker execution consumers after Admission.
+/// is supplied, the claim is targeted and cannot fall back to another Run.
 /// </summary>
 public sealed record ClaimJobsRequest(
     string WorkerId,
@@ -45,9 +44,8 @@ public sealed record ClaimJobsRequest(
 
 /// <summary>
 /// A claimed Run returned to a worker. The control plane populates
-/// <see cref="OrderingMode"/> and <see cref="AvailableAt"/> so the admission
-/// path can record the KeyOrdered wait duration without a second database
-/// read.
+/// <see cref="OrderingMode"/> and <see cref="AvailableAt"/> so the managed
+/// worker can record KeyOrdered wait duration without a second database read.
 /// </summary>
 public sealed record ClaimedJob(
     string RunId,

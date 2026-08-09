@@ -8,13 +8,11 @@ namespace KubeJob.ControlPlane.Telemetry;
 
 public sealed class KubeJobControlPlaneMetrics : IDisposable
 {
-    private const string AdmissionStatusTagName = "kubejob.admission.status";
     private const string QueueTagName = "kubejob.queue";
 
     private readonly Meter _meter;
     private readonly Counter<long> _submissions;
     private readonly Counter<long> _idempotencyHits;
-    private readonly Histogram<double> _admissionDuration;
     private readonly Counter<long> _reclaimedLeases;
     private readonly Histogram<double> _outboxPublishLag;
     private readonly Histogram<double> _orderingWaitDuration;
@@ -44,10 +42,6 @@ public sealed class KubeJobControlPlaneMetrics : IDisposable
             "kubejob.job.idempotency_hits",
             unit: "{job}",
             description: "Number of accepted KubeJob submissions resolved to an existing idempotency key.");
-        _admissionDuration = _meter.CreateHistogram<double>(
-            "kubejob.control_plane.admission.duration",
-            unit: "s",
-            description: "Duration of a single-Run BrokerDispatch admission call (WorkerControlPlane.AdmitAsync), including its underlying Claim.");
         _reclaimedLeases = _meter.CreateCounter<long>(
             "kubejob.control_plane.lease_reaper.reclaimed",
             unit: "{attempt}",
@@ -59,7 +53,7 @@ public sealed class KubeJobControlPlaneMetrics : IDisposable
         _orderingWaitDuration = _meter.CreateHistogram<double>(
             "kubejob.control_plane.ordering.wait_duration",
             unit: "s",
-            description: "Wall-clock time a KeyOrdered Run waited before admission (claim time minus AvailableAt), including time blocked behind a non-terminal same-key predecessor. Parallel runs are not recorded.");
+            description: "Wall-clock time a KeyOrdered Run waited before claim (claim time minus AvailableAt), including time blocked behind a non-terminal same-key predecessor. Parallel runs are not recorded.");
         _orderingBlockedRuns = _meter.CreateObservableGauge<int>(
             "kubejob.control_plane.ordering.blocked_runs",
             observeValues: () => ObserveInt(sample => sample.BlockedRuns),
@@ -103,22 +97,6 @@ public sealed class KubeJobControlPlaneMetrics : IDisposable
         instrument.Add(1);
     }
 
-    public bool IsAdmissionDurationEnabled => _admissionDuration.Enabled;
-
-    public void AdmissionCompleted(TimeSpan duration, string status)
-    {
-        if (!_admissionDuration.Enabled)
-        {
-            return;
-        }
-
-        var tags = new TagList
-        {
-            { AdmissionStatusTagName, status }
-        };
-        _admissionDuration.Record(duration.TotalSeconds, tags);
-    }
-
     public void LeasesReclaimed(int count)
     {
         if (count <= 0 || !_reclaimedLeases.Enabled)
@@ -143,7 +121,7 @@ public sealed class KubeJobControlPlaneMetrics : IDisposable
 
     public bool IsOrderingWaitEnabled => _orderingWaitDuration.Enabled;
 
-    public void OrderingAdmitted(TimeSpan wait, string queue)
+    public void OrderingClaimed(TimeSpan wait, string queue)
     {
         if (!_orderingWaitDuration.Enabled)
         {
