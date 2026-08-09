@@ -1,5 +1,13 @@
 # KubeJob
 
+[Quick start](#quick-start-a-managed-job) ·
+[BrokerNative setup](#configure-a-brokernative-queue) ·
+[Local development](docs/v3/local-development.md) ·
+[Samples](#run-samples) ·
+[Documentation](docs/README.md) ·
+[Benchmarking](docs/v3/benchmarking.md) ·
+[V2 tutorial archive](docs/v2/README.md)
+
 KubeJob is a .NET runtime for durable jobs and broker-native events. A logical
 queue has one clear source of truth, rather than a half-database, half-broker
 lifecycle.
@@ -138,6 +146,18 @@ named client, worker and dashboard policies—or a host default policy—and cal
 `AllowAnonymousEndpoints` and `AllowAnonymousAccess` are explicit local
 development/test opt-outs. Do not enable them on a public or shared network.
 
+## Run samples
+
+Start the local PostgreSQL/RabbitMQ stack and run the unified sample:
+
+```bash
+bash scripts/run-unified-sample.sh
+```
+
+The dashboard is then available at `http://localhost:5041/admin/jobs`. See the
+[local-development guide](docs/v3/local-development.md) for requirements,
+Windows commands, service endpoints, test setup, and safe cleanup commands.
+
 ## Development and verification
 
 Start the local PostgreSQL/RabbitMQ stack:
@@ -161,8 +181,9 @@ otherwise those four tests are skipped intentionally.
 - [Runtime model](docs/v3/runtime-model.md)
 - [Transport model](docs/v3/transport.md)
 - [Event subscriptions](docs/v3/events.md)
+- [Local development](docs/v3/local-development.md)
 - [Benchmarking](docs/v3/benchmarking.md)
-- [Historical V2 material](docs/v2/README.md)
+- [Historical V2 tutorials (English and Chinese)](docs/v2/README.md)
 
 ## License
 

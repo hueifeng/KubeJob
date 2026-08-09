@@ -6,6 +6,7 @@
 - [Runtime model](v3/runtime-model.md)
 - [Transport model](v3/transport.md)
 - [Event subscriptions](v3/events.md)
+- [Local development](v3/local-development.md)
 - [Benchmarking](v3/benchmarking.md)
 
 `docs/v2/`, ADRs, plans, and dated review reports are historical material. They
