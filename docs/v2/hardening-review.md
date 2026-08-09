@@ -1,6 +1,6 @@
 # V2 Hardening Review
 
-This review was performed after the V2-only runtime and Dashboard landed.
+This review was performed after the historical V2 runtime and Dashboard landed.
 
 ## Removed or corrected
 

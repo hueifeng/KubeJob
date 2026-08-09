@@ -331,6 +331,7 @@ only after durable acceptance. It never grants execution ownership.
 
 ## Version boundary
 
-The runtime is V2-only. The previous non-generic handler API, push dispatcher,
+The V2 runtime was the only supported runtime at that time. The previous
+non-generic handler API, push dispatcher,
 JobSpec/WorkerNode model, legacy tables, and legacy Dashboard are not registered
 or supported as a compatibility path.

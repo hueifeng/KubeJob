@@ -1,6 +1,9 @@
-# Runtime Completion Criteria
+# Runtime Completion Criteria (historical V2)
 
-The V2-only runtime and operator surface are implementation-complete when all of
+> This checklist records the former V2 completion criteria. It is retained for
+> historical context; current behavior is defined by the V3 documentation.
+
+The former V2 runtime and operator surface were considered complete when all of
 the following pass on the final PR Head:
 
 - Typed handlers and generated JobKeys compile.

@@ -232,7 +232,7 @@ missing.
 
 ## 7. Dashboard
 
-The embedded Dashboard is V2-native and displays Overview, queue backlog, Runs,
+The V2 embedded Dashboard displayed Overview, queue backlog, Runs,
 Attempt timelines, Worker Sessions, and Schedules.
 
 ```csharp

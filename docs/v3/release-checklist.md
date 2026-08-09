@@ -19,12 +19,10 @@ The two models solve different problems and should not be mixed in the hot path.
 
 ## Cleanup checks
 
-Remove before release:
-
-- obsolete runtime dispatch abstractions
-- unused compatibility shims
-- temporary benchmark helpers
-- debug-only code paths
+- [x] Orphaned samples, scripts, generated locks, and stale review reports removed.
+- [x] Unused lane-mapping code and its CRC helper removed.
+- [x] Temporary benchmark output is ignored and not part of the release tree.
+- [x] Duplicate Dashboard validation workflow removed; full CI remains authoritative.
 
 ## Documentation
 
