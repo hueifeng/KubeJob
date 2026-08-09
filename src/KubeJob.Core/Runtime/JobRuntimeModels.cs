@@ -11,7 +11,13 @@ public enum JobAttemptPhase
     Canceled = 4,
     TimedOut = 5,
     LeaseLost = 6,
-    Rejected = 7
+    Rejected = 7,
+    /// <summary>
+    /// The handler completion was durably accepted by the control plane and is
+    /// awaiting final Run/Attempt state transition. Lease and timeout recovery
+    /// must not reclaim an attempt once it reaches this phase.
+    /// </summary>
+    Completing = 8
 }
 
 public enum JobAttemptOutcome
