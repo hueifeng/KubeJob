@@ -1,5 +1,9 @@
 # Security and Trust Boundaries
 
+> Historical V2 guidance. V3 applies the host default authorization policy to
+> KubeJob HTTP and Dashboard endpoints unless anonymous access is explicitly
+> enabled for local development or tests.
+
 KubeJob separates user-facing query models, operator pages, and internal worker
 protocol credentials.
 

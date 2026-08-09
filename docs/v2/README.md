@@ -1,4 +1,8 @@
-# KubeJob Documentation
+# KubeJob V2 documentation (historical)
+
+> This material documents the previous V2 runtime. For supported behavior,
+> start with the [V3 documentation](../v3/runtime-model.md). In particular,
+> V3 endpoints require authorization by default.
 
 - [Local development stack](./local-development.md)
 - [本地开发环境](./local-development.zh-CN.md)

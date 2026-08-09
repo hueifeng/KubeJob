@@ -74,7 +74,8 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IMessageTransportRegistry, MessageTransportRegistry>();
 
         services.TryAddSingleton<QueueInventoryService>();
-        services.TryAddSingleton<IJobClient, DefaultJobClient>();
+        services.TryAddSingleton<DefaultJobClient>();
+        services.TryAddSingleton<IJobClient>(sp => sp.GetRequiredService<DefaultJobClient>());
         services.TryAddSingleton<IEventBus, DefaultEventBus>();
         services.TryAddSingleton<IJobScheduleClient, DefaultJobScheduleClient>();
 

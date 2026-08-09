@@ -15,6 +15,7 @@ The two models solve different problems and should not be mixed in the hot path.
 - [x] BrokerNative execution does not require managed Run/lease database writes.
 - [x] Transport adapters own broker-specific behavior.
 - [x] Benchmark projects remain isolated from runtime libraries.
+- [x] Remote and in-process submission both route through the configured queue authority.
 
 ## Cleanup checks
 
@@ -29,8 +30,8 @@ Remove before release:
 
 Required documents:
 
-- architecture overview
-- runtime selection guide
-- event subscription model
-- transport capability model
-- benchmark methodology and results
+- [x] architecture overview
+- [x] runtime selection guide
+- [x] event subscription model
+- [x] transport capability model
+- [x] benchmark methodology

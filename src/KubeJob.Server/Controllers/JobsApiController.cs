@@ -1,6 +1,7 @@
 using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.Server.ControlPlane;
+using KubeJob.Server.Runtime;
 using Microsoft.AspNetCore.Mvc;
 
 namespace KubeJob.Server.Controllers;
@@ -10,10 +11,12 @@ namespace KubeJob.Server.Controllers;
 public sealed class JobsApiController : ControllerBase
 {
     private readonly JobControlPlane _controlPlane;
+    private readonly DefaultJobClient _client;
 
-    public JobsApiController(JobControlPlane controlPlane)
+    public JobsApiController(JobControlPlane controlPlane, DefaultJobClient client)
     {
         _controlPlane = controlPlane;
+        _client = client;
     }
 
     [HttpPost]
@@ -23,7 +26,7 @@ public sealed class JobsApiController : ControllerBase
     {
         try
         {
-            var receipt = await _controlPlane.SubmitAsync(request, cancellationToken);
+            var receipt = await _client.SubmitAsync(request, cancellationToken);
             return receipt.Existing ? Ok(receipt.Handle) : Accepted(receipt.Handle);
         }
         catch (ControlPlaneValidationException validation)
@@ -32,6 +35,14 @@ public sealed class JobsApiController : ControllerBase
             {
                 code = validation.Code,
                 message = validation.Message
+            });
+        }
+        catch (NotSupportedException unsupported)
+        {
+            return BadRequest(new
+            {
+                code = "unsupported_job_submission",
+                message = unsupported.Message
             });
         }
         catch (IdempotencyConflictException conflict)
@@ -52,7 +63,7 @@ public sealed class JobsApiController : ControllerBase
     {
         try
         {
-            var receipts = await _controlPlane.SubmitBatchAsync(requests, cancellationToken);
+            var receipts = await _client.SubmitBatchAsync(requests, cancellationToken);
             var handles = receipts.Select(receipt => receipt.Handle).ToArray();
             return receipts.Any(receipt => !receipt.Existing)
                 ? Accepted(handles)
@@ -64,6 +75,14 @@ public sealed class JobsApiController : ControllerBase
             {
                 code = validation.Code,
                 message = validation.Message
+            });
+        }
+        catch (NotSupportedException unsupported)
+        {
+            return BadRequest(new
+            {
+                code = "unsupported_job_submission",
+                message = unsupported.Message
             });
         }
         catch (IdempotencyConflictException conflict)

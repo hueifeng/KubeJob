@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using KubeJob.ControlPlane.Runtime;
 using KubeJob.Core.Client;
@@ -6,6 +7,7 @@ using KubeJob.Core.Jobs;
 using KubeJob.Core.Runtime;
 using KubeJob.Core.Transport;
 using KubeJob.Server.ControlPlane;
+using Microsoft.Extensions.Options;
 
 namespace KubeJob.Server.Runtime;
 
@@ -22,15 +24,18 @@ public sealed class DefaultJobClient : IJobClient
     private readonly JobControlPlane _controlPlane;
     private readonly IQueueRuntimeResolver _runtimeResolver;
     private readonly IMessageTransportRegistry _transportRegistry;
+    private readonly JobRuntimeOptions _runtimeOptions;
 
     public DefaultJobClient(
         JobControlPlane controlPlane,
         IQueueRuntimeResolver runtimeResolver,
-        IMessageTransportRegistry transportRegistry)
+        IMessageTransportRegistry transportRegistry,
+        IOptions<JobRuntimeOptions> runtimeOptions)
     {
         _controlPlane = controlPlane;
         _runtimeResolver = runtimeResolver;
         _transportRegistry = transportRegistry;
+        _runtimeOptions = runtimeOptions.Value;
     }
 
     public ValueTask<JobHandle> EnqueueAsync<TPayload>(
@@ -96,6 +101,12 @@ public sealed class DefaultJobClient : IJobClient
             var options = suppliedOptions ?? new JobEnqueueOptions();
             var queue = options.ResolveQueue(job.Value);
             var route = _runtimeResolver.Resolve(queue);
+            if (route.Mode is not (QueueRuntimeMode.PostgresManaged or QueueRuntimeMode.BrokerNative))
+            {
+                throw new InvalidOperationException(
+                    $"Unsupported Queue runtime mode '{route.Mode}' for queue '{queue}'.");
+            }
+
             prepared[i] = new PreparedSubmission<TPayload>(payload, options, queue, route);
 
             commonMode ??= route.Mode;
@@ -134,8 +145,8 @@ public sealed class DefaultJobClient : IJobClient
 
         // A broker publish batch cannot provide the database transaction
         // atomicity of PostgresManaged. Each message is independently confirmed
-        // by its transport; a caller can safely retry using IdempotencyKey when
-        // its business semantics require deduplication.
+        // by its transport; callers must use a business-idempotent handler and
+        // account for partial success when retrying a failed batch.
         var brokerHandles = new JobHandle[prepared.Length];
         for (var i = 0; i < prepared.Length; i++)
         {
@@ -150,6 +161,107 @@ public sealed class DefaultJobClient : IJobClient
         }
 
         return brokerHandles;
+    }
+
+    /// <summary>
+    /// Routes a transport-neutral HTTP submission through the same authority
+    /// decision used by the typed in-process client.
+    /// </summary>
+    public async ValueTask<JobSubmissionReceipt> SubmitAsync(
+        EnqueueJobRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var queue = ResolveQueue(request.Queue);
+        var route = _runtimeResolver.Resolve(queue);
+        if (route.Mode == QueueRuntimeMode.PostgresManaged)
+        {
+            return await _controlPlane.SubmitAsync(request with { Queue = queue }, cancellationToken);
+        }
+
+        if (route.Mode != QueueRuntimeMode.BrokerNative)
+        {
+            throw new ControlPlaneValidationException(
+                "unsupported_queue_runtime",
+                $"Queue '{queue}' has unsupported runtime mode '{route.Mode}'.");
+        }
+
+        var options = CreateBrokerNativeOptions(request, queue);
+        var handle = await EnqueueBrokerNativePayloadAsync(
+            request.JobKey,
+            request.PayloadJson,
+            queue,
+            route,
+            options,
+            cancellationToken);
+        return new JobSubmissionReceipt(handle, Existing: false);
+    }
+
+    /// <summary>
+    /// Routes a raw batch through one runtime authority. Managed batches are
+    /// transactional; BrokerNative batches are confirmed independently.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<JobSubmissionReceipt>> SubmitBatchAsync(
+        IReadOnlyList<EnqueueJobRequest> requests,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        _controlPlane.ValidateSubmissionBatchSize(requests.Count);
+        if (requests.Count == 0)
+        {
+            return Array.Empty<JobSubmissionReceipt>();
+        }
+
+        QueueRuntimeMode? mode = null;
+        var prepared = new RawSubmission[requests.Count];
+        for (var index = 0; index < requests.Count; index++)
+        {
+            var request = requests[index] ?? throw new ControlPlaneValidationException(
+                "invalid_job_submission",
+                $"Submission batch item at index {index} cannot be null.");
+            var queue = ResolveQueue(request.Queue);
+            var route = _runtimeResolver.Resolve(queue);
+            if (route.Mode is not (QueueRuntimeMode.PostgresManaged or QueueRuntimeMode.BrokerNative))
+            {
+                throw new ControlPlaneValidationException(
+                    "unsupported_queue_runtime",
+                    $"Queue '{queue}' has unsupported runtime mode '{route.Mode}'.");
+            }
+
+            mode ??= route.Mode;
+            if (mode != route.Mode)
+            {
+                throw new ControlPlaneValidationException(
+                    "mixed_queue_runtime_batch",
+                    "One submission batch cannot mix PostgresManaged and BrokerNative queues.");
+            }
+
+            prepared[index] = new RawSubmission(request with { Queue = queue }, route);
+        }
+
+        if (mode == QueueRuntimeMode.PostgresManaged)
+        {
+            return await _controlPlane.SubmitBatchAsync(
+                prepared.Select(item => item.Request).ToArray(),
+                cancellationToken);
+        }
+
+        var receipts = new JobSubmissionReceipt[prepared.Length];
+        for (var index = 0; index < prepared.Length; index++)
+        {
+            var item = prepared[index];
+            var options = CreateBrokerNativeOptions(item.Request, item.Request.Queue);
+            var handle = await EnqueueBrokerNativePayloadAsync(
+                item.Request.JobKey,
+                item.Request.PayloadJson,
+                item.Request.Queue,
+                item.Route,
+                options,
+                cancellationToken);
+            receipts[index] = new JobSubmissionReceipt(handle, Existing: false);
+        }
+
+        return receipts;
     }
 
     public async ValueTask<JobStatusSnapshot?> GetStatusAsync(
@@ -199,14 +311,31 @@ public sealed class DefaultJobClient : IJobClient
         JobEnqueueOptions options,
         CancellationToken cancellationToken)
     {
-        ValidateBrokerNativeOptions(options, queue);
+        var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
+        return await EnqueueBrokerNativePayloadAsync(
+            jobKey,
+            payloadJson,
+            queue,
+            route,
+            options,
+            cancellationToken);
+    }
+
+    private async ValueTask<JobHandle> EnqueueBrokerNativePayloadAsync(
+        string jobKey,
+        string payloadJson,
+        string queue,
+        QueueRuntimeRoute route,
+        JobEnqueueOptions options,
+        CancellationToken cancellationToken)
+    {
+        ValidateBrokerNativeRequest(jobKey, payloadJson, options, queue);
         var transportId = route.TransportId
             ?? throw new InvalidOperationException(
                 $"BrokerNative queue '{queue}' does not have a transport configured.");
         var publisher = _transportRegistry.GetRequiredPublisher(transportId);
         ValidateBrokerNativeCapabilities(publisher, queue, options.MaxAttempts);
 
-        var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
         var messageId = Guid.NewGuid().ToString("N");
         var activity = Activity.Current;
         var message = new BrokerNativeJobMessage
@@ -314,6 +443,79 @@ public sealed class DefaultJobClient : IJobClient
         }
     }
 
+    private void ValidateBrokerNativeRequest(
+        string jobKey,
+        string payloadJson,
+        JobEnqueueOptions options,
+        string queue)
+    {
+        try
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(jobKey);
+            ArgumentException.ThrowIfNullOrWhiteSpace(payloadJson);
+            if (jobKey.Length > 300)
+            {
+                throw new ArgumentException("JobKey cannot exceed 300 characters.", nameof(jobKey));
+            }
+
+            if (Encoding.UTF8.GetByteCount(payloadJson) > _runtimeOptions.MaxPayloadBytes)
+            {
+                throw new ArgumentException(
+                    $"Payload exceeds the configured maximum of {_runtimeOptions.MaxPayloadBytes} bytes.",
+                    nameof(payloadJson));
+            }
+
+            using var _ = JsonDocument.Parse(payloadJson);
+            ValidateBrokerNativeOptions(options, queue);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new ControlPlaneValidationException("invalid_job_submission", exception.Message);
+        }
+        catch (JsonException exception)
+        {
+            throw new ControlPlaneValidationException("invalid_job_submission", exception.Message);
+        }
+    }
+
+    private static JobEnqueueOptions CreateBrokerNativeOptions(
+        EnqueueJobRequest request,
+        string queue)
+    {
+        try
+        {
+            return new JobEnqueueOptions
+            {
+                Queue = queue,
+                Priority = request.Priority,
+                NotBefore = request.NotBefore,
+                IdempotencyKey = request.IdempotencyKey,
+                ConcurrencyKey = request.ConcurrencyKey,
+                MaxAttempts = request.MaxAttempts,
+                Timeout = TimeSpan.FromSeconds(request.TimeoutSeconds),
+                RetryPolicy = request.RetryPolicy,
+                Continuation = request.Continuation,
+                Compensation = request.Compensation
+            };
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new ControlPlaneValidationException("invalid_job_submission", exception.Message);
+        }
+    }
+
+    private static string ResolveQueue(string queue)
+    {
+        try
+        {
+            return Core.Queues.LogicalQueueName.Normalize(queue, nameof(queue));
+        }
+        catch (ArgumentException exception)
+        {
+            throw new ControlPlaneValidationException("invalid_job_submission", exception.Message);
+        }
+    }
+
     private static void ValidateBrokerNativeCapabilities(
         IMessageTransportPublisher publisher,
         string queue,
@@ -352,5 +554,9 @@ public sealed class DefaultJobClient : IJobClient
         TPayload Payload,
         JobEnqueueOptions Options,
         string Queue,
+        QueueRuntimeRoute Route);
+
+    private sealed record RawSubmission(
+        EnqueueJobRequest Request,
         QueueRuntimeRoute Route);
 }
