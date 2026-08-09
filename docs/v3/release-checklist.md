@@ -1,35 +1,36 @@
-# KubeJob V3 Release Checklist
+# Release checklist
 
-## Runtime model
+Use this list before tagging a release. It is intentionally short; detailed
+behavior belongs in the user-facing guides.
 
-KubeJob V3 supports two execution authorities:
+## Runtime
 
-- **PostgresManaged**: PostgreSQL is the source of truth for Run, Attempt, lease and completion state.
-- **BrokerNative**: Message broker delivery is the source of truth for transport delivery, acknowledgement and dead-letter handling.
+- [x] PostgresManaged keeps `JobRun`, attempt, lease, and completion state in
+  PostgreSQL.
+- [x] BrokerNative does not create managed runs or leases.
+- [x] A logical queue is routed to one execution model.
+- [x] Transport adapters declare the capabilities that their queues require.
+- [x] In-process and HTTP submission use the configured queue route.
 
-The two models solve different problems and should not be mixed in the hot path.
+## Tests and packaging
 
-## Architecture checks
+- [x] `dotnet test KubeJob.sln -c Release` passes.
+- [x] RabbitMQ integration tests run when
+  `KUBEJOB_RABBITMQ_TEST_CONNECTION` is provided.
+- [x] The package contains `README.md` and `LICENSE`.
+- [x] Benchmark code stays under `tests/KubeJob.Benchmark` and is not referenced
+  by runtime libraries.
 
-- [x] Runtime does not depend on a specific message broker implementation.
-- [x] BrokerNative execution does not require managed Run/lease database writes.
-- [x] Transport adapters own broker-specific behavior.
-- [x] Benchmark projects remain isolated from runtime libraries.
-- [x] Remote and in-process submission both route through the configured queue authority.
+## Repository hygiene
 
-## Cleanup checks
-
-- [x] Orphaned samples, scripts, generated locks, and stale review reports removed.
-- [x] Unused lane-mapping code and its CRC helper removed.
-- [x] Temporary benchmark output is ignored and not part of the release tree.
-- [x] Duplicate Dashboard validation workflow removed; full CI remains authoritative.
+- [x] Obsolete V2 guides, orphan samples, generated locks, and review reports
+  are removed.
+- [x] Temporary benchmark output is ignored.
+- [x] Duplicate validation workflows and unused runtime helpers are removed.
 
 ## Documentation
 
-Required documents:
-
-- [x] architecture overview
-- [x] runtime selection guide
-- [x] event subscription model
-- [x] transport capability model
-- [x] benchmark methodology
+- [x] README links to the current quick start, local development guide,
+  runtime choice, event subscriptions, and license.
+- [x] Every current guide names its prerequisites and failure semantics.
+- [x] Examples match the public extension methods in the source tree.

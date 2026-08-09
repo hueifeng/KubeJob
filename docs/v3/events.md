@@ -1,42 +1,59 @@
-# BrokerNative event subscriptions
+# Event subscriptions
 
-Events are transport-native broadcasts. KubeJob publishes one event message to
-a logical Topic; each named subscription receives an independent delivery path.
+BrokerNative events are published once and delivered to each named
+subscription. A subscription is a durable consumer queue, not just a label in
+application code.
 
 ```text
-Topic → broker exchange/topic → subscription queue → handler → ACK
+topic + routing key → exchange/topic → subscription queue → handler → ACK
 ```
 
-Register a handler with a stable topic, routing key and subscription name:
+## Register a subscription
+
+The topic and routing key identify the event. The subscription name identifies
+one independent delivery stream:
 
 ```csharp
-var orderCreated = EventKey<OrderCreated>.Create("orders", "order.created");
+var orderCreated = EventKey<OrderCreated>.Create(
+    "orders",
+    "order.created");
+
 builder.Services.AddKubeJobEventHandler<OrderCreated, AuditOrderCreated>(
     orderCreated,
     subscription: "order-audit");
 ```
 
-## Isolation and retries
+Every replica of the audit service should use `order-audit`; those replicas
+compete for one queue. A separate service should use another name, such as
+`order-search-index`, to receive its own copy.
 
-- Each subscription has its own physical consumer queue.
-- A failure retries only the failing subscription; it does not republish the
-  business event to every subscriber.
-- A terminal failure goes to that subscription's dead-letter path.
-- ACK happens only after the handler succeeds or KubeJob has durably handed off
-  its retry/dead-letter action.
-
-Event delivery is at-least-once. Treat `EventId` and your business identifiers
-as de-duplication inputs in downstream handlers.
-
-## Configuration
-
-Map logical topics to a registered transport adapter:
+Map the topic to a transport and start the event consumer:
 
 ```csharp
+builder.Services.AddKubeJobServer();
 builder.Services.ConfigureKubeJobEventRuntimes(options =>
     options.Topics["orders"] = RabbitMqBrokerNativePublisher.Id);
+builder.Services.AddRabbitMqKubeJobEventConsumer(options =>
+    options.ConnectionString = rabbitMqConnectionString);
 ```
 
-The publisher never creates a managed JobRun. Event history and business
-projections belong to the consuming application or a dedicated observability
+## Retry and dead letters
+
+An acknowledgement is sent only after the handler returns successfully. If a
+handler fails, the broker retries that subscription. A terminal failure goes to
+the subscription's dead-letter route; it is not republished to every other
+subscriber.
+
+This means each subscription can choose its own retry count, dead-letter
+retention, and operational owner. KubeJob does not write an event history to
+the managed job tables. If the application needs an audit trail, store the
+event id and business identifiers in an application table or an observability
 pipeline.
+
+## Delivery semantics
+
+Event delivery is at-least-once. A process can finish the handler and lose its
+connection before the broker sees the acknowledgement, so the same event may
+be delivered again. Make handlers idempotent with `EventId` plus a business
+identifier, and keep external side effects behind a deduplication check when
+necessary.

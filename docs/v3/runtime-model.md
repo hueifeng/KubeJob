@@ -1,96 +1,71 @@
-# KubeJob V3 Runtime Model
+# Runtime model
 
-KubeJob V3 separates two execution models. They share handler abstractions but have different execution authorities.
+KubeJob has two execution paths. They share typed handlers, but they do not
+share ownership of delivery state. Configure a queue as either
+`PostgresManaged` or `BrokerNative` and keep that choice visible in your
+service configuration.
 
-## Managed Runtime
+## PostgresManaged
 
-Managed Runtime is designed for business tasks that require lifecycle management.
+PostgresManaged is for work that has a business lifecycle: processing an
+order, generating a report, or running a task that an operator may need to
+retry or cancel.
 
-Authority:
+The flow is:
 
-```
-PostgreSQL
-```
-
-Lifecycle:
-
-```
-Submit
- |
-JobRun
- |
-Attempt
- |
-Lease
- |
-Execute
- |
-Complete
+```text
+client → PostgreSQL JobRun → worker lease → handler → completion in PostgreSQL
 ```
 
-Characteristics:
+PostgreSQL records the job, each attempt, the lease owner, retry timing, and
+the final result. A worker that stops heartbeating loses its lease; another
+worker can recover the job after the lease timeout. RabbitMQ may be configured
+as a wake-up notification, but it never grants execution ownership on this
+path.
 
-- persistent execution state
-- retry and cancellation management
-- worker fencing
-- operational query capability
-- recovery after worker failure
+Use this path when you need one or more of:
 
-Typical scenarios:
+- an idempotency key enforced by KubeJob;
+- a durable status page or API for operators;
+- scheduled or delayed execution;
+- cancellation and timeout state recorded with the job;
+- retry and worker-fencing decisions made by KubeJob.
 
-- order processing
-- settlement tasks
-- scheduled business jobs
-- long-running workflows
+## BrokerNative
 
-## BrokerNative Runtime
+BrokerNative is for transport-first work: integration messages, notifications,
+or consumers where the broker already provides the delivery features you need.
 
-BrokerNative is designed for event-driven workloads with high throughput requirements.
+The flow is:
 
-Authority:
-
-```
-Message Broker
-```
-
-Lifecycle:
-
-```
-Publish
- |
-Exchange
- |
-Queue
- |
-Consumer
- |
-Handler
- |
-ACK
+```text
+publisher → broker exchange/topic → queue/subscription → handler → ACK
 ```
 
-Characteristics:
+The broker owns delivery, redelivery, and dead-letter routing. KubeJob does
+not create a managed `JobRun`, lease, or completion record for a BrokerNative
+message. A different subscription name creates a different delivery stream;
+replicas using the same name compete for that stream.
 
-- high throughput delivery
-- independent subscribers
-- transport controlled retry/dead-letter behavior
-- no managed Run/Attempt lease path
+Choose this path when:
 
-Typical scenarios:
+- broker throughput and consumer isolation matter more than a KubeJob status
+  record;
+- the broker's retry and dead-letter features are the desired operational
+  controls;
+- the handler can safely process a duplicate message using a business key.
 
-- domain events
-- logging pipelines
-- data synchronization
-- notifications
+Managed-only options such as `IdempotencyKey`, `NotBefore`, `Priority`,
+continuations, and compensations are rejected on BrokerNative queues. If the
+application needs those semantics, use a PostgresManaged queue instead.
 
-## Design Rule
+## What the split means in practice
 
-Managed Runtime answers:
+The same process may host both paths, but a single logical queue has one owner.
+Do not publish a BrokerNative message and then try to claim it through the
+managed lease tables. Likewise, do not treat a PostgreSQL wake-up notification
+as the queue itself.
 
-> What is the state of this business task?
-
-BrokerNative answers:
-
-> How do we deliver this event efficiently?
-
-The two models are complementary and should coexist in one platform.
+For the configuration examples, see [Transport and capabilities](transport.md)
+and [Event subscriptions](events.md). For a working local setup, start with
+[Local development](local-development.md).

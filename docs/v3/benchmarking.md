@@ -1,27 +1,59 @@
-# Benchmarking KubeJob
+# Benchmarking
 
-Benchmark numbers are workload- and environment-specific; do not compare them
-across machines or use them as a production capacity guarantee.
+The benchmark project measures the PostgresManaged pipeline. It is a console
+harness for repeatable comparisons, not a promise of production capacity. The
+RabbitMQ integration tests cover BrokerNative delivery separately.
 
-## Reproducible method
+## What is measured
 
-1. Start PostgreSQL and RabbitMQ with `bash scripts/dev-stack.sh up`.
-2. Build in Release mode: `dotnet build KubeJob.sln -c Release`.
-3. Run the benchmark project with an explicit scenario and record the command,
-   hardware, broker/storage configuration, concurrency, payload shape and
-   warm-up period alongside the result.
-4. Capture ingest rate, end-to-end throughput, latency percentiles, database
-   connection usage and broker ready/unacknowledged counts.
+Each scenario reports:
 
-## Interpret results by runtime
+- submission and end-to-end throughput;
+- P50, P95, and P99 completion latency;
+- PostgreSQL connection peaks;
+- process memory, allocations, and thread counts;
+- optional container CPU and RabbitMQ queue samples.
 
-- **PostgresManaged** includes durable Run/Attempt/lease/completion writes. Its
-  throughput is not directly comparable to a broker-only path.
-- **BrokerNative** measures confirmed broker delivery and handler execution;
-  it intentionally has no managed database completion write.
-- Test key ordering, retries and hot-key workloads separately from parallel
-  workloads. A single hot key is a serialization test, not a throughput test.
+The benchmark records both the time the server reports completion and wall-clock
+time. The former helps find database batching effects; the latter is the number
+an operator experiences.
 
-The benchmark harness and its options live in `tests/KubeJob.Benchmark/`.
-Commit only results that include the full reproduction metadata above; transient
-local output belongs outside the repository.
+## Run a comparison
+
+Start the development stack first. With Podman:
+
+```bash
+KUBEJOB_CONTAINER_ENGINE=podman bash scripts/dev-stack.sh up
+```
+
+Then run two scenarios with the same machine, database, and worker settings:
+
+```bash
+dotnet run --project tests/KubeJob.Benchmark/KubeJob.Benchmark.csproj -c Release -- \
+  --jobs 5000 \
+  --warmup 200 \
+  --worker-concurrency 64 \
+  --scenarios Parallel,KeyOrderedHotKey \
+  --out bench-results.md
+```
+
+The harness creates a temporary database for each scenario and removes it in a
+`finally` block. `--out` writes a Markdown report; do not commit that report
+unless it includes the complete environment and command line.
+
+## Scenarios
+
+- `Parallel` shows the unconstrained managed pipeline.
+- `KeyOrderedUniform` spreads work across many ordering keys.
+- `KeyOrderedHotKey` deliberately creates contention on four keys by default.
+- `StrictFifo` serializes one logical queue and is a latency/ordering test, not
+  a maximum-throughput test.
+
+Run each scenario at least three times after the warm-up and report the median
+alongside the spread. Keep payload size, handler delay, database pool,
+concurrency, and lane settings fixed when comparing commits. If one of those
+changes, call it a new experiment.
+
+The complete option table and ingress-mode notes live in the benchmark
+[README](../../tests/KubeJob.Benchmark/README.md). Transient result files are
+ignored by the repository.
