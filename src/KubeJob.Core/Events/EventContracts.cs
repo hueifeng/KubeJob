@@ -27,6 +27,9 @@ public sealed class EventPublishOptions
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>Optional per-event backoff; the transport supplies a fallback when omitted.</summary>
+    public Runtime.RetryPolicy? RetryPolicy { get; init; }
+
     public string? IdempotencyKey { get; init; }
 
     public string? PartitionKey { get; init; }
@@ -46,6 +49,8 @@ public sealed class EventPublishOptions
                 nameof(Timeout),
                 "Timeout must be positive and no more than one day.");
         }
+
+        RetryPolicy?.Validate();
     }
 }
 

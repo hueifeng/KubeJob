@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using KubeJob.Core.Runtime;
 using KubeJob.Worker.Options;
@@ -175,6 +176,7 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                     delivery.Body.Span,
                     SerializerOptions)
                     ?? throw new JsonException("BrokerNative job message was empty.");
+                message = message with { RetryPolicy = message.RetryPolicy ?? _options.GetFallbackRetryPolicy() };
                 message.Validate();
                 if (!string.Equals(message.Queue, expectedLogicalQueue, StringComparison.Ordinal))
                 {
@@ -298,6 +300,10 @@ public sealed class RabbitMqBrokerNativeConsumerService : BackgroundService
                     ? new Dictionary<string, object>()
                     : new Dictionary<string, object>(original.BasicProperties.Headers);
                 properties.Headers["x-kubejob-attempt"] = retryMessage.Attempt;
+                properties.Expiration = Math.Ceiling(
+                    (retryMessage.RetryPolicy ?? _options.GetFallbackRetryPolicy())
+                    .ComputeDelay(Math.Max(1, retryMessage.Attempt - 1))
+                    .TotalMilliseconds).ToString(CultureInfo.InvariantCulture);
 
                 publishChannel.BasicPublish(
                     exchange: _options.GetRetryExchangeName(),

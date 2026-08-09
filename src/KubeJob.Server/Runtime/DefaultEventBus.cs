@@ -73,6 +73,7 @@ public sealed class DefaultEventBus : IEventBus
             Attempt = 1,
             MaxAttempts = options.MaxAttempts,
             TimeoutSeconds = checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
+            RetryPolicy = options.RetryPolicy,
             PartitionKey = options.PartitionKey,
             IdempotencyKey = options.IdempotencyKey,
             CorrelationId = activity?.TraceId.ToString(),

@@ -57,6 +57,10 @@ public sealed class BrokerNativeJobProcessorTests
     [Fact]
     public async Task Retryable_failure_increments_attempt_for_broker_republish()
     {
+        var retryPolicy = new RetryPolicy(
+            BackoffStrategy.Exponential,
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(30));
         var engine = new StubExecutionEngine(
             new WorkerExecutionResult(
                 JobAttemptOutcome.RetryableFailure,
@@ -65,7 +69,7 @@ public sealed class BrokerNativeJobProcessorTests
         var processor = CreateProcessor(engine);
 
         var result = await processor.ProcessAsync(
-            CreateMessage() with { Attempt = 1, MaxAttempts = 3 },
+            CreateMessage() with { Attempt = 1, MaxAttempts = 3, RetryPolicy = retryPolicy },
             CancellationToken.None,
             CancellationToken.None);
 
@@ -73,6 +77,7 @@ public sealed class BrokerNativeJobProcessorTests
         result.RetryMessage.Should().NotBeNull();
         result.RetryMessage!.Attempt.Should().Be(2);
         result.RetryMessage.MessageId.Should().Be("message-1");
+        result.RetryMessage.RetryPolicy.Should().Be(retryPolicy);
     }
 
     [Fact]

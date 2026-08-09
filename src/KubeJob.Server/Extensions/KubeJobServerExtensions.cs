@@ -37,6 +37,7 @@ public static class KubeJobServerExtensions
         services.TryAddSingleton<IWorkerSessionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobClaimStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobCompletionStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
+        services.TryAddSingleton<ICompletionIntentStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobQueryStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IJobScheduleStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
         services.TryAddSingleton<IOutboxStore>(sp => sp.GetRequiredService<InMemoryJobRuntimeStore>());
@@ -96,6 +97,8 @@ public static class KubeJobServerExtensions
             .AddApplicationPart(typeof(JobsApiController).Assembly);
         services.AddHostedService<ScheduleReconcilerService>();
         services.AddHostedService<LeaseReaperService>();
+        services.AddHostedService<TimeoutScannerService>();
+        services.AddHostedService<CompletionIntentDispatcherService>();
         services.AddHostedService<OutboxPublisherService>();
         services.AddHostedService<RuntimeRetentionService>();
         services.AddHostedService<OrderingMetricsRefreshService>();

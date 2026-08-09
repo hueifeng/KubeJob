@@ -58,13 +58,15 @@ public sealed record ClaimedJob(
     string Queue,
     int TimeoutSeconds,
     ExecutionOrderingMode OrderingMode = ExecutionOrderingMode.Parallel,
-    DateTimeOffset AvailableAt = default);
+    DateTimeOffset AvailableAt = default,
+    long FenceVersion = 0);
 
 public sealed record ClaimJobsResponse(IReadOnlyList<ClaimedJob> Jobs);
 
 public sealed record LeaseRenewal(
     string AttemptId,
-    string LeaseToken);
+    string LeaseToken,
+    long FenceVersion = 0);
 
 public sealed record RenewLeasesRequest(
     string WorkerId,
@@ -91,7 +93,8 @@ public sealed record CompleteAttemptRequest(
     string LeaseToken,
     JobAttemptOutcome Outcome,
     string? FailureCode = null,
-    string? FailureMessage = null);
+    string? FailureMessage = null,
+    long FenceVersion = 0);
 
 public sealed record CompleteAttemptResponse(
     bool Accepted,

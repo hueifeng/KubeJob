@@ -138,5 +138,6 @@ public sealed class OrderingBacklogQueryTests
         job.AttemptId,
         job.AttemptNumber,
         job.LeaseToken,
-        outcome);
+        outcome,
+        FenceVersion: job.FenceVersion);
 }

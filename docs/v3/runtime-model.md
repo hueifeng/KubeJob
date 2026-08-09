@@ -31,6 +31,46 @@ Use this path when you need one or more of:
 - cancellation and timeout state recorded with the job;
 - retry and worker-fencing decisions made by KubeJob.
 
+### Fencing, completion, and timeouts
+
+Every managed claim carries a monotonically increasing `FenceVersion` and a
+lease token. Renewals and completions must present both values. If a worker
+loses its lease and later resumes, its completion is rejected even if the
+same process is still alive.
+
+The worker-facing completion path first persists a completion intent, then
+queues the normal completion batch. A restarted control plane replays intents
+that are still valid; stale intents are discarded. This closes the crash
+window between accepting a completion and committing the run transition, but
+it does not make external side effects exactly-once.
+
+`TimeoutSeconds` is enforced in two places: the worker links the handler
+cancellation token to the attempt timeout, and the control plane's timeout
+scanner reconciles attempts that remain running while their worker continues
+renewing the lease. A timeout follows the same retry policy as a handler
+failure and becomes `Dead` after `MaxAttempts`.
+
+Retry behavior is selected from the per-run `RetryPolicy` when present, then
+falls back to the server policy. The policy controls fixed, linear,
+exponential, and jittered backoff; `MaxAttempts` remains the retry budget.
+
+Handlers receive the current attempt context:
+
+```csharp
+public ValueTask ExecuteAsync(
+    OrderPayload payload,
+    JobExecutionContext context,
+    CancellationToken cancellationToken)
+{
+    // Use context.FenceVersion when an external store supports fencing.
+    // Always pass cancellationToken to downstream calls.
+    return ValueTask.CompletedTask;
+}
+```
+
+Do not acknowledge a completion before the handler has finished, and do not
+use a stale `FenceVersion` for external writes.
+
 ## BrokerNative
 
 BrokerNative is for transport-first work: integration messages, notifications,

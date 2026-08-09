@@ -118,4 +118,16 @@ public sealed class RetryPolicyTests
 
         act.Should().NotThrow();
     }
+
+    [Theory]
+    [InlineData(1, 3, true)]
+    [InlineData(2, 3, true)]
+    [InlineData(3, 3, false)]
+    [InlineData(4, 3, false)]
+    public void CanRetry_uses_attempt_number_and_max_attempts(int attempt, int maxAttempts, bool expected)
+    {
+        var policy = new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
+        policy.CanRetry(attempt, maxAttempts).Should().Be(expected);
+    }
 }

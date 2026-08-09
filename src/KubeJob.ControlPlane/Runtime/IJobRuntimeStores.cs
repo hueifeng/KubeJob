@@ -114,6 +114,31 @@ public interface IJobCompletionStore
         RetryPolicy retryPolicy,
         int batchSize,
         CancellationToken cancellationToken);
+
+    ValueTask<int> RequeueTimedOutAttemptsAsync(
+        DateTimeOffset now,
+        RetryPolicy retryPolicy,
+        int batchSize,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Durable hand-off for managed-attempt completions. The worker-facing control
+/// plane persists an intent before using the in-memory micro-batcher. If the
+/// process fails after accepting the request, the dispatcher can replay the
+/// still-running attempt from this store.
+/// </summary>
+public interface ICompletionIntentStore
+{
+    ValueTask<bool> PersistAsync(
+        CompleteAttemptRequest request,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<CompleteAttemptRequest>> GetPendingAsync(
+        int batchSize,
+        CancellationToken cancellationToken);
+
+    ValueTask RemoveAsync(string attemptId, CancellationToken cancellationToken);
 }
 
 public interface IJobQueryStore

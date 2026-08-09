@@ -229,6 +229,7 @@ public sealed class ScheduleReconcilerService : BackgroundService
                 Attempt = 1,
                 MaxAttempts = schedule.MaxAttempts,
                 TimeoutSeconds = schedule.TimeoutSeconds,
+                RetryPolicy = schedule.RetryPolicy,
                 IdempotencyKey = idempotencyKey,
                 Headers = new Dictionary<string, string>(StringComparer.Ordinal)
                 {

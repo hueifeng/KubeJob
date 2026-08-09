@@ -33,6 +33,8 @@ public sealed partial class InMemoryJobRuntimeStore
                 || !string.Equals(attempt.SessionId, request.SessionId, StringComparison.Ordinal)
                 || attempt.SessionEpoch != request.SessionEpoch
                 || !string.Equals(attempt.LeaseToken, request.LeaseToken, StringComparison.Ordinal)
+                || attempt.FenceVersion != request.FenceVersion
+                || run.FenceVersion != request.FenceVersion
                 || !string.Equals(run.CurrentAttemptId, attempt.Id, StringComparison.Ordinal))
             {
                 return ValueTask.FromResult(new CompleteAttemptResponse(
@@ -50,6 +52,7 @@ public sealed partial class InMemoryJobRuntimeStore
             if (run.CancelRequested || request.Outcome == JobAttemptOutcome.Canceled)
             {
                 MakeTerminal(run, JobPhase.Canceled, now, request.FailureCode ?? "canceled", request.FailureMessage);
+                RemoveCompletionIntent(request);
                 return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
             }
 
@@ -58,11 +61,13 @@ public sealed partial class InMemoryJobRuntimeStore
                 case JobAttemptOutcome.Succeeded:
                     MakeTerminal(run, JobPhase.Succeeded, now, null, null);
                     FireContinuation(run, request.Outcome, now);
+                    RemoveCompletionIntent(request);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 case JobAttemptOutcome.PermanentFailure:
                     MakeTerminal(run, JobPhase.Failed, now, request.FailureCode, request.FailureMessage);
                     FireContinuation(run, request.Outcome, now);
+                    RemoveCompletionIntent(request);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 case JobAttemptOutcome.RetryableFailure:
@@ -72,11 +77,13 @@ public sealed partial class InMemoryJobRuntimeStore
                         var effectivePolicy = run.RetryPolicy ?? retryPolicy;
                         Requeue(run, now.Add(effectivePolicy.ComputeDelay(run.AttemptCount)), request.FailureCode, request.FailureMessage);
                         AddWorkAvailableOutbox(run, now);
+                        RemoveCompletionIntent(request);
                         return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, true));
                     }
 
                     MakeTerminal(run, JobPhase.Dead, now, request.FailureCode, request.FailureMessage);
                     FireContinuation(run, request.Outcome, now);
+                    RemoveCompletionIntent(request);
                     return ValueTask.FromResult(new CompleteAttemptResponse(true, run.Phase, false));
 
                 default:
@@ -114,6 +121,21 @@ public sealed partial class InMemoryJobRuntimeStore
         RetryPolicy retryPolicy,
         int batchSize,
         CancellationToken cancellationToken)
+        => RequeueExpiredAttemptsAsync(now, retryPolicy, batchSize, timeoutOnly: false, cancellationToken);
+
+    public ValueTask<int> RequeueTimedOutAttemptsAsync(
+        DateTimeOffset now,
+        RetryPolicy retryPolicy,
+        int batchSize,
+        CancellationToken cancellationToken)
+        => RequeueExpiredAttemptsAsync(now, retryPolicy, batchSize, timeoutOnly: true, cancellationToken);
+
+    private ValueTask<int> RequeueExpiredAttemptsAsync(
+        DateTimeOffset now,
+        RetryPolicy retryPolicy,
+        int batchSize,
+        bool timeoutOnly,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
@@ -124,6 +146,17 @@ public sealed partial class InMemoryJobRuntimeStore
                 .Take(Math.Max(0, batchSize))
                 .ToArray();
 
+            if (timeoutOnly)
+            {
+                expired = _attempts.Values
+                    .Where(x => x.Phase == JobAttemptPhase.Running
+                        && _runs.TryGetValue(x.RunId, out var run)
+                        && x.StartedAt.AddSeconds(run.TimeoutSeconds) <= now)
+                    .OrderBy(x => x.StartedAt)
+                    .Take(Math.Max(0, batchSize))
+                    .ToArray();
+            }
+
             var changed = 0;
             foreach (var attempt in expired)
             {
@@ -133,10 +166,13 @@ public sealed partial class InMemoryJobRuntimeStore
                     continue;
                 }
 
-                attempt.Phase = JobAttemptPhase.LeaseLost;
+                attempt.Phase = timeoutOnly ? JobAttemptPhase.TimedOut : JobAttemptPhase.LeaseLost;
                 attempt.CompletedAt = now;
-                attempt.FailureCode = "lease_lost";
-                attempt.FailureMessage = "The worker did not renew the attempt lease before it expired.";
+                attempt.FailureCode = timeoutOnly ? "timeout" : "lease_lost";
+                attempt.FailureMessage = timeoutOnly
+                    ? "The worker exceeded the configured execution timeout."
+                    : "The worker did not renew the attempt lease before it expired.";
+                _completionIntents.Remove(attempt.Id);
 
                 if (run.CancelRequested)
                 {
@@ -151,7 +187,10 @@ public sealed partial class InMemoryJobRuntimeStore
                 else
                 {
                     MakeTerminal(run, JobPhase.Dead, now, attempt.FailureCode, attempt.FailureMessage);
-                    FireContinuation(run, JobAttemptOutcome.RetryableFailure, now);
+                    FireContinuation(
+                        run,
+                        timeoutOnly ? JobAttemptOutcome.TimedOut : JobAttemptOutcome.RetryableFailure,
+                        now);
                 }
 
                 changed++;

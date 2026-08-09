@@ -372,7 +372,9 @@ public sealed class WorkerRuntimeService : BackgroundService
                                     _options.BuildId),
                                 owned.CancellationSource.Token,
                                 stoppingToken,
-                                consumerIndex));
+                                consumerIndex,
+                                job.LeaseToken,
+                                job.FenceVersion));
                     }
                     catch (Exception ex)
                     {
@@ -431,7 +433,8 @@ public sealed class WorkerRuntimeService : BackgroundService
                             Volatile.Read(ref _sessionEpoch),
                             snapshot.Select(x => new LeaseRenewal(
                                 x.Job.AttemptId,
-                                x.Job.LeaseToken)).ToArray()),
+                                x.Job.LeaseToken,
+                                x.Job.FenceVersion)).ToArray()),
                         stoppingToken);
 
                     foreach (var renewal in response.Attempts)
@@ -628,7 +631,8 @@ public sealed class WorkerRuntimeService : BackgroundService
             job.LeaseToken,
             outcome,
             Truncate(failureCode, 200),
-            Truncate(failureMessage, _options.MaximumFailureMessageLength));
+            Truncate(failureMessage, _options.MaximumFailureMessageLength),
+            job.FenceVersion);
 
         for (var attempt = 1; attempt <= 3; attempt++)
         {

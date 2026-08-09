@@ -147,7 +147,8 @@ public sealed class StrictFifoOrderingTests
                 AttemptId: attempt.Id,
                 AttemptNumber: attempt.AttemptNumber,
                 LeaseToken: attempt.LeaseToken,
-                Outcome: outcome),
+                Outcome: outcome,
+                FenceVersion: attempt.FenceVersion),
             new RetryPolicy(
                 BackoffStrategy.Fixed,
                 TimeSpan.FromSeconds(1),

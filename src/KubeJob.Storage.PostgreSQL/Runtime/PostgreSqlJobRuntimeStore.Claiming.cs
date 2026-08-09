@@ -289,15 +289,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
         var attemptNumber = run.AttemptCount + 1;
         var attemptId = NewId();
         var leaseToken = NewId();
+        var fenceVersion = run.FenceVersion + 1;
         var leaseExpiresAt = now.Add(leaseDuration);
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             INSERT INTO Kj2_JobAttempts
                 (Id, RunId, AttemptNumber, WorkerId, SessionId, SessionEpoch,
-                 LeaseToken, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
+                 LeaseToken, FenceVersion, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
             VALUES
                 (@Id, @RunId, @AttemptNumber, @WorkerId, @SessionId,
-                 @SessionEpoch, @LeaseToken, @Phase, @ClaimedAt,
+                 @SessionEpoch, @LeaseToken, @FenceVersion, @Phase, @ClaimedAt,
                  @StartedAt, @LeaseExpiresAt);",
             new
             {
@@ -308,6 +309,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 request.SessionId,
                 request.SessionEpoch,
                 LeaseToken = leaseToken,
+                FenceVersion = fenceVersion,
                 Phase = (int)JobAttemptPhase.Running,
                 ClaimedAt = now,
                 StartedAt = now,
@@ -323,6 +325,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 CurrentAttemptId = @AttemptId,
                 CurrentWorkerId = @WorkerId,
                 CurrentSessionId = @SessionId,
+                FenceVersion = @FenceVersion,
                 StartedAt = COALESCE(StartedAt, @StartedAt),
                 Version = Version + 1
             WHERE Id = @RunId
@@ -337,6 +340,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 AttemptId = attemptId,
                 request.WorkerId,
                 request.SessionId,
+                FenceVersion = fenceVersion,
                 StartedAt = now
             },
             transaction,
@@ -363,7 +367,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
             run.Queue,
             run.TimeoutSeconds,
             run.OrderingMode,
-            run.AvailableAt);
+            run.AvailableAt,
+            fenceVersion);
     }
 
     private static async ValueTask<List<ClaimedJob>> ClaimBatchAsync(
@@ -381,28 +386,31 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 Run: run,
                 AttemptId: NewId(),
                 AttemptNumber: run.AttemptCount + 1,
-                LeaseToken: NewId()))
+                LeaseToken: NewId(),
+                FenceVersion: run.FenceVersion + 1))
             .ToArray();
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             INSERT INTO Kj2_JobAttempts
                 (Id, RunId, AttemptNumber, WorkerId, SessionId, SessionEpoch,
-                 LeaseToken, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
+                 LeaseToken, FenceVersion, Phase, ClaimedAt, StartedAt, LeaseExpiresAt)
             SELECT item.Id, item.RunId, item.AttemptNumber, @WorkerId, @SessionId, @SessionEpoch,
-                   item.LeaseToken, @Phase, @ClaimedAt, @ClaimedAt, item.LeaseExpiresAt
+                   item.LeaseToken, item.FenceVersion, @Phase, @ClaimedAt, @ClaimedAt, item.LeaseExpiresAt
             FROM unnest(
                 CAST(@AttemptIds AS text[]),
                 CAST(@RunIds AS text[]),
                 CAST(@AttemptNumbers AS int[]),
                 CAST(@LeaseTokens AS text[]),
+                CAST(@FenceVersions AS bigint[]),
                 CAST(@LeaseExpiresAts AS timestamptz[]))
-                AS item(Id, RunId, AttemptNumber, LeaseToken, LeaseExpiresAt);",
+                AS item(Id, RunId, AttemptNumber, LeaseToken, FenceVersion, LeaseExpiresAt);",
             new
             {
                 AttemptIds = items.Select(x => x.AttemptId).ToArray(),
                 RunIds = items.Select(x => x.Run.Id).ToArray(),
                 AttemptNumbers = items.Select(x => x.AttemptNumber).ToArray(),
                 LeaseTokens = items.Select(x => x.LeaseToken).ToArray(),
+                FenceVersions = items.Select(x => x.FenceVersion).ToArray(),
                 LeaseExpiresAts = items.Select(_ => leaseExpiresAt).ToArray(),
                 request.WorkerId,
                 request.SessionId,
@@ -420,13 +428,15 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 CurrentAttemptId = item.AttemptId,
                 CurrentWorkerId = @WorkerId,
                 CurrentSessionId = @SessionId,
+                FenceVersion = item.FenceVersion,
                 StartedAt = COALESCE(StartedAt, @StartedAt),
                 Version = Version + 1
             FROM unnest(
                 CAST(@RunIds AS text[]),
                 CAST(@AttemptIds AS text[]),
-                CAST(@AttemptNumbers AS int[]))
-                AS item(RunId, AttemptId, AttemptNumber)
+                CAST(@AttemptNumbers AS int[]),
+                CAST(@FenceVersions AS bigint[]))
+                AS item(RunId, AttemptId, AttemptNumber, FenceVersion)
             WHERE Kj2_JobRuns.Id = item.RunId
               AND Kj2_JobRuns.Phase = @Pending
               AND Kj2_JobRuns.CancelRequested = FALSE
@@ -436,6 +446,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 RunIds = items.Select(x => x.Run.Id).ToArray(),
                 AttemptIds = items.Select(x => x.AttemptId).ToArray(),
                 AttemptNumbers = items.Select(x => x.AttemptNumber).ToArray(),
+                FenceVersions = items.Select(x => x.FenceVersion).ToArray(),
                 Running = (int)JobPhase.Running,
                 Pending = (int)JobPhase.Pending,
                 request.WorkerId,
@@ -474,7 +485,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 item.Run.Queue,
                 item.Run.TimeoutSeconds,
                 item.Run.OrderingMode,
-                item.Run.AvailableAt));
+                item.Run.AvailableAt,
+                item.FenceVersion));
         }
 
         return claimed;

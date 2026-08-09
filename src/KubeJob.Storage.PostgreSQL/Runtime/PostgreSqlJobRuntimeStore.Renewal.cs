@@ -64,10 +64,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
             UPDATE Kj2_JobAttempts attempt
             SET LeaseExpiresAt = @LeaseExpiresAt
             FROM Kj2_JobRuns run,
-                 unnest(CAST(@AttemptIds AS text[]), CAST(@LeaseTokens AS text[]))
-                     AS renewal(AttemptId, LeaseToken)
+                 unnest(
+                     CAST(@AttemptIds AS text[]),
+                     CAST(@LeaseTokens AS text[]),
+                     CAST(@FenceVersions AS bigint[]))
+                     AS renewal(AttemptId, LeaseToken, FenceVersion)
             WHERE attempt.Id = renewal.AttemptId
               AND attempt.LeaseToken = renewal.LeaseToken
+              AND attempt.FenceVersion = renewal.FenceVersion
               AND attempt.RunId = run.Id
               AND attempt.Phase = @AttemptRunning
               AND attempt.LeaseExpiresAt > @Now
@@ -84,11 +88,13 @@ public sealed partial class PostgreSqlJobRuntimeStore
               )
               AND run.Phase = @RunRunning
               AND run.CurrentAttemptId = attempt.Id
+              AND run.FenceVersion = renewal.FenceVersion
             RETURNING attempt.Id AS AttemptId, run.CancelRequested;",
             new
             {
                 AttemptIds = request.Attempts.Select(x => x.AttemptId).ToArray(),
                 LeaseTokens = request.Attempts.Select(x => x.LeaseToken).ToArray(),
+                FenceVersions = request.Attempts.Select(x => x.FenceVersion).ToArray(),
                 Now = now,
                 LeaseExpiresAt = leaseExpiresAt,
                 request.WorkerId,

@@ -26,6 +26,9 @@ public sealed record BrokerNativeEventMessage
 
     public int TimeoutSeconds { get; init; } = 300;
 
+    /// <summary>Optional per-message backoff; null uses the transport default.</summary>
+    public Runtime.RetryPolicy? RetryPolicy { get; init; }
+
     public string? PartitionKey { get; init; }
 
     public string? IdempotencyKey { get; init; }
@@ -58,5 +61,7 @@ public sealed record BrokerNativeEventMessage
         {
             throw new InvalidOperationException("BrokerNative event TimeoutSeconds must be positive.");
         }
+
+        RetryPolicy?.Validate();
     }
 }

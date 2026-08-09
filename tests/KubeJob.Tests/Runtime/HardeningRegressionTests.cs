@@ -128,5 +128,14 @@ public sealed class HardeningRegressionTests
         {
             return ValueTask.FromResult(0);
         }
+
+        public ValueTask<int> RequeueTimedOutAttemptsAsync(
+            DateTimeOffset now,
+            RetryPolicy retryPolicy,
+            int batchSize,
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(0);
+        }
     }
 }

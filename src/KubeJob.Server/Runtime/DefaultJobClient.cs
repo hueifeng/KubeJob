@@ -348,6 +348,7 @@ public sealed class DefaultJobClient : IJobClient
             Attempt = 1,
             MaxAttempts = options.MaxAttempts,
             TimeoutSeconds = checked((int)Math.Ceiling(options.Timeout.TotalSeconds)),
+            RetryPolicy = options.RetryPolicy,
             IdempotencyKey = options.IdempotencyKey,
             CorrelationId = activity?.TraceId.ToString(),
             TraceParent = activity?.Id

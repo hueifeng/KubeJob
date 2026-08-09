@@ -17,6 +17,7 @@ public sealed partial class PostgreSqlJobRuntimeStore :
     IWorkerSessionStore,
     IJobClaimStore,
     IJobCompletionStore,
+    ICompletionIntentStore,
     IJobQueryStore,
     IJobScheduleStore,
     IOutboxStore,

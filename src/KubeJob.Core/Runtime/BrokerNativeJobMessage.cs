@@ -33,6 +33,9 @@ public sealed record BrokerNativeJobMessage
 
     public int TimeoutSeconds { get; init; } = 300;
 
+    /// <summary>Optional per-message backoff; null uses the transport default.</summary>
+    public RetryPolicy? RetryPolicy { get; init; }
+
     /// <summary>
     /// Optional stable key used only when the configured broker topology needs
     /// partitioned/key-ordered routing. Parallel queues leave it null.
@@ -81,5 +84,7 @@ public sealed record BrokerNativeJobMessage
             throw new InvalidOperationException(
                 "BrokerNative job TimeoutSeconds must be positive.");
         }
+
+        RetryPolicy?.Validate();
     }
 }

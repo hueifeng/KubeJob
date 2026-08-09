@@ -1,3 +1,4 @@
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.ControlPlane.Runtime;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,7 @@ public sealed class WorkerControlPlane
     private readonly IWorkerSessionStore _sessions;
     private readonly IJobClaimStore _claims;
     private readonly IJobCompletionStore _completions;
+    private readonly ICompletionIntentStore _completionIntents;
     private readonly IJobSubmissionStore _submissions;
     private readonly CompletionBatcher? _completionBatcher;
     private readonly JobRuntimeOptions _options;
@@ -23,6 +25,7 @@ public sealed class WorkerControlPlane
         IWorkerSessionStore sessions,
         IJobClaimStore claims,
         IJobCompletionStore completions,
+        ICompletionIntentStore completionIntents,
         IJobSubmissionStore submissions,
         IOptions<JobRuntimeOptions> options,
         QueueCatalog queueCatalog,
@@ -31,6 +34,7 @@ public sealed class WorkerControlPlane
         _sessions = sessions;
         _claims = claims;
         _completions = completions;
+        _completionIntents = completionIntents;
         _submissions = submissions;
         _completionBatcher = completionBatcher;
         _options = options.Value;
@@ -114,12 +118,23 @@ public sealed class WorkerControlPlane
         return new RenewLeasesResponse(attempts);
     }
 
-    public ValueTask<CompleteAttemptResponse> CompleteAsync(
+    public async ValueTask<CompleteAttemptResponse> CompleteAsync(
         CompleteAttemptRequest request,
-        CancellationToken cancellationToken = default) =>
-        _completionBatcher is null
-            ? _completions.CompleteAsync(request, _options.RetryPolicy, cancellationToken)
-            : _completionBatcher.EnqueueAsync(request, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (!await _completionIntents.PersistAsync(request, cancellationToken))
+        {
+            return new CompleteAttemptResponse(
+                false,
+                JobPhase.Failed,
+                false,
+                "stale_session_attempt_expired_or_fencing_token_mismatch");
+        }
+
+        return _completionBatcher is null
+            ? await _completions.CompleteAsync(request, _options.RetryPolicy, cancellationToken)
+            : await _completionBatcher.EnqueueAsync(request, cancellationToken);
+    }
 
     public ValueTask<bool> RequeueExecutionAsync(
         RequeueExecutionRequest request,

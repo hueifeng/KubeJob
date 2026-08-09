@@ -25,6 +25,14 @@ public sealed record RetryPolicy(
     double Multiplier = 2.0,
     double JitterRatio = 0.0)
 {
+    /// <summary>Returns whether another attempt may be scheduled.</summary>
+    public bool CanRetry(int attemptNumber, int maxAttempts)
+    {
+        if (attemptNumber < 1) throw new ArgumentOutOfRangeException(nameof(attemptNumber));
+        if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        return attemptNumber < maxAttempts;
+    }
+
     public TimeSpan ComputeDelay(int attemptCount) => ComputeDelay(attemptCount, Random.Shared);
 
     public TimeSpan ComputeDelay(int attemptCount, Random random)

@@ -84,7 +84,8 @@ public sealed class BrokerNativeEventProcessor
                 execution),
 
             JobAttemptOutcome.RetryableFailure or JobAttemptOutcome.TimedOut
-                when message.Attempt < message.MaxAttempts => new(
+                when message.RetryPolicy?.CanRetry(message.Attempt, message.MaxAttempts)
+                    ?? (message.Attempt < message.MaxAttempts) => new(
                     BrokerNativeMessageDisposition.Retry,
                     execution,
                     message with { Attempt = message.Attempt + 1 }),

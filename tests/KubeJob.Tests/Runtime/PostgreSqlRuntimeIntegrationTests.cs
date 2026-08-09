@@ -819,7 +819,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         var renewals = claims
             .Select((job, index) => new LeaseRenewal(
                 job.AttemptId,
-                index == 0 ? "wrong-token" : job.LeaseToken))
+                index == 0 ? "wrong-token" : job.LeaseToken,
+                job.FenceVersion))
             .ToArray();
 
         var results = await store.RenewLeasesAsync(
@@ -882,6 +883,33 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
             .Phase.Should().Be(JobPhase.Dead);
         (await store.GetRunAsync(cancelRun.Id, CancellationToken.None))!
             .Phase.Should().Be(JobPhase.Canceled);
+    }
+
+    [Fact]
+    public async Task Timeout_scanner_requeues_running_attempt_after_execution_deadline()
+    {
+        if (!Enabled) return;
+        var store = _store!;
+        var run = (await store.SubmitAsync(
+            NewSubmission("timeout-scanner", maxAttempts: 2, timeoutSeconds: 1),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "timeout-scanner-worker", "timeout-scanner-session");
+        (await store.ClaimAsync(
+            Claim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Should().ContainSingle();
+
+        await Task.Delay(1_100);
+        (await store.RequeueTimedOutAttemptsAsync(
+            DateTimeOffset.UtcNow,
+            TestRetryPolicy,
+            10,
+            CancellationToken.None)).Should().Be(1);
+
+        (await store.GetRunAsync(run.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Pending);
+        (await store.GetAttemptsAsync(run.Id, CancellationToken.None)).Single()
+            .Phase.Should().Be(JobAttemptPhase.TimedOut);
     }
 
     [Fact]
@@ -1531,7 +1559,8 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         int maxAttempts = 3,
         int priority = 0,
         string? concurrencyKey = null,
-        DeliveryTarget? deliveryTarget = null) => new(
+        DeliveryTarget? deliveryTarget = null,
+        int timeoutSeconds = 60) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         queue,
@@ -1540,7 +1569,7 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         idempotencyKey,
         concurrencyKey,
         maxAttempts,
-        60,
+        timeoutSeconds,
         DeliveryTarget: deliveryTarget);
 
     private static JobScheduleRecord NewSchedule(DateTimeOffset nextFireAt) => new()
@@ -1759,5 +1788,6 @@ public sealed class PostgreSqlRuntimeIntegrationTests : IAsyncLifetime
         job.AttemptId,
         job.AttemptNumber,
         job.LeaseToken,
-        outcome);
+        outcome,
+        FenceVersion: job.FenceVersion);
 }

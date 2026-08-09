@@ -14,6 +14,22 @@ public sealed class JobExecutionContext
 
     public required int AttemptNumber { get; init; }
 
+    /// <summary>Lease token assigned to this managed attempt, when applicable.</summary>
+    public string? LeaseToken { get; init; }
+
+    /// <summary>
+    /// Monotonically increasing lease generation assigned by the control plane.
+    /// It lets handlers include a durable fencing value in external side effects.
+    /// Broker-native executions, which do not have a managed lease, use zero.
+    /// </summary>
+    public long FenceVersion { get; init; }
+
+    public string WorkerId => Worker.WorkerId;
+
+    public string SessionId => Worker.SessionId;
+
+    public long SessionEpoch => Worker.SessionEpoch;
+
     public string? BatchId { get; init; }
 
     public int? ShardIndex { get; init; }

@@ -126,6 +126,11 @@ public sealed class JobRunRecord
     public bool CancelRequested { get; set; }
     public string? FailureCode { get; set; }
     public string? FailureMessage { get; set; }
+    /// <summary>
+    /// Monotonically increasing lease generation. A completion or renewal is
+    /// valid only while it carries the generation assigned by the latest claim.
+    /// </summary>
+    public long FenceVersion { get; set; }
     public long Version { get; set; }
 }
 
@@ -141,6 +146,10 @@ public sealed class JobAttemptRecord
     public required string SessionId { get; init; }
     public required long SessionEpoch { get; init; }
     public required string LeaseToken { get; init; }
+    /// <summary>
+    /// The Run's lease generation at the time this attempt was claimed.
+    /// </summary>
+    public required long FenceVersion { get; init; }
     public JobAttemptPhase Phase { get; set; } = JobAttemptPhase.Running;
     public DateTimeOffset ClaimedAt { get; init; }
     public DateTimeOffset StartedAt { get; init; }

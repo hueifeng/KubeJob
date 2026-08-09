@@ -1,5 +1,6 @@
 using System.Text;
 using KubeJob.Core.Queues;
+using KubeJob.Core.Runtime;
 
 namespace KubeJob.Transport.RabbitMQ;
 
@@ -31,11 +32,19 @@ public sealed class RabbitMqBrokerNativeOptions
 
     public ushort ConsumerDispatchConcurrency { get; set; }
 
+    /// <summary>
+    /// Fallback retry delay for messages without a policy. It is also the
+    /// queue-level safety TTL, so set it at least as high as custom policies'
+    /// maximum delay until the retry queue topology is migrated.
+    /// </summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(5);
 
     public TimeSpan ReconnectDelay { get; set; } = TimeSpan.FromSeconds(2);
 
     public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    public RetryPolicy GetFallbackRetryPolicy() =>
+        new(BackoffStrategy.Fixed, RetryDelay, RetryDelay);
 
     public void Validate()
     {

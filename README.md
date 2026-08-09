@@ -166,6 +166,9 @@ dead-letter rules.
   development and tests. Do not enable them on a public or shared network.
 - Initialize the PostgreSQL schema before starting managed workers. The sample
   does this with `InitializeKubeJobDatabase()`.
+- Keep the RabbitMQ BrokerNative `RetryDelay` at least as high as any custom
+  `RetryPolicy.MaxDelay`; the retry queue has a queue-level TTL for backward
+  compatibility.
 - Do not put large payloads or secrets in a job message. Store sensitive data
   in your application database and pass a reference to the handler.
 

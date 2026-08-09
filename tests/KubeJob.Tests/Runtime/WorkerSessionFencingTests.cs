@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 using KubeJob.ControlPlane.Runtime;
 using KubeJob.Server.Runtime;
@@ -32,11 +33,81 @@ public sealed class WorkerSessionFencingTests
                 claim.AttemptId,
                 claim.AttemptNumber,
                 claim.LeaseToken,
-                JobAttemptOutcome.Succeeded),
+                JobAttemptOutcome.Succeeded,
+                FenceVersion: claim.FenceVersion),
             TestRetryPolicy,
             CancellationToken.None);
 
         completion.Accepted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Expired_session_cannot_complete_after_reaper_requeues_for_new_worker()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var retryPolicy = new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.Zero, TimeSpan.Zero);
+        var run = (await store.SubmitAsync(
+            new SubmitJobCommand(
+                "mail.send",
+                "{\"index\":0}",
+                "default",
+                0,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                2,
+                300,
+                RetryPolicy: retryPolicy),
+            CancellationToken.None)).Run;
+
+        var workerA = await RegisterAsync(store, "worker-a", "session-a", 1);
+        var claimA = (await store.ClaimAsync(
+            Claim(workerA, 1),
+            TimeSpan.FromSeconds(-1),
+            1,
+            CancellationToken.None)).Single();
+
+        var reaped = await store.RequeueExpiredLeasesAsync(
+            DateTimeOffset.UtcNow,
+            retryPolicy,
+            10,
+            CancellationToken.None);
+
+        reaped.Should().Be(1);
+        (await store.GetRunAsync(run.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Pending);
+
+        var workerB = await RegisterAsync(store, "worker-b", "session-b", 1);
+        var claimB = (await store.ClaimAsync(
+            Claim(workerB, 1),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+
+        claimB.RunId.Should().Be(claimA.RunId);
+        claimB.FenceVersion.Should().BeGreaterThan(claimA.FenceVersion);
+
+        var staleCompletion = await store.CompleteAsync(
+            new CompleteAttemptRequest(
+                workerA.WorkerId,
+                workerA.SessionId,
+                workerA.Epoch,
+                claimA.RunId,
+                claimA.AttemptId,
+                claimA.AttemptNumber,
+                claimA.LeaseToken,
+                JobAttemptOutcome.Succeeded,
+                FenceVersion: claimA.FenceVersion),
+            TestRetryPolicy,
+            CancellationToken.None);
+
+        staleCompletion.Accepted.Should().BeFalse();
+
+        var currentRun = (await store.GetRunAsync(run.Id, CancellationToken.None))!;
+        currentRun.Phase.Should().Be(JobPhase.Running);
+        currentRun.CurrentAttemptId.Should().Be(claimB.AttemptId);
+        currentRun.CurrentWorkerId.Should().Be(workerB.WorkerId);
+        currentRun.CurrentSessionId.Should().Be(workerB.SessionId);
+        currentRun.FenceVersion.Should().Be(claimB.FenceVersion);
     }
 
     [Fact]

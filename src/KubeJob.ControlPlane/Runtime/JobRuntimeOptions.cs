@@ -11,6 +11,8 @@ public sealed class JobRuntimeOptions
 
     public TimeSpan LeaseReaperInterval { get; set; } = TimeSpan.FromSeconds(5);
 
+    public TimeSpan TimeoutScannerInterval { get; set; } = TimeSpan.FromSeconds(5);
+
     public TimeSpan OutboxPollInterval { get; set; } = TimeSpan.FromSeconds(1);
 
     public TimeSpan OutboxClaimDuration { get; set; } = TimeSpan.FromSeconds(30);
@@ -48,6 +50,8 @@ public sealed class JobRuntimeOptions
 
     public int LeaseReaperBatchSize { get; set; } = 256;
 
+    public int TimeoutScannerBatchSize { get; set; } = 256;
+
     public int OutboxBatchSize { get; set; } = 256;
 
     public int OutboxPublishConcurrency { get; set; } = 4;
@@ -64,6 +68,12 @@ public sealed class JobRuntimeOptions
     public int CompletionBatcherShardCount { get; set; } = 4;
 
     public TimeSpan CompletionFlushInterval { get; set; } = TimeSpan.FromMilliseconds(2);
+
+    /// <summary>Polling interval for durable completion-intent recovery.</summary>
+    public TimeSpan CompletionIntentPollInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Maximum persisted completion intents replayed per recovery iteration.</summary>
+    public int CompletionIntentBatchSize { get; set; } = 128;
 
     public int ScheduleBatchSize { get; set; } = 128;
 
@@ -108,6 +118,11 @@ public sealed class JobRuntimeOptions
         if (LeaseReaperInterval <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("LeaseReaperInterval must be positive.");
+        }
+
+        if (TimeoutScannerInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("TimeoutScannerInterval must be positive.");
         }
 
         if (OutboxPollInterval <= TimeSpan.Zero)
@@ -160,6 +175,11 @@ public sealed class JobRuntimeOptions
             throw new InvalidOperationException("LeaseReaperBatchSize must be between 1 and 10000.");
         }
 
+        if (TimeoutScannerBatchSize is < 1 or > 10_000)
+        {
+            throw new InvalidOperationException("TimeoutScannerBatchSize must be between 1 and 10000.");
+        }
+
         if (OutboxBatchSize is < 1 or > 10_000)
         {
             throw new InvalidOperationException("OutboxBatchSize must be between 1 and 10000.");
@@ -183,6 +203,16 @@ public sealed class JobRuntimeOptions
         if (CompletionFlushInterval <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("CompletionFlushInterval must be positive.");
+        }
+
+        if (CompletionIntentPollInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("CompletionIntentPollInterval must be positive.");
+        }
+
+        if (CompletionIntentBatchSize is < 1 or > 10_000)
+        {
+            throw new InvalidOperationException("CompletionIntentBatchSize must be between 1 and 10000.");
         }
 
         if (ScheduleBatchSize is < 1 or > 10_000)

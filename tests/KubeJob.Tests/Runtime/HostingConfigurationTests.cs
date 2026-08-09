@@ -21,6 +21,7 @@ public sealed class HostingConfigurationTests
 
         HasHostedService<ScheduleReconcilerService>(services).Should().BeTrue();
         HasHostedService<LeaseReaperService>(services).Should().BeTrue();
+        HasHostedService<TimeoutScannerService>(services).Should().BeTrue();
         HasHostedService<OutboxPublisherService>(services).Should().BeTrue();
         HasHostedService<RuntimeRetentionService>(services).Should().BeTrue();
     }

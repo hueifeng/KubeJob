@@ -274,7 +274,8 @@ public sealed class DashboardApiTests
                 permanentClaim.LeaseToken,
                 JobAttemptOutcome.PermanentFailure,
                 "smtp_rejected",
-                "The recipient was rejected."),
+                "The recipient was rejected.",
+                permanentClaim.FenceVersion),
             new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)),
             CancellationToken.None);
         var exhaustedCompletion = await store.CompleteAsync(
@@ -288,7 +289,8 @@ public sealed class DashboardApiTests
                 exhaustedClaim.LeaseToken,
                 JobAttemptOutcome.RetryableFailure,
                 "socket_timeout",
-                "The upstream service did not respond."),
+                "The upstream service did not respond.",
+                exhaustedClaim.FenceVersion),
             new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)),
             CancellationToken.None);
 

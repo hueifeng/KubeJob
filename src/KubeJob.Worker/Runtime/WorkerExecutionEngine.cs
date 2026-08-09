@@ -23,7 +23,9 @@ public sealed record WorkerExecutionRequest(
     WorkerExecutionInfo Worker,
     CancellationToken AttemptCancellationToken,
     CancellationToken WorkerStoppingToken,
-    int? ConsumerIndex = null);
+    int? ConsumerIndex = null,
+    string? LeaseToken = null,
+    long FenceVersion = 0);
 
 /// <summary>
 /// Normalized handler result. It intentionally contains no lease, database,
@@ -36,8 +38,8 @@ public sealed record WorkerExecutionResult(
 
 /// <summary>
 /// Executes typed KubeJob handlers through the shared DI/middleware pipeline.
-/// The engine is deliberately unaware of PostgreSQL claims, worker sessions,
-/// leases, RabbitMQ deliveries, ACKs, or completion persistence.
+/// The engine does not make lease, broker ACK, or completion decisions; it only
+/// exposes managed lease identity to handlers through the execution context.
 /// </summary>
 public interface IWorkerExecutionEngine
 {
@@ -93,6 +95,8 @@ public sealed class WorkerExecutionEngine : IWorkerExecutionEngine
                 RunId = request.RunId,
                 AttemptId = request.AttemptId,
                 AttemptNumber = request.AttemptNumber,
+                LeaseToken = request.LeaseToken,
+                FenceVersion = request.FenceVersion,
                 StartedAt = DateTimeOffset.UtcNow,
                 CancellationToken = executionSource.Token,
                 ServiceProvider = scope.ServiceProvider,

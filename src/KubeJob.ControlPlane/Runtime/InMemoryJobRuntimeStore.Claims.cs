@@ -188,6 +188,7 @@ public sealed partial class InMemoryJobRuntimeStore
                     continue;
                 }
 
+                var fenceVersion = run.FenceVersion + 1;
                 var attempt = new JobAttemptRecord
                 {
                     Id = NewId(),
@@ -197,6 +198,7 @@ public sealed partial class InMemoryJobRuntimeStore
                     SessionId = request.SessionId,
                     SessionEpoch = request.SessionEpoch,
                     LeaseToken = NewId(),
+                    FenceVersion = fenceVersion,
                     ClaimedAt = now,
                     StartedAt = now,
                     LeaseExpiresAt = now.Add(leaseDuration),
@@ -215,6 +217,7 @@ public sealed partial class InMemoryJobRuntimeStore
                 run.CurrentAttemptId = attempt.Id;
                 run.CurrentWorkerId = request.WorkerId;
                 run.CurrentSessionId = request.SessionId;
+                run.FenceVersion = fenceVersion;
                 run.StartedAt ??= now;
                 run.Phase = JobPhase.Running;
                 run.Version++;
@@ -230,7 +233,8 @@ public sealed partial class InMemoryJobRuntimeStore
                     run.Queue,
                     run.TimeoutSeconds,
                     run.OrderingMode,
-                    run.AvailableAt));
+                    run.AvailableAt,
+                    fenceVersion));
             }
 
             session.AvailableSlots = Math.Max(0, serverAvailable - claimed.Count);
@@ -263,13 +267,15 @@ public sealed partial class InMemoryJobRuntimeStore
             foreach (var renewal in request.Attempts)
             {
                 if (!_attempts.TryGetValue(renewal.AttemptId, out var attempt)
+                    || !_runs.TryGetValue(attempt.RunId, out var run)
                     || attempt.Phase != JobAttemptPhase.Running
                     || attempt.LeaseExpiresAt <= now
                     || !string.Equals(attempt.WorkerId, request.WorkerId, StringComparison.Ordinal)
                     || !string.Equals(attempt.SessionId, request.SessionId, StringComparison.Ordinal)
                     || attempt.SessionEpoch != request.SessionEpoch
                     || !string.Equals(attempt.LeaseToken, renewal.LeaseToken, StringComparison.Ordinal)
-                    || !_runs.TryGetValue(attempt.RunId, out var run)
+                    || attempt.FenceVersion != renewal.FenceVersion
+                    || run.FenceVersion != renewal.FenceVersion
                     || !string.Equals(run.CurrentAttemptId, attempt.Id, StringComparison.Ordinal))
                 {
                     results.Add(new LeaseRenewalResult(

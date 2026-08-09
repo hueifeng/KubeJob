@@ -144,7 +144,7 @@ public sealed class InMemoryJobRuntimeStoreTests
                 worker.WorkerId,
                 worker.SessionId,
                 worker.Epoch,
-                new[] { new LeaseRenewal(claim.AttemptId, claim.LeaseToken) }),
+                new[] { new LeaseRenewal(claim.AttemptId, claim.LeaseToken, claim.FenceVersion) }),
             TimeSpan.FromSeconds(30),
             CancellationToken.None);
 
@@ -209,6 +209,32 @@ public sealed class InMemoryJobRuntimeStoreTests
             .ParentRunId.Should().Be(run.Id);
         followUpRuns.Single(run => run!.RelationKind == RunRelationKind.Compensation)!
             .ParentRunId.Should().Be(run.Id);
+    }
+
+    [Fact]
+    public async Task Timeout_scanner_requeues_a_running_attempt_even_when_lease_is_renewable()
+    {
+        var store = new InMemoryJobRuntimeStore();
+        var run = (await store.SubmitAsync(
+            NewCommand(maxAttempts: 2, timeoutSeconds: 1),
+            CancellationToken.None)).Run;
+        var worker = await RegisterAsync(store, "timeout-worker", "timeout-session");
+        var claim = (await store.ClaimAsync(
+            NewClaim(worker),
+            TimeSpan.FromMinutes(1),
+            1,
+            CancellationToken.None)).Single();
+
+        var reconciled = await store.RequeueTimedOutAttemptsAsync(
+            DateTimeOffset.UtcNow.AddSeconds(2),
+            TestRetryPolicy,
+            10,
+            CancellationToken.None);
+
+        reconciled.Should().Be(1);
+        (await store.GetRunAsync(run.Id, CancellationToken.None))!.Phase.Should().Be(JobPhase.Pending);
+        (await store.GetAttemptsAsync(run.Id, CancellationToken.None)).Single()
+            .Phase.Should().Be(JobAttemptPhase.TimedOut);
     }
 
     [Fact]
@@ -610,7 +636,8 @@ public sealed class InMemoryJobRuntimeStoreTests
         string? concurrencyKey = null,
         RetryPolicy? retryPolicy = null,
         Continuation? continuation = null,
-        Compensation? compensation = null) => new(
+        Compensation? compensation = null,
+        int timeoutSeconds = 300) => new(
         "mail.send",
         "{\"to\":\"user@example.com\"}",
         "default",
@@ -619,7 +646,7 @@ public sealed class InMemoryJobRuntimeStoreTests
         idempotencyKey,
         concurrencyKey,
         maxAttempts,
-        300,
+        timeoutSeconds,
         RetryPolicy: retryPolicy,
         Continuation: continuation,
         Compensation: compensation);
@@ -660,5 +687,6 @@ public sealed class InMemoryJobRuntimeStoreTests
         job.AttemptId,
         job.AttemptNumber,
         job.LeaseToken,
-        outcome);
+        outcome,
+        FenceVersion: job.FenceVersion);
 }

@@ -6,7 +6,7 @@ namespace KubeJob.Storage.PostgreSQL.Data;
 
 public sealed class DbInitializer : IStorageInitializer
 {
-    public const int CurrentSchemaVersion = 11;
+    public const int CurrentSchemaVersion = 13;
 
     private readonly string _connectionString;
 
@@ -75,6 +75,7 @@ public sealed class DbInitializer : IStorageInitializer
                 CancelRequested BOOLEAN NOT NULL DEFAULT FALSE,
                 FailureCode VARCHAR(200),
                 FailureMessage TEXT,
+                FenceVersion BIGINT NOT NULL DEFAULT 0,
                 Version BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT CK_Kj2_JobRuns_MaxAttempts CHECK (MaxAttempts >= 1),
                 CONSTRAINT CK_Kj2_JobRuns_Timeout CHECK (TimeoutSeconds >= 1),
@@ -146,6 +147,7 @@ public sealed class DbInitializer : IStorageInitializer
                 SessionId VARCHAR(64) NOT NULL,
                 SessionEpoch BIGINT NOT NULL,
                 LeaseToken VARCHAR(64) NOT NULL,
+                FenceVersion BIGINT NOT NULL,
                 Phase INTEGER NOT NULL,
                 ClaimedAt TIMESTAMPTZ NOT NULL,
                 StartedAt TIMESTAMPTZ NOT NULL,
@@ -165,6 +167,24 @@ public sealed class DbInitializer : IStorageInitializer
             CREATE INDEX IF NOT EXISTS IX_Kj2_JobAttempts_WorkerActive
                 ON Kj2_JobAttempts (WorkerId, SessionId, SessionEpoch)
                 WHERE Phase = 0;
+
+            CREATE TABLE IF NOT EXISTS Kj2_CompletionIntents (
+                AttemptId VARCHAR(64) PRIMARY KEY REFERENCES Kj2_JobAttempts(Id) ON DELETE CASCADE,
+                RunId VARCHAR(64) NOT NULL,
+                WorkerId VARCHAR(200) NOT NULL,
+                SessionId VARCHAR(64) NOT NULL,
+                SessionEpoch BIGINT NOT NULL,
+                AttemptNumber INTEGER NOT NULL,
+                LeaseToken VARCHAR(64) NOT NULL,
+                FenceVersion BIGINT NOT NULL,
+                Outcome INTEGER NOT NULL,
+                FailureCode VARCHAR(200),
+                FailureMessage TEXT,
+                CreatedAt TIMESTAMPTZ NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_Kj2_CompletionIntents_Created
+                ON Kj2_CompletionIntents (CreatedAt);
 
             CREATE TABLE IF NOT EXISTS Kj2_WorkerSessions (
                 WorkerId VARCHAR(200) NOT NULL,
@@ -421,6 +441,45 @@ public sealed class DbInitializer : IStorageInitializer
                 connection.Execute(
                     "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (11, CURRENT_TIMESTAMP);");
             }
+            if (appliedVersion < 12)
+            {
+                // v11 -> v12: explicit lease fencing. The Run owns the
+                // monotonic generation and each Attempt stores the generation
+                // issued by its claim, making stale renewals/completions
+                // rejectable even when an old worker resumes later.
+                connection.Execute(@"
+                    ALTER TABLE Kj2_JobRuns
+                        ADD COLUMN IF NOT EXISTS FenceVersion BIGINT NOT NULL DEFAULT 0;
+                    ALTER TABLE Kj2_JobAttempts
+                        ADD COLUMN IF NOT EXISTS FenceVersion BIGINT NOT NULL DEFAULT 0;");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (12, CURRENT_TIMESTAMP);");
+            }
+            if (appliedVersion < 13)
+            {
+                // v12 -> v13: persist a completion intent before the
+                // micro-batcher mutates Run/Attempt state. A restarted control
+                // plane can replay an intent that was accepted before a crash.
+                connection.Execute(@"
+                    CREATE TABLE IF NOT EXISTS Kj2_CompletionIntents (
+                        AttemptId VARCHAR(64) PRIMARY KEY REFERENCES Kj2_JobAttempts(Id) ON DELETE CASCADE,
+                        RunId VARCHAR(64) NOT NULL,
+                        WorkerId VARCHAR(200) NOT NULL,
+                        SessionId VARCHAR(64) NOT NULL,
+                        SessionEpoch BIGINT NOT NULL,
+                        AttemptNumber INTEGER NOT NULL,
+                        LeaseToken VARCHAR(64) NOT NULL,
+                        FenceVersion BIGINT NOT NULL,
+                        Outcome INTEGER NOT NULL,
+                        FailureCode VARCHAR(200),
+                        FailureMessage TEXT,
+                        CreatedAt TIMESTAMPTZ NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS IX_Kj2_CompletionIntents_Created
+                        ON Kj2_CompletionIntents (CreatedAt);");
+                connection.Execute(
+                    "INSERT INTO Kj2_SchemaMigrations (Version, AppliedAt) VALUES (13, CURRENT_TIMESTAMP);");
+            }
             if (appliedVersion > CurrentSchemaVersion)
             {
                 throw new InvalidOperationException(
@@ -451,8 +510,12 @@ public sealed class DbInitializer : IStorageInitializer
                 ('Kj2_JobRuns', 'ParentRunId'),
                 ('Kj2_JobRuns', 'RelationKind'),
                 ('Kj2_JobRuns', 'Version'),
+                ('Kj2_JobRuns', 'FenceVersion'),
                 ('Kj2_JobAttempts', 'RunId'),
                 ('Kj2_JobAttempts', 'LeaseExpiresAt'),
+                ('Kj2_JobAttempts', 'FenceVersion'),
+                ('Kj2_CompletionIntents', 'AttemptId'),
+                ('Kj2_CompletionIntents', 'FenceVersion'),
                 ('Kj2_WorkerSessions', 'Epoch'),
                 ('Kj2_WorkerSessions', 'AvailableSlots'),
                 ('Kj2_WorkerSessions', 'ExecutionLane'),

@@ -54,10 +54,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 attempt.SessionId,
                 attempt.SessionEpoch,
                 attempt.LeaseToken,
+                attempt.FenceVersion AS AttemptFenceVersion,
                 attempt.LeaseExpiresAt,
                 attempt.Phase AS AttemptPhase,
                 run.Phase AS RunPhase,
                 run.CurrentAttemptId,
+                run.FenceVersion AS RunFenceVersion,
                 run.CancelRequested,
                 run.AttemptCount,
                 run.MaxAttempts,
@@ -231,6 +233,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
+        await DeleteCompletionIntentsAsync(
+            connection,
+            transaction,
+            new[] { request.AttemptId },
+            cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new CompleteAttemptResponse(true, phase, requeued);
     }
@@ -445,10 +452,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 attempt.SessionId,
                 attempt.SessionEpoch,
                 attempt.LeaseToken,
+                attempt.FenceVersion AS AttemptFenceVersion,
                 attempt.LeaseExpiresAt,
                 attempt.Phase AS AttemptPhase,
                 run.Phase AS RunPhase,
                 run.CurrentAttemptId,
+                run.FenceVersion AS RunFenceVersion,
                 run.CancelRequested,
                 run.AttemptCount,
                 run.MaxAttempts,
@@ -636,6 +645,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
             }
         }
 
+        await DeleteCompletionIntentsAsync(
+            connection,
+            transaction,
+            valid.Select(item => item.request.AttemptId).ToArray(),
+            cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return results;
     }
@@ -785,6 +799,21 @@ public sealed partial class PostgreSqlJobRuntimeStore
         RetryPolicy retryPolicy,
         int batchSize,
         CancellationToken cancellationToken)
+        => await RequeueExpiredAttemptsAsync(now, retryPolicy, batchSize, timeoutOnly: false, cancellationToken);
+
+    public async ValueTask<int> RequeueTimedOutAttemptsAsync(
+        DateTimeOffset now,
+        RetryPolicy retryPolicy,
+        int batchSize,
+        CancellationToken cancellationToken)
+        => await RequeueExpiredAttemptsAsync(now, retryPolicy, batchSize, timeoutOnly: true, cancellationToken);
+
+    private async ValueTask<int> RequeueExpiredAttemptsAsync(
+        DateTimeOffset now,
+        RetryPolicy retryPolicy,
+        int batchSize,
+        bool timeoutOnly,
+        CancellationToken cancellationToken)
     {
         _ = now;
         if (batchSize <= 0)
@@ -809,10 +838,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 attempt.SessionId,
                 attempt.SessionEpoch,
                 attempt.LeaseToken,
+                attempt.FenceVersion AS AttemptFenceVersion,
                 attempt.LeaseExpiresAt,
                 attempt.Phase AS AttemptPhase,
                 run.Phase AS RunPhase,
                 run.CurrentAttemptId,
+                run.FenceVersion AS RunFenceVersion,
                 run.CancelRequested,
                 run.AttemptCount,
                 run.MaxAttempts,
@@ -831,10 +862,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
             FROM Kj2_JobAttempts attempt
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
             WHERE attempt.Phase = @AttemptRunning
-              AND attempt.LeaseExpiresAt <= @Now
+              AND (
+                    (@TimeoutOnly = FALSE AND attempt.LeaseExpiresAt <= @Now)
+                    OR (@TimeoutOnly = TRUE
+                        AND attempt.StartedAt + (run.TimeoutSeconds * INTERVAL '1 second') <= @Now)
+                  )
               AND run.Phase = @RunRunning
               AND run.CurrentAttemptId = attempt.Id
-            ORDER BY attempt.LeaseExpiresAt
+            ORDER BY CASE WHEN @TimeoutOnly THEN attempt.StartedAt ELSE attempt.LeaseExpiresAt END
             FOR UPDATE OF attempt, run SKIP LOCKED
             LIMIT @BatchSize;",
             new
@@ -842,6 +877,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 AttemptRunning = (int)JobAttemptPhase.Running,
                 RunRunning = (int)JobPhase.Running,
                 Now = databaseNow,
+                TimeoutOnly = timeoutOnly,
                 BatchSize = batchSize
             },
             transaction,
@@ -853,12 +889,14 @@ public sealed partial class PostgreSqlJobRuntimeStore
             return 0;
         }
 
-        const string failureCode = "lease_lost";
-        const string failureMessage = "The worker did not renew the attempt lease before it expired.";
+        var failureCode = timeoutOnly ? "timeout" : "lease_lost";
+        var failureMessage = timeoutOnly
+            ? "The worker exceeded the configured execution timeout."
+            : "The worker did not renew the attempt lease before it expired.";
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_JobAttempts
-            SET Phase = @LeaseLost,
+            SET Phase = @AttemptPhase,
                 CompletedAt = @CompletedAt,
                 FailureCode = @FailureCode,
                 FailureMessage = @FailureMessage
@@ -867,7 +905,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
             new
             {
                 AttemptIds = expired.Select(x => x.AttemptId).ToArray(),
-                LeaseLost = (int)JobAttemptPhase.LeaseLost,
+                AttemptPhase = timeoutOnly ? (int)JobAttemptPhase.TimedOut : (int)JobAttemptPhase.LeaseLost,
                 Running = (int)JobAttemptPhase.Running,
                 CompletedAt = databaseNow,
                 FailureCode = failureCode,
@@ -943,11 +981,16 @@ public sealed partial class PostgreSqlJobRuntimeStore
                 connection,
                 transaction,
                 state,
-                JobAttemptOutcome.RetryableFailure,
+                timeoutOnly ? JobAttemptOutcome.TimedOut : JobAttemptOutcome.RetryableFailure,
                 databaseNow,
                 cancellationToken);
         }
 
+        await DeleteCompletionIntentsAsync(
+            connection,
+            transaction,
+            expired.Select(item => item.AttemptId).ToArray(),
+            cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return expired.Length;
     }
@@ -965,6 +1008,8 @@ public sealed partial class PostgreSqlJobRuntimeStore
         && string.Equals(state.SessionId, request.SessionId, StringComparison.Ordinal)
         && state.SessionEpoch == request.SessionEpoch
         && string.Equals(state.LeaseToken, request.LeaseToken, StringComparison.Ordinal)
+        && state.AttemptFenceVersion == request.FenceVersion
+        && state.RunFenceVersion == request.FenceVersion
         && string.Equals(state.CurrentAttemptId, request.AttemptId, StringComparison.Ordinal);
 
     private static async ValueTask MakeTerminalAsync(
@@ -1173,10 +1218,12 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public string SessionId { get; set; } = string.Empty;
         public long SessionEpoch { get; set; }
         public string LeaseToken { get; set; } = string.Empty;
+        public long AttemptFenceVersion { get; set; }
         public DateTimeOffset LeaseExpiresAt { get; set; }
         public JobAttemptPhase AttemptPhase { get; set; }
         public JobPhase RunPhase { get; set; }
         public string? CurrentAttemptId { get; set; }
+        public long RunFenceVersion { get; set; }
         public bool CancelRequested { get; set; }
         public int AttemptCount { get; set; }
         public int MaxAttempts { get; set; }

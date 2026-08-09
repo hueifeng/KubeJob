@@ -51,6 +51,11 @@ public sealed class WorkerExecutionEngineTests
         context.AttemptId.Should().Be("attempt-1");
         context.Items["_JobKey"].Should().Be("order.created");
         context.Worker.WorkerId.Should().Be("worker-1");
+        context.WorkerId.Should().Be("worker-1");
+        context.SessionId.Should().Be("session-1");
+        context.SessionEpoch.Should().Be(1);
+        context.LeaseToken.Should().Be("lease-1");
+        context.FenceVersion.Should().Be(42);
     }
 
     [Fact]
@@ -106,7 +111,9 @@ public sealed class WorkerExecutionEngineTests
                 "build-1"),
             CancellationToken.None,
             CancellationToken.None,
-            ConsumerIndex: 0);
+            ConsumerIndex: 0,
+            LeaseToken: "lease-1",
+            FenceVersion: 42);
 
     private sealed class RecordingInvoker : IJobHandlerInvoker
     {

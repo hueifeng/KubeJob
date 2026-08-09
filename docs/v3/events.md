@@ -50,6 +50,28 @@ the managed job tables. If the application needs an audit trail, store the
 event id and business identifiers in an application table or an observability
 pipeline.
 
+`EventPublishOptions` accepts `MaxAttempts` and an optional `RetryPolicy`:
+
+```csharp
+await eventBus.PublishAsync(
+    orderCreated,
+    payload,
+    new EventPublishOptions
+    {
+        MaxAttempts = 5,
+        RetryPolicy = new RetryPolicy(
+            BackoffStrategy.Exponential,
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromMinutes(2))
+    });
+```
+
+The policy is copied into the self-contained BrokerNative envelope and is
+preserved on retry. Older envelopes without a policy use the RabbitMQ
+transport's fixed `RetryDelay`. RabbitMQ's retry queue also has a queue-level
+TTL for compatibility, so configure `RetryDelay` at least as high as the
+largest custom policy delay until the retry topology is migrated.
+
 ## Delivery semantics
 
 Event delivery is at-least-once. A process can finish the handler and lose its

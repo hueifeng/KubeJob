@@ -12,6 +12,7 @@ public sealed partial class InMemoryJobRuntimeStore :
     IWorkerSessionStore,
     IJobClaimStore,
     IJobCompletionStore,
+    ICompletionIntentStore,
     IJobQueryStore,
     IJobScheduleStore,
     IOutboxStore,
@@ -21,6 +22,7 @@ public sealed partial class InMemoryJobRuntimeStore :
     private readonly object _gate = new();
     private readonly Dictionary<string, JobRunRecord> _runs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, JobAttemptRecord> _attempts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CompleteAttemptRequest> _completionIntents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _attemptIdsByRun = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WorkerSessionRecord> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, JobScheduleRecord> _schedules = new(StringComparer.Ordinal);

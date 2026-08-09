@@ -291,7 +291,8 @@ public sealed class WorkerAndDashboardHardeningTests
                 claim.AttemptId,
                 claim.AttemptNumber,
                 claim.LeaseToken,
-                JobAttemptOutcome.Succeeded),
+                JobAttemptOutcome.Succeeded,
+                FenceVersion: claim.FenceVersion),
             new RetryPolicy(BackoffStrategy.Fixed, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)),
             CancellationToken.None);
 

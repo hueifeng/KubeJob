@@ -328,3 +328,60 @@ public sealed class LeaseReaperService : BackgroundService
         }
     }
 }
+
+/// <summary>
+/// Reconciles attempts whose configured execution timeout elapsed while their
+/// worker continued renewing the lease. It shares the same transactional
+/// retry/dead-letter path as lease recovery.
+/// </summary>
+public sealed class TimeoutScannerService : BackgroundService
+{
+    private readonly IJobCompletionStore _store;
+    private readonly JobRuntimeOptions _options;
+    private readonly ILogger<TimeoutScannerService> _logger;
+
+    public TimeoutScannerService(
+        IJobCompletionStore store,
+        IOptions<JobRuntimeOptions> options,
+        ILogger<TimeoutScannerService> logger)
+    {
+        _store = store;
+        _options = options.Value;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _options.Validate();
+        using var timer = new PeriodicTimer(_options.TimeoutScannerInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+            {
+                try
+                {
+                    var count = await _store.RequeueTimedOutAttemptsAsync(
+                        DateTimeOffset.UtcNow,
+                        _options.RetryPolicy,
+                        _options.TimeoutScannerBatchSize,
+                        stoppingToken);
+                    if (count > 0)
+                    {
+                        _logger.LogWarning("Reconciled {Count} timed-out KubeJob attempts", count);
+                    }
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "KubeJob timeout scanner iteration failed");
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+    }
+}
