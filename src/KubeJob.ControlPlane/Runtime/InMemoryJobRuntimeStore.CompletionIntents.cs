@@ -1,3 +1,4 @@
+using KubeJob.Core.Client;
 using KubeJob.Core.Runtime;
 
 namespace KubeJob.ControlPlane.Runtime;
@@ -37,6 +38,7 @@ public sealed partial class InMemoryJobRuntimeStore : ICompletionIntentFinalizer
                 || !string.Equals(attempt.LeaseToken, request.LeaseToken, StringComparison.Ordinal)
                 || attempt.FenceVersion != request.FenceVersion
                 || run.Phase != JobPhase.Running
+                || run.CancelRequested
                 || run.FenceVersion != request.FenceVersion
                 || !string.Equals(run.CurrentAttemptId, request.AttemptId, StringComparison.Ordinal))
             {
@@ -78,10 +80,13 @@ public sealed partial class InMemoryJobRuntimeStore : ICompletionIntentFinalizer
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (!_completionIntents.TryGetValue(request.AttemptId, out var persisted)
+            _completionIntents.TryGetValue(request.AttemptId, out var persisted);
+            _runs.TryGetValue(request.RunId, out var run);
+            _attempts.TryGetValue(request.AttemptId, out var attempt);
+            if (persisted is null
                 || !CompletionIntentMatches(persisted, request)
-                || !_runs.TryGetValue(request.RunId, out var run)
-                || !_attempts.TryGetValue(request.AttemptId, out var attempt)
+                || run is null
+                || attempt is null
                 || attempt.Phase != JobAttemptPhase.Completing
                 || run.Phase != JobPhase.Running
                 || attempt.FenceVersion != request.FenceVersion

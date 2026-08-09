@@ -393,7 +393,11 @@ public sealed partial class PostgreSqlJobRuntimeStore
             SELECT Id AS RunId,
                    Queue,
                    Phase,
-                   CancelRequested
+                   CancelRequested,
+                   EXISTS (
+                       SELECT 1
+                       FROM Kj2_CompletionIntents intent
+                       WHERE intent.AttemptId = Kj2_JobRuns.CurrentAttemptId) AS HasCompletionIntent
             FROM Kj2_JobRuns
             WHERE Id = @RunId
             FOR UPDATE;",
@@ -408,6 +412,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
         }
 
         if (state.CancelRequested
+            || state.HasCompletionIntent
             || state.Phase is (int)JobPhase.Succeeded
                 or (int)JobPhase.Failed
                 or (int)JobPhase.Canceled
@@ -507,5 +512,6 @@ public sealed partial class PostgreSqlJobRuntimeStore
         public string Queue { get; set; } = string.Empty;
         public int Phase { get; set; }
         public bool CancelRequested { get; set; }
+        public bool HasCompletionIntent { get; set; }
     }
 }

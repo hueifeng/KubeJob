@@ -402,7 +402,7 @@ public sealed partial class PostgreSqlJobRuntimeStore
 
         await connection.ExecuteAsync(new CommandDefinition(@"
             UPDATE Kj2_Outbox outbox
-            SET State = CAST(completed.TargetState AS integer),
+            SET State = completed.TargetStateNum,
                 LastError = completed.Error,
                 AvailableAt = CASE
                     WHEN completed.TargetStateNum = @AbandonedInt THEN clock_timestamp()

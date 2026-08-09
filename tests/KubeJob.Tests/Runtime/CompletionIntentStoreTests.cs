@@ -91,6 +91,33 @@ public sealed class CompletionIntentStoreTests
         (await store.GetPendingAsync(10, CancellationToken.None)).Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Persisted_completion_intent_prevents_a_later_cancellation()
+    {
+        var (store, run, worker, claim) = await CreateClaimAsync(timeoutSeconds: 30);
+        var request = Completion(worker, claim, JobAttemptOutcome.Succeeded);
+
+        (await store.PersistAsync(request, CancellationToken.None)).Should().BeTrue();
+
+        var canceled = await store.RequestCancelAsync(run.Id, "too late", CancellationToken.None);
+
+        canceled.Requested.Should().BeFalse();
+        (await store.GetRunAsync(run.Id, CancellationToken.None))!.CancelRequested.Should().BeFalse();
+        (await store.FinalizeAsync(request, RetryPolicy, CancellationToken.None)).Phase.Should().Be(JobPhase.Succeeded);
+    }
+
+    [Fact]
+    public async Task Cancellation_prevents_a_later_completion_intent()
+    {
+        var (store, run, worker, claim) = await CreateClaimAsync(timeoutSeconds: 30);
+        var request = Completion(worker, claim, JobAttemptOutcome.Succeeded);
+
+        (await store.RequestCancelAsync(run.Id, "operator requested", CancellationToken.None)).Requested.Should().BeTrue();
+
+        (await store.PersistAsync(request, CancellationToken.None)).Should().BeFalse();
+        (await store.GetPendingAsync(10, CancellationToken.None)).Should().BeEmpty();
+    }
+
     private static async Task<(InMemoryJobRuntimeStore Store, JobRunRecord Run, WorkerSessionRecord Worker, ClaimedJob Claim)>
         CreateClaimAsync(int timeoutSeconds, TimeSpan? leaseDuration = null)
     {

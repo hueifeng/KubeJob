@@ -35,6 +35,7 @@
         JobPhase.Dead => "No retries left",
         _ => run.Phase.ToString()
     };
+    var completionIsFinalizing = Model.Attempts.Any(item => item.Phase == JobAttemptPhase.Completing);
 }
 
 <div class="section-header d-flex flex-wrap justify-content-between align-items-center gap-3">
@@ -49,7 +50,9 @@
             <a asp-action="Failures" class="btn btn-sm btn-outline-danger">Failure workbench</a>
         }
         <span class="badge @runBadge fs-6" title="KubeJob phase: @run.Phase">@runStatus</span>
-        @if (Model.AllowMutatingActions && run.Phase is JobPhase.Pending or JobPhase.Running)
+        @if (Model.AllowMutatingActions
+            && run.Phase is JobPhase.Pending or JobPhase.Running
+            && !completionIsFinalizing)
         {
             <form asp-action="CancelRun" asp-route-id="@run.Id" method="post" onsubmit="return confirm('Request cooperative cancellation for this job? A running handler must observe its cancellation token before it stops.');">
                 @Html.AntiForgeryToken()
@@ -116,6 +119,13 @@
             @if (run.CancelRequested && run.Phase is JobPhase.Pending or JobPhase.Running)
             {
                 <div class="alert alert-secondary mb-3"><strong>Cancellation requested.</strong> A running job stops only after its handler observes the cancellation token.</div>
+            }
+            @if (completionIsFinalizing)
+            {
+                <div class="alert alert-info mb-3">
+                    <strong>Completion is being finalized.</strong> The worker result is durably accepted;
+                    cancellation is no longer available while KubeJob applies the final Run state.
+                </div>
             }
             @if (run.FailureCode is not null)
             {
@@ -212,6 +222,7 @@
                     {
                         JobAttemptPhase.Succeeded => "bg-success-subtle text-success",
                         JobAttemptPhase.Running => "bg-primary-subtle text-primary",
+                        JobAttemptPhase.Completing => "bg-info-subtle text-info-emphasis",
                         JobAttemptPhase.Canceled => "bg-secondary-subtle text-secondary",
                         JobAttemptPhase.LeaseLost => "bg-warning-subtle text-warning-emphasis",
                         _ => "bg-danger-subtle text-danger"
@@ -219,6 +230,7 @@
                     var attemptStatus = attempt.Phase switch
                     {
                         JobAttemptPhase.Running => "Running",
+                        JobAttemptPhase.Completing => "Finalizing completion",
                         JobAttemptPhase.Succeeded => "Succeeded",
                         JobAttemptPhase.RetryableFailure => "Failed; retry allowed",
                         JobAttemptPhase.PermanentFailure => "Permanent failure",
@@ -233,7 +245,7 @@
                         <td class="mono small">@attempt.Id</td>
                         <td><div class="fw-semibold">@attempt.WorkerId</div><div class="mono small text-muted" title="Session ID and fencing epoch">@attempt.SessionId / epoch @attempt.SessionEpoch</div></td>
                         <td><span class="badge @attemptBadge" title="KubeJob Attempt phase: @attempt.Phase">@attemptStatus</span></td>
-                        <td class="small text-muted"><div>@attempt.ClaimedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div><div>@(attempt.CompletedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "Still running")</div></td>
+                        <td class="small text-muted"><div>@attempt.ClaimedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div><div>@(attempt.CompletedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? (attempt.Phase == JobAttemptPhase.Completing ? "Completion accepted" : "Still running"))</div></td>
                         <td class="small @(attempt.Phase == JobAttemptPhase.Running && attempt.LeaseExpiresAt <= DateTimeOffset.UtcNow ? "text-danger fw-semibold" : "text-muted")">@attempt.LeaseExpiresAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
                         <td>
                             @if (attempt.FailureCode is null)

@@ -34,6 +34,7 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
                    attempt.Phase AS AttemptPhase,
                    run.Phase AS RunPhase,
                    run.CurrentAttemptId,
+                   run.CancelRequested,
                    run.FenceVersion AS RunFenceVersion
             FROM Kj2_JobAttempts attempt
             JOIN Kj2_JobRuns run ON run.Id = attempt.RunId
@@ -100,6 +101,7 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
             || state is null
             || state.AttemptPhase != JobAttemptPhase.Running
             || state.RunPhase != JobPhase.Running
+            || state.CancelRequested
             || state.LeaseExpiresAt <= now
             || !string.Equals(state.AttemptRunId, request.RunId, StringComparison.Ordinal)
             || state.AttemptNumber != request.AttemptNumber
@@ -487,6 +489,7 @@ public sealed partial class PostgreSqlJobRuntimeStore : ICompletionIntentFinaliz
         public JobAttemptPhase AttemptPhase { get; set; }
         public JobPhase RunPhase { get; set; }
         public string? CurrentAttemptId { get; set; }
+        public bool CancelRequested { get; set; }
         public long RunFenceVersion { get; set; }
     }
 
