@@ -292,12 +292,16 @@ public sealed class PipelineBenchmark
         IConnection connection,
         string queue)
     {
-        using var channel = connection.CreateModel();
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         while (DateTimeOffset.UtcNow < deadline)
         {
+            // A NOT_FOUND probe closes the channel that queried the missing
+            // queue, so every attempt must use a fresh channel; otherwise the
+            // reused channel keeps throwing AlreadyClosed (a subclass of
+            // OperationInterruptedException) and never observes the consumer.
             try
             {
+                using var channel = connection.CreateModel();
                 if (channel.ConsumerCount(queue) > 0)
                 {
                     return;
